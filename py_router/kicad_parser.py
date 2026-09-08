@@ -339,6 +339,12 @@ class Segment:
     # must never prune it and writers cannot strip it (there is no (segment)
     # block to match).
     graphic: bool = False
+    # True for a segment that models the INTERIOR of a filled copper graphic
+    # rather than a stroke someone drew. Always `graphic` too. Consumers that
+    # reason about drawn geometry (outline radius, stroke width, endpoint
+    # snapping) want the stroke segments only; consumers that reason about
+    # where copper IS want both.
+    area_fill: bool = False
     # (locked yes): the user pinned this track. Rip machinery must NEVER rip a
     # net's copper when any of it is locked (#521 follow-up); locked copper was
     # already an obstacle (#150). Set by BOTH parse paths (text + pcbnew).
@@ -3745,18 +3751,95 @@ def _extract_via_protection_attrs(content: str) -> Dict[str, Dict[str, str]]:
     return out
 
 
-def warn_net_tagged_graphics(segments, name_to_id=None) -> int:
-    """Warn loudly when a board carries NET-TAGGED copper graphics (#513 item 6).
+def filled_area_spans(pts, pitch=None):
+    """Bands of copper that cover the INTERIOR of a filled polygon.
 
-    KiCad allows a ``gr_line``/``gr_rect``/... on a copper layer to carry a
-    ``(net ...)`` field (card-edge/pogo connector fingers drawn as graphics),
-    but its connectivity engine does NOT treat graphics as electrical
-    connections. These parse as ``Segment(graphic=True)`` and are modelled as
-    obstacles/DRC-real copper ONLY -- the router cannot route TO them and the
-    connectivity model must not credit joins THROUGH them, or a physically
-    open net reads "already fully connected" (opengammakit: 5 nets shipped
-    split with 0 DRC violations). Returns the number of net-tagged graphic
-    segments found. Called by BOTH parse paths (file text and pcbnew build)."""
+    A filled copper graphic is copper over its whole area, but the obstacle
+    model is built from Segments, so the area has to be expressed as segments
+    or it is not there at all. Outline edges alone leave the interior as free
+    board, and the router lays foreign copper straight through a pour that
+    KiCad fills, connects and reports a short against (#513 item 6 modelled the
+    outline only).
+
+    Even-odd scanline at `pitch`, then RUN-LENGTH MERGED down the y axis: a
+    rectangle becomes one band however tall it is, and a rectilinear pour a
+    handful. Merging is what makes this affordable - one segment per scanline
+    puts thousands of obstacles on a board with pours and the obstacle map
+    slows to a crawl.
+
+    Returns [(x0, x1, y_centre, height), ...] in the polygon's own units, each
+    a rectangle to stamp as a horizontal segment of that width.
+    """
+    if len(pts) < 3:
+        return []
+    step = float(pitch or defaults.GRID_STEP)
+    if step <= 0:
+        return []
+    ys = [p[1] for p in pts]
+    y0, y1 = min(ys), max(ys)
+    n = len(pts)
+    rows = []                       # (y, [(x0, x1), ...]) per scanline
+    y = y0 + step / 2.0
+    while y < y1:
+        xs = []
+        for i in range(n):
+            xa, ya = pts[i]
+            xb, yb = pts[(i + 1) % n]
+            if (ya <= y < yb) or (yb <= y < ya):
+                xs.append(xa + (y - ya) * (xb - xa) / (yb - ya))
+        xs.sort()
+        spans = [(xs[i], xs[i + 1]) for i in range(0, len(xs) - 1, 2)
+                 if xs[i + 1] - xs[i] > 1e-9]
+        rows.append((y, spans))
+        y += step
+
+    # Merge consecutive scanlines whose spans agree to a tenth of the pitch.
+    # An exact match would never fire on a diagonal edge; a tolerance keeps the
+    # band count low there too, and rounds OUTWARD so the cover never shrinks.
+    tol = step / 10.0
+
+    def same(a, b):
+        return len(a) == len(b) and all(
+            abs(p[0] - q[0]) <= tol and abs(p[1] - q[1]) <= tol
+            for p, q in zip(a, b))
+
+    out = []
+    i = 0
+    while i < len(rows):
+        j = i + 1
+        while j < len(rows) and same(rows[i][1], rows[j][1]):
+            j += 1
+        group = rows[i:j]
+        height = step * len(group)
+        yc = (group[0][0] + group[-1][0]) / 2.0
+        for k in range(len(group[0][1])):
+            x0 = min(g[1][k][0] for g in group)
+            x1 = max(g[1][k][1] for g in group)
+            out.append((x0, x1, yc, height))
+        i = j
+    return out
+
+
+def warn_net_tagged_graphics(segments, name_to_id=None) -> int:
+    """Note the NET-TAGGED copper graphics on a board (#513 item 6).
+
+    A ``gr_line``/``gr_poly``/... on a copper layer may carry a ``(net ...)``
+    field: card-edge and pogo fingers drawn as art, and hand-shaped power pours
+    drawn as filled polygons. These parse as ``Segment(graphic=True)`` -- real
+    copper for obstacle and DRC purposes, and immutable (never ripped, pruned
+    or rewritten), with a FILLED shape modelled over its whole area rather than
+    its outline alone.
+
+    What remains a limitation is TARGETING: the router cannot route to a
+    graphic, so a connection that has to land on one stays open, and the
+    connectivity model does not credit joins through one (crediting a join it
+    cannot verify once shipped 5 split nets reading "fully connected" with 0
+    DRC violations, opengammakit). KiCad itself does join pads through a filled
+    net-tagged polygon, so for that shape its DRC and this model disagree in
+    the safe direction: this model may call a net open that KiCad calls closed.
+
+    Returns the number of net-tagged graphic segments found. Called by BOTH
+    parse paths (file text and pcbnew build)."""
     tagged = [s for s in segments
               if getattr(s, 'graphic', False) and getattr(s, 'net_id', 0)]
     if not tagged:
@@ -3764,12 +3847,12 @@ def warn_net_tagged_graphics(segments, name_to_id=None) -> int:
     id_to_name = {v: k for k, v in (name_to_id or {}).items()}
     nets = sorted({id_to_name.get(s.net_id, f'net {s.net_id}') for s in tagged})
     preview = ', '.join(nets[:6]) + (', ...' if len(nets) > 6 else '')
-    print(f"WARNING: {len(tagged)} NET-TAGGED copper graphic segment(s) on "
-          f"{len(nets)} net(s) ({preview}). KiCad does NOT treat graphics as "
-          f"electrical connections: they are obstacles only, the router cannot "
-          f"target them, and copper joined only through them is electrically "
-          f"OPEN. Convert them to footprint pads or tracks if they must "
-          f"conduct (#513).")
+    print(f"NOTE: {len(tagged)} NET-TAGGED copper graphic segment(s) on "
+          f"{len(nets)} net(s) ({preview}). These are modelled as real copper "
+          f"-- obstacles and DRC, a filled shape over its whole area -- but the "
+          f"router cannot route TO a graphic and does not credit joins through "
+          f"one. A connection that must LAND on one stays open; draw that end "
+          f"as a pad, track or zone if the router has to reach it (#513).")
     # ...and say what it will look like AFTERWARDS, which is the part people
     # actually hit (#659). KiCad's own DRC lists such a net as unconnected on
     # every run, forever: the art is copper to KiCad, so it demands a link to
@@ -3777,11 +3860,11 @@ def warn_net_tagged_graphics(segments, name_to_id=None) -> int:
     # or delete it. Measured over 31 recorded boards, this is the DOMINANT
     # class of "KiCad says open, our grading says connected" -- 36 of 51 such
     # links on zone-less signal nets. Nobody should spend a retry on it.
-    print(f"         Expect KiCad DRC to keep reporting these {len(nets)} "
-          f"net(s) as UNCONNECTED on every run: no routing pass can fix it "
-          f"(the art is immutable, #337), so this is a board-authoring fix, "
-          f"not a routing failure. It is the single largest source of "
-          f"'KiCad says open, our grading says connected' (#659).")
+    print(f"      A net whose only link is a graphic this model cannot target "
+          f"stays open on every run: the art is immutable (#337), so that is a "
+          f"board-authoring fix, not a routing failure. Where the graphic is a "
+          f"FILLED polygon, KiCad's own connectivity does join through it, so "
+          f"KiCad may well report the net connected (#659).")
     return len(tagged)
 
 
@@ -3912,6 +3995,18 @@ def extract_segments(content: str, name_to_id: Dict[str, int] = None) -> List[Se
                 start_x=a[0], start_y=a[1], end_x=b[0], end_y=b[1],
                 width=ew, layer=layer, net_id=nid, uuid=uuid, graphic=True))
 
+    def _emit_fill(pts, layer, nid, uuid):
+        """The INTERIOR of a filled shape, as abutting scanline segments.
+
+        Without this the shape is modelled by its outline alone and its middle
+        reads as free board, which is how a router lays a foreign net through
+        a pour that KiCad fills, connects and shorts against."""
+        for x0, x1, yc, h in filled_area_spans(pts, defaults.GRID_STEP):
+            segments.append(Segment(
+                start_x=x0, start_y=yc, end_x=x1, end_y=yc,
+                width=h, layer=layer, net_id=nid, uuid=uuid,
+                graphic=True, area_fill=True))
+
     def _blk_fields(blk):
         # BOTH layer tokens (#659 follow-up). KiCad writes the singular
         # (layer "F.Cu") for a one-layer graphic and the PLURAL
@@ -3938,12 +4033,16 @@ def extract_segments(content: str, name_to_id: Dict[str, int] = None) -> List[Se
                 if _one.endswith('.Cu') and _one not in layers:
                     layers.append(_one)
         wm = re.search(r'\(width\s+([-\d.]+)\)', blk)
+        # A filled shape is copper over its area; an unfilled one is its
+        # stroke only. KiCad writes (fill yes) or the older (fill solid).
+        fm = re.search(r'\(fill\s+(\w+)\)', blk)
         nm = re.search(r'\(net\s+("[^"]*"|\d+)\)', blk)
         um = (re.search(r'\(uuid\s+"([^"]+)"\)', blk)
               or re.search(r'\(tstamp\s+([-\w]+)\)', blk))
         return (layers, float(wm.group(1)) if wm else 0.0,
                 _resolve_net(nm.group(1)) if nm else 0,
-                um.group(1) if um else '')
+                um.group(1) if um else '',
+                bool(fm) and fm.group(1) in ('yes', 'solid', 'true'))
 
     def _xy(blk, name):
         m = re.search(r'\(' + name + r'\s+([-\d.]+)\s+([-\d.]+)\)', blk)
@@ -3963,7 +4062,7 @@ def extract_segments(content: str, name_to_id: Dict[str, int] = None) -> List[Se
             j = find_matching_paren(content, i)
             blk = content[i:j]
             pos = j
-            layers, w, nid, uuid = _blk_fields(blk)
+            layers, w, nid, uuid, filled = _blk_fields(blk)
             if not layers:
                 continue
             if tag in ('gr_line', 'gr_arc') and w <= 0:
@@ -3986,18 +4085,25 @@ def extract_segments(content: str, name_to_id: Dict[str, int] = None) -> List[Se
                     pts = [(float(x), float(y)) for x, y in
                            re.findall(r'\(xy\s+([-\d.]+)\s+([-\d.]+)\)', blk)]
                     _emit_outline(pts, w, layer, nid, uuid)
+                    if filled:
+                        _emit_fill(pts, layer, nid, uuid)
                 elif tag == 'gr_rect':
                     a, b = _xy(blk, 'start'), _xy(blk, 'end')
                     if a and b:
-                        _emit_outline([(a[0], a[1]), (b[0], a[1]),
-                                       (b[0], b[1]), (a[0], b[1])], w, layer, nid, uuid)
+                        pts = [(a[0], a[1]), (b[0], a[1]), (b[0], b[1]), (a[0], b[1])]
+                        _emit_outline(pts, w, layer, nid, uuid)
+                        if filled:
+                            _emit_fill(pts, layer, nid, uuid)
                 elif tag == 'gr_circle':
                     c, e = _xy(blk, 'center'), _xy(blk, 'end')
                     if c and e:
                         r = math.hypot(e[0] - c[0], e[1] - c[1])
-                        _emit_outline([(c[0] + r * math.cos(k * math.pi / 8),
-                                        c[1] + r * math.sin(k * math.pi / 8))
-                                       for k in range(16)], w, layer, nid, uuid)
+                        pts = [(c[0] + r * math.cos(k * math.pi / 8),
+                                c[1] + r * math.sin(k * math.pi / 8))
+                               for k in range(16)]
+                        _emit_outline(pts, w, layer, nid, uuid)
+                        if filled:
+                            _emit_fill(pts, layer, nid, uuid)
 
     warn_net_tagged_graphics(segments, name_to_id)
     return segments
@@ -5366,6 +5472,15 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                             start_x=_a[0], start_y=_a[1], end_x=_b[0], end_y=_b[1],
                             width=ew, layer=_ln, net_id=_nid, graphic=True))
 
+                def _emit_fill_b(pts):
+                    """The shape's INTERIOR, matching the text parser."""
+                    for _x0, _x1, _yc, _h in filled_area_spans(
+                            list(pts), defaults.GRID_STEP):
+                        segments.append(Segment(
+                            start_x=_x0, start_y=_yc, end_x=_x1, end_y=_yc,
+                            width=_h, layer=_ln, net_id=_nid,
+                            graphic=True, area_fill=True))
+
                 if _shape == getattr(_pcbnew_g, 'SHAPE_T_SEGMENT', 0):
                     if _w <= 0:
                         continue
@@ -5387,9 +5502,14 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                             start_x=_p0[0], start_y=_p0[1], end_x=_p1[0], end_y=_p1[1],
                             width=_w, layer=_ln, net_id=_nid, graphic=True))
                 elif _shape in (_POLY, _RECT, _CIRC):
-                    # FILLED copper areas (#337): outline as graphic segments (parity
-                    # with the text parser). Filled shapes may have 0 stroke width.
+                    # FILLED copper areas (#337): outline as graphic segments, and
+                    # the interior too when the shape is filled (parity with the
+                    # text parser). Filled shapes may have 0 stroke width.
                     _ow = _w if _w > 0 else defaults.TRACK_WIDTH
+                    try:
+                        _filled = bool(_d.IsFilled())
+                    except Exception:
+                        _filled = False
                     try:
                         if _shape == _POLY:
                             _ps = _d.GetPolyShape()
@@ -5398,19 +5518,25 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                                     for k in range(_ol.PointCount())]
                             if len(_pts) >= 2:
                                 _emit_outline_b(_pts, _ow)
+                                if _filled:
+                                    _emit_fill_b(_pts)
                         elif _shape == _RECT:
                             _s0 = _d.GetStart(); _e0 = _d.GetEnd()
                             _x1, _y1 = to_mm(_s0.x), to_mm(_s0.y)
                             _x2, _y2 = to_mm(_e0.x), to_mm(_e0.y)
-                            _emit_outline_b([(_x1, _y1), (_x2, _y1),
-                                             (_x2, _y2), (_x1, _y2)], _ow)
+                            _rp = [(_x1, _y1), (_x2, _y1), (_x2, _y2), (_x1, _y2)]
+                            _emit_outline_b(_rp, _ow)
+                            if _filled:
+                                _emit_fill_b(_rp)
                         elif _shape == _CIRC:
                             _c = _d.GetCenter(); _cx, _cy = to_mm(_c.x), to_mm(_c.y)
                             _r = to_mm(_d.GetRadius())
-                            _emit_outline_b(
-                                [(_cx + _r * math.cos(k * math.pi / 8),
-                                  _cy + _r * math.sin(k * math.pi / 8))
-                                 for k in range(16)], _ow)
+                            _cp = [(_cx + _r * math.cos(k * math.pi / 8),
+                                    _cy + _r * math.sin(k * math.pi / 8))
+                                   for k in range(16)]
+                            _emit_outline_b(_cp, _ow)
+                            if _filled:
+                                _emit_fill_b(_cp)
                     except Exception:
                         pass
     except Exception:

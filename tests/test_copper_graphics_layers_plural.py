@@ -79,14 +79,19 @@ def test_plural_circle_parsed():
           "only the .Cu member becomes copper (F.Mask does not)")
     check(bool(segs) and all(s.net_id == 7 for s in segs),
           "net name resolves through the plural form")
-    check(bool(segs) and all(abs(s.width - 0.1) < 1e-9 for s in segs),
+    # The stroke segments are the drawn outline; a filled shape also carries
+    # interior segments that model its area, and those sit INSIDE the radius.
+    stroke = [s for s in segs if not getattr(s, 'area_fill', False)]
+    check(bool(stroke) and all(abs(s.width - 0.1) < 1e-9 for s in stroke),
           "stroke width survives")
-    # the disc is closed: every emitted vertex is within r of the centre
+    # the disc is closed: every outline vertex is on r, and no copper beyond it
     import math
-    ok = bool(segs) and all(
-        abs(math.hypot(s.start_x - 35.9791, s.start_y - 40.2336) - 1.6) < 1e-6
-        for s in segs)
-    check(ok, "emitted outline sits on the disc's true radius (1.6 mm)")
+    def _r(s):
+        return math.hypot(s.start_x - 35.9791, s.start_y - 40.2336)
+    check(bool(stroke) and all(abs(_r(s) - 1.6) < 1e-6 for s in stroke),
+          "emitted outline sits on the disc's true radius (1.6 mm)")
+    check(bool(segs) and all(_r(s) <= 1.6 + 1e-6 for s in segs),
+          "no modelled copper reaches beyond the disc")
 
 
 def test_singular_still_parsed():
