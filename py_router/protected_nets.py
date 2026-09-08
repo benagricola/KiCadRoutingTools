@@ -305,6 +305,28 @@ def locked_net_names(pcb_data) -> Set[str]:
             if i in pcb_data.nets and pcb_data.nets[i].name}
 
 
+def graphic_net_names(pcb_data) -> Set[str]:
+    """Nets whose copper includes immutable ART (#337).
+
+    A net-tagged copper graphic is real copper that no routing pass may remove:
+    the writer splices the original file text, so the art is still there
+    afterwards whatever the model did. Ripping such a net therefore cannot free
+    the corridor its art occupies - the ripper deletes the net's tracks, the
+    blocked net routes through a corridor that is still full, and the board
+    ships a short.
+
+    Measured on a 56 mm board with hand-shaped pours: six nets whose ONLY
+    copper is a filled polygon were ripped as blockers, and one of them put a
+    victim net's via and two tracks inside a live 5V pour.
+
+    Same rule and same reason as locked copper above - any of it makes the net
+    unrippable, because a partial rip strands what it could not take."""
+    ids = {s.net_id for s in pcb_data.segments if getattr(s, 'graphic', False)}
+    ids.discard(0)
+    return {pcb_data.nets[i].name for i in ids
+            if i in pcb_data.nets and pcb_data.nets[i].name}
+
+
 def cached_protection_map(pcb_data, input_file: Optional[str] = None) -> Dict[str, str]:
     """protection_map(), memoized per pcb_data for the in-run rip ladders.
 
@@ -324,10 +346,12 @@ def cached_protection_map(pcb_data, input_file: Optional[str] = None) -> Dict[st
 
 
 def protection_map(pcb_data, input_file: Optional[str] = None) -> Dict[str, str]:
-    """Full protection map for a board: the .kicad_pro list plus nets with
-    KiCad-locked copper. 'locked' wins where both apply -- unlike the .pro
-    reasons it has NO exact-name override (locked means never)."""
+    """Full protection map for a board: the .kicad_pro list, nets carrying
+    immutable copper art, and nets with KiCad-locked copper. 'locked' wins
+    where both apply -- unlike the .pro reasons it has NO exact-name override
+    (locked means never)."""
     m = read_for_pcb_data(pcb_data, input_file)
+    m.update({n: 'graphic' for n in graphic_net_names(pcb_data)})
     m.update({n: 'locked' for n in locked_net_names(pcb_data)})
     return m
 
