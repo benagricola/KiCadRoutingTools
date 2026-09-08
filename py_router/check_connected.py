@@ -423,6 +423,24 @@ def bare_pad_nets(pcb_data, exclude_net_ids=None,
     return bare
 
 
+def conducts(seg) -> bool:
+    """Does this segment carry current in the connectivity model?
+
+    Net-tagged copper GRAPHICS are DRC-real copper but not, in general, a join
+    this model may credit: it only sees the strokes someone drew, so a cluster
+    that merely touches a card-edge finger looks joined when it is not
+    (opengammakit shipped 5 nets open while this model read them connected).
+    That reasoning is about copper whose SHAPE is not modelled.
+
+    A FILLED shape is different: its interior is modelled (`area_fill` bands
+    from the parser), so a join through it is as verifiable as one through a
+    zone -- and KiCad joins pads through a filled net-tagged polygon, measured
+    on KiCad 10 by deleting one and watching its net fall from 3 unconnected
+    pairs to 8. Those segments conduct; unfilled art still does not.
+    """
+    return (not getattr(seg, 'graphic', False)) or getattr(seg, 'area_fill', False)
+
+
 def net_copper_fragments(net_id, segments, vias, pads, zones=None,
                          pcb_data=None, tolerance: float = 0.02) -> Dict:
     """Strict-fragment census: one strict_fragments=True graph build +
@@ -1111,15 +1129,15 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
 
     # Add segment endpoints
     for seg_idx, seg in enumerate(segments):
-        if getattr(seg, 'graphic', False):
-            # Net-tagged copper GRAPHICS (gr_line/gr_rect fingers etc.) are
-            # DRC-real obstacles but NOT electrical connections: KiCad's
-            # connectivity engine never credits them, so copper that only
-            # joins "through" a graphic is electrically split (#513 item 6 --
-            # opengammakit shipped 5 nets open while this model read them
-            # connected through the card-edge finger graphics). Allocate the
-            # two point ids (callers rely on "segment i -> ids 2i / 2i+1")
-            # but keep the points out of the join graph entirely.
+        if not conducts(seg):
+            # UNFILLED net-tagged copper art (card-edge fingers and the like):
+            # DRC-real obstacles but not a join this model may credit, because
+            # only the stroke is modelled (#513 item 6 -- opengammakit shipped
+            # 5 nets open while this model read them connected through the
+            # finger graphics). Allocate the two point ids (callers rely on
+            # "segment i -> ids 2i / 2i+1") but keep the points out of the
+            # join graph entirely. A FILLED shape's interior IS modelled, so
+            # its bands conduct -- see conducts().
             point_id += 2
             continue
         start_id = point_id
@@ -1389,8 +1407,8 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
     if pad_repr_id and segments:
         endpoint_index = SpatialIndex(cell_size=1.0)
         for seg_idx, seg in enumerate(segments):
-            if getattr(seg, 'graphic', False):
-                continue  # graphics never conduct (#513 item 6, see above)
+            if not conducts(seg):
+                continue  # unfilled art does not conduct (see conducts())
             if seg.layer.endswith('.Cu'):
                 endpoint_index.add(seg.start_x, seg.start_y, seg.layer, seg_idx * 2, seg.width)
                 endpoint_index.add(seg.end_x, seg.end_y, seg.layer, seg_idx * 2 + 1, seg.width)
@@ -1417,9 +1435,9 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
     _max_reach = max((max_point_size + max_seg_width) / 2, tolerance)
     seg_index = SegmentIndex(cell_size=max(_max_reach * 1.01, 0.05))
     for seg_idx, seg in enumerate(segments):
-        if getattr(seg, 'graphic', False):
-            continue  # graphics never conduct (#513 item 6): a point lying on
-            # a graphic must not union through it (T-junction/through-pad rules)
+        if not conducts(seg):
+            continue  # unfilled art does not conduct (see conducts()): a point
+            # lying on it must not union through it (T-junction/through-pad)
         seg_start_id = seg_idx * 2
         seg_index.add(seg, seg_start_id)
 
