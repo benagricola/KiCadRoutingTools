@@ -1126,6 +1126,35 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                         net_id=net_id))
                 if not _tsegs and not _tvias:
                     continue
+                # Would-short guard, same doctrine as the fanout-rescue escape
+                # above (#468): at rescue time the board is ROUTED, and the tap
+                # planner's own conflict model does not cover this run's copper
+                # or a filled copper graphic. Unguarded, this rung shipped a
+                # dogbone via into the middle of a net-tagged pour - the A*
+                # path had already refused the same net for 313721 iterations
+                # BECAUSE the pour blocks, and then this landed copper in it,
+                # after which ordinary routing to the new via dragged two more
+                # tracks in. Decline like any other no-escape outcome.
+                _short_tap = None
+                for _sg7 in _tsegs:
+                    if not _leg_clear(pcb_data,
+                                      [(_sg7.start_x, _sg7.start_y),
+                                       (_sg7.end_x, _sg7.end_y)],
+                                      _sg7.layer, _sg7.width,
+                                      config.clearance, net_id):
+                        _short_tap = 'seg'
+                        break
+                if _short_tap is None:
+                    for _v7 in _tvias:
+                        if not _via_site_clear(pcb_data, _v7.x, _v7.y,
+                                               config, net_id):
+                            _short_tap = 'via'
+                            break
+                if _short_tap is not None:
+                    print(f"    bare-ball escape: {_pad.component_ref}."
+                          f"{_pad.pad_number} dogbone declined "
+                          f"({_short_tap} would short routed copper)")
+                    continue
                 pcb_data.segments.extend(_tsegs)
                 pcb_data.vias.extend(_tvias)
                 # #803: bump the copper epoch (see the sibling append above).
