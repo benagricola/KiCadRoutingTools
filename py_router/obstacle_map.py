@@ -3351,6 +3351,27 @@ def _assemble_net_tie_lifts(corridors, recorded, layer_map):
     return lifts
 
 
+def _rows_not_in(a, b):
+    """Rows of `a` that are not rows of `b` (both Nx2 int arrays)."""
+    if not len(a):
+        return a
+    if not len(b):
+        return a
+    av = a[:, 0].astype(np.int64) << 32 | (a[:, 1].astype(np.int64) & 0xffffffff)
+    bv = b[:, 0].astype(np.int64) << 32 | (b[:, 1].astype(np.int64) & 0xffffffff)
+    return a[~np.isin(av, bv)]
+
+
+def _batch_diag_cells_one_layer(obstacles, cells, layer_idx):
+    """Mark cells crossable straight but not diagonally on one layer."""
+    if not len(cells):
+        return
+    arr = np.empty((len(cells), 3), dtype=np.int32)
+    arr[:, 0:2] = cells
+    arr[:, 2] = layer_idx
+    obstacles.add_diag_blocked_cells_batch(arr)
+
+
 def _add_pad_obstacle(obstacles: GridObstacleMap, pad, coord: GridCoord,
                       layer_map: Dict[str, int], config: GridRouteConfig,
                       extra_clearance: float = 0.0,
@@ -3484,17 +3505,33 @@ def _add_pad_obstacle(obstacles: GridObstacleMap, pad, coord: GridCoord,
     # rare skip_cell path (per-cell Python predicate, used for connector
     # exemptions) filters the array with the same predicate.
     for g_clr, g_idxs in _clr_groups(expanded_layers).items():
-        cells = pad_blocked_cells_array(gx, gy, half_width, half_height,
-                                        config.track_width / 2 + g_clr + extra_clearance,
+        margin = config.track_width / 2 + g_clr + extra_clearance
+        # TWO sets, not one. Cells within the margin are blocked outright. The
+        # corner-region ring BEYOND the margin is only a hazard to a DIAGONAL
+        # step, whose midpoint leaves the line the cell centres sit on; an
+        # axis-aligned step through those cells keeps exactly the margin,
+        # because there the cell centre IS the track centre. Blocking the ring
+        # outright closes the straight path too, and on a fine-pitch escape
+        # lane the straight path is the only one there is.
+        hard = pad_blocked_cells_array(gx, gy, half_width, half_height, margin,
+                                       config.grid_step, corner_radius, 0.0,
+                                       off_x, off_y, rotation_deg=pad.rect_rotation)
+        cells = pad_blocked_cells_array(gx, gy, half_width, half_height, margin,
                                         config.grid_step, corner_radius, corner_buffer,
                                         off_x, off_y, rotation_deg=pad.rect_rotation)
         if skip_cell is not None and len(cells):
             keep = np.fromiter((not skip_cell(int(cx), int(cy)) for cx, cy in cells),
                                dtype=bool, count=len(cells))
             cells = cells[keep]
+        if skip_cell is not None and len(hard):
+            keep = np.fromiter((not skip_cell(int(cx), int(cy)) for cx, cy in hard),
+                               dtype=bool, count=len(hard))
+            hard = hard[keep]
+        ring = _rows_not_in(cells, hard)
         for layer_idx in g_idxs:
-            _batch_cells_one_layer(obstacles, cells, layer_idx, blocked_cells,
+            _batch_cells_one_layer(obstacles, hard, layer_idx, blocked_cells,
                                    sink=cell_sink)
+            _batch_diag_cells_one_layer(obstacles, ring, layer_idx)
 
     # Via blocking near pads - block vias if pad is on any copper layer
     if any(layer.endswith('.Cu') for layer in expanded_layers):

@@ -217,6 +217,15 @@ pub struct GridObstacleMap {
     /// copper layers, so one layer suffices (matches `blocked_vias` being a single
     /// map, not per-layer).
     static_via_bitmap: BlockedBitmap,
+    /// Cells a track may cross STRAIGHT but not DIAGONALLY. A cell in the
+    /// corner region of a pad clears it by the margin measured centre to
+    /// centre, which is exactly what an axis-aligned step through the cell
+    /// keeps - the cell centre IS the track centre. A diagonal step's midpoint
+    /// leaves that line and can come closer, so only the diagonal has to be
+    /// refused. Blocking the cell outright (what the corner buffer used to do)
+    /// also closes the straight path, and on a fine-pitch escape lane the
+    /// straight path is the only one there is.
+    diag_blocked_bitmap: BlockedBitmap,
     /// Blocked via positions: packed (gx, gy) -> ref count
     pub blocked_vias: FxHashMap<u64, u16>,
     /// #568 / #530: via blocking at every OTHER via geometry a search may use,
@@ -273,6 +282,7 @@ impl GridObstacleMap {
             blocked_bitmap: BlockedBitmap::new(num_layers),
             static_blocked_bitmap: BlockedBitmap::new(num_layers),
             static_via_bitmap: BlockedBitmap::new(1),
+            diag_blocked_bitmap: BlockedBitmap::new(num_layers),
             blocked_vias: FxHashMap::default(),
             blocked_vias_rungs: Vec::new(),
             stub_proximity: FxHashMap::default(),
@@ -330,6 +340,7 @@ impl GridObstacleMap {
             blocked_bitmap: self.blocked_bitmap.clone(),
             static_blocked_bitmap: self.static_blocked_bitmap.clone(),
             static_via_bitmap: self.static_via_bitmap.clone(),
+            diag_blocked_bitmap: self.diag_blocked_bitmap.clone(),
             blocked_vias: self.blocked_vias.clone(),
             blocked_vias_rungs: self.blocked_vias_rungs.clone(),
             stub_proximity: self.stub_proximity.clone(),
@@ -357,6 +368,7 @@ impl GridObstacleMap {
             blocked_bitmap: self.blocked_bitmap.clone(),
             static_blocked_bitmap: self.static_blocked_bitmap.clone(),
             static_via_bitmap: self.static_via_bitmap.clone(),
+            diag_blocked_bitmap: self.diag_blocked_bitmap.clone(),
             blocked_vias: self.blocked_vias.clone(),
             blocked_vias_rungs: self.blocked_vias_rungs.clone(),
             stub_proximity: self.stub_proximity.clone(),
@@ -1080,6 +1092,29 @@ impl GridObstacleMap {
 
     /// Check if cell is blocked
     #[inline]
+    /// Mark a cell crossable straight but not diagonally (see the field).
+    pub fn add_diag_blocked_cell(&mut self, gx: i32, gy: i32, layer: usize) {
+        if layer < self.num_layers {
+            self.diag_blocked_bitmap.set(gx, gy, layer);
+        }
+    }
+
+    /// Batch twin of add_diag_blocked_cell: rows of (gx, gy, layer).
+    pub fn add_diag_blocked_cells_batch(&mut self, cells: PyReadonlyArray2<i32>) {
+        let a = cells.as_array();
+        for row in a.rows() {
+            let (gx, gy, layer) = (row[0], row[1], row[2] as usize);
+            if layer < self.num_layers {
+                self.diag_blocked_bitmap.set(gx, gy, layer);
+            }
+        }
+    }
+
+    /// Is this cell closed to DIAGONAL travel?
+    pub fn is_diag_blocked(&self, gx: i32, gy: i32, layer: usize) -> bool {
+        self.diag_blocked_bitmap.test(gx, gy, layer)
+    }
+
     pub fn is_blocked(&self, gx: i32, gy: i32, layer: usize) -> bool {
         if layer >= self.num_layers {
             return true;
@@ -1158,6 +1193,14 @@ impl GridObstacleMap {
     #[inline]
     pub fn segment_blocked(&self, gx1: i32, gy1: i32, gx2: i32, gy2: i32,
                            layer: usize, r: f64) -> bool {
+        // A diagonal step may neither enter nor leave a cell whose clearance
+        // only holds for axis-aligned travel. Checked first: it is two bit
+        // loads and it applies whatever the margin is.
+        if gx1 != gx2 && gy1 != gy2
+            && (self.is_diag_blocked(gx1, gy1, layer)
+                || self.is_diag_blocked(gx2, gy2, layer)) {
+            return true;
+        }
         if r <= 0.0 {
             return self.is_blocked(gx2, gy2, layer);
         }
@@ -1512,5 +1555,92 @@ impl GridObstacleMap {
             self.blocked_vias_rungs.push(FxHashMap::default());
         }
         &mut self.blocked_vias_rungs[idx]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The crate had no tests at all: `crate-type = ["cdylib"]` gave the
+    //! harness nothing to link, so every behaviour here was only ever
+    //! exercised through the FFI from Python. These cover the obstacle map's
+    //! own contract, starting with the pieces the diagonal restriction builds
+    //! on.
+    use super::*;
+
+    fn map() -> GridObstacleMap {
+        GridObstacleMap::new(2)
+    }
+
+    #[test]
+    fn blocked_cell_round_trip() {
+        let mut m = map();
+        assert!(!m.is_blocked(5, 5, 0), "a fresh map blocks nothing");
+        m.add_blocked_cell(5, 5, 0);
+        assert!(m.is_blocked(5, 5, 0));
+        assert!(!m.is_blocked(5, 5, 1), "blocking is per layer");
+        assert!(!m.is_blocked(6, 5, 0), "and per cell");
+    }
+
+    #[test]
+    fn refcount_holds_a_cell_until_every_owner_leaves() {
+        let mut m = map();
+        m.add_blocked_cell(1, 1, 0);
+        m.add_blocked_cell(1, 1, 0);
+        assert!(m.is_blocked(1, 1, 0));
+    }
+
+    #[test]
+    fn segment_blocked_reads_the_destination_when_there_is_no_margin() {
+        let mut m = map();
+        m.add_blocked_cell(3, 0, 0);
+        assert!(m.segment_blocked(2, 0, 3, 0, 0, 0.0), "a step INTO a blocked cell");
+        assert!(!m.segment_blocked(0, 0, 1, 0, 0, 0.0), "a step into a free one");
+    }
+
+    // ---- the diagonal restriction (a cell open straight, closed diagonally) --
+
+    #[test]
+    fn a_diag_restricted_cell_is_open_to_axis_aligned_travel() {
+        let mut m = map();
+        m.add_diag_blocked_cell(5, 5, 0);
+        assert!(!m.is_blocked(5, 5, 0),
+                "the ordinary test still calls it free - that is the point");
+        assert!(!m.segment_blocked(4, 5, 5, 5, 0, 0.0), "a straight step in");
+        assert!(!m.segment_blocked(5, 5, 6, 5, 0, 0.0), "a straight step out");
+        assert!(!m.segment_blocked(5, 4, 5, 5, 0, 0.0), "and the same vertically");
+    }
+
+    #[test]
+    fn a_diag_restricted_cell_refuses_diagonal_travel() {
+        let mut m = map();
+        m.add_diag_blocked_cell(5, 5, 0);
+        assert!(m.segment_blocked(4, 4, 5, 5, 0, 0.0), "a diagonal step IN");
+        assert!(m.segment_blocked(5, 5, 6, 6, 0, 0.0), "a diagonal step OUT");
+        assert!(m.segment_blocked(6, 4, 5, 5, 0, 0.0), "either diagonal");
+    }
+
+    #[test]
+    fn the_restriction_is_per_cell_and_per_layer() {
+        let mut m = map();
+        m.add_diag_blocked_cell(5, 5, 0);
+        assert!(!m.segment_blocked(0, 0, 1, 1, 0, 0.0), "an untouched cell");
+        assert!(!m.segment_blocked(4, 4, 5, 5, 1, 0.0), "the other layer");
+    }
+
+    #[test]
+    fn a_blocked_cell_stays_blocked_both_ways() {
+        let mut m = map();
+        m.add_blocked_cell(5, 5, 0);
+        assert!(m.segment_blocked(4, 5, 5, 5, 0, 0.0), "straight");
+        assert!(m.segment_blocked(4, 4, 5, 5, 0, 0.0), "and diagonal");
+    }
+
+    #[test]
+    fn a_diagonal_step_between_two_restricted_cells_is_refused_once() {
+        let mut m = map();
+        m.add_diag_blocked_cell(5, 5, 0);
+        m.add_diag_blocked_cell(6, 6, 0);
+        assert!(m.segment_blocked(5, 5, 6, 6, 0, 0.0));
+        assert!(!m.segment_blocked(5, 5, 5, 6, 0, 0.0), "still open straight");
     }
 }
