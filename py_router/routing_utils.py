@@ -204,7 +204,7 @@ def iter_pad_blocked_cells(
     # can occur with rectangular pads too. Callers whose geometry adds further
     # sub-grid deviation (diff pair P/N offsets) pass a larger buffer.
     if corner_buffer is None:
-        corner_buffer = _default_corner_buffer(grid_step)
+        corner_buffer = _default_corner_buffer(grid_step, margin)
     # DELIBERATELY NOT MEMOIZED -- do not paste the _PAD_OFFSETS_CACHE
     # fast-path from pad_blocked_cells_array in here. Two reasons:
     #   1. This is a GENERATOR. `return <array>` inside one is not a result,
@@ -267,25 +267,38 @@ _PAD_OFFSETS_ROWS = 0
 _PAD_OFFSETS_ROW_CAP = 2_000_000
 
 
-def _default_corner_buffer(grid_step: float) -> float:
-    """Half a grid step, unless the caller has said otherwise.
+def _default_corner_buffer(grid_step: float, margin: float = 0.0) -> float:
+    """How much further than `margin` a corner-region cell must clear a pad.
 
-    The buffer exists because a DIAGONAL step's midpoint can pass closer to a
-    pad than either of its endpoints, so a cell whose centre clears the pad may
-    still carry a track that does not. It is applied to every cell in the
-    corner region, which also catches AXIS-ALIGNED paths through those cells,
-    where the cell centre IS the track centre and the error is zero.
+    A DIAGONAL step's midpoint can pass closer to a pad than either of its
+    endpoints, so a cell whose centre clears the pad by `margin` may still
+    carry a track that does not. That is real, and it is exactly computable:
+    distance to a convex obstacle is convex, so along a step whose endpoints
+    both sit at M the closest approach is sqrt(M^2 - h^2) with h half the step.
+    Requiring that to be at least `margin` gives
 
-    That over-application has a cost on fine pitch. The lane out of a 0.4 mm
-    pitch pad row with 0.2 mm pads is 0.30 mm from axis to neighbour edge
-    against a demand of track/2 + clearance = 0.30: legal by DRC, and walled
-    off by any buffer at all. KICAD_PAD_CORNER_BUFFER sets it (mm) for a board
-    whose escapes need the exact-clearance lane; the routed result still has to
-    pass DRC, which is what decides whether the trade was sound.
+        M = sqrt(margin^2 + h^2),   h = grid_step * sqrt(2) / 2
+
+    and the buffer is M - margin: 0.008 mm at a 0.1 mm grid and a 0.30 mm
+    margin. It was hard-coded at grid_step / 2, six times that, which walls off
+    lanes a track fits through. As margin tends to zero the bound tends to h,
+    the point-obstacle case.
+
+    It is still charged to CELLS rather than to steps, so it also prices
+    axis-aligned paths through the corner region, where the cell centre is the
+    track centre and the shortfall is zero. A lane at exactly the required
+    clearance - a 0.4 mm pitch row with 0.2 mm pads gives 0.30 mm against a
+    demand of 0.30 - is therefore still blocked by any buffer at all; fixing
+    that needs the restriction to move from the cell to the step.
+
+    KICAD_PAD_CORNER_BUFFER overrides in mm.
     """
     import env_knobs
     v = env_knobs._f('KICAD_PAD_CORNER_BUFFER', -1.0)
-    return grid_step / 2 if v < 0 else v
+    if v >= 0:
+        return v
+    h = grid_step * math.sqrt(2.0) / 2.0
+    return math.sqrt(margin * margin + h * h) - margin
 
 
 def pad_blocked_cells_array(
@@ -324,7 +337,7 @@ def pad_blocked_cells_array(
     case) takes the original bit-identical code path.
     """
     if corner_buffer is None:
-        corner_buffer = _default_corner_buffer(grid_step)
+        corner_buffer = _default_corner_buffer(grid_step, margin)
     key = (half_width, half_height, margin, grid_step, corner_radius,
            corner_buffer, off_x, off_y, rotation_deg)
     offs = _PAD_OFFSETS_CACHE.get(key)
