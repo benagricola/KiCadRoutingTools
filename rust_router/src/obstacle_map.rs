@@ -226,6 +226,14 @@ pub struct GridObstacleMap {
     /// also closes the straight path, and on a fine-pitch escape lane the
     /// straight path is the only one there is.
     diag_blocked_bitmap: BlockedBitmap,
+    /// Reference counts behind `diag_blocked_bitmap`, the same discipline
+    /// `blocked_cells` keeps behind `blocked_bitmap`: the per-net obstacle
+    /// cache adds a net's rings before routing its neighbours and removes them
+    /// to route the net itself, and two pads' rings overlap, so a plain bit
+    /// would be cleared by whichever owner left first. The bitmap is written
+    /// only at the 0->1 and 1->0 transitions, in these functions and nowhere
+    /// else.
+    diag_blocked_cells: Vec<FxHashMap<u64, u16>>,
     /// Blocked via positions: packed (gx, gy) -> ref count
     pub blocked_vias: FxHashMap<u64, u16>,
     /// #568 / #530: via blocking at every OTHER via geometry a search may use,
@@ -283,6 +291,7 @@ impl GridObstacleMap {
             static_blocked_bitmap: BlockedBitmap::new(num_layers),
             static_via_bitmap: BlockedBitmap::new(1),
             diag_blocked_bitmap: BlockedBitmap::new(num_layers),
+            diag_blocked_cells: (0..num_layers).map(|_| FxHashMap::default()).collect(),
             blocked_vias: FxHashMap::default(),
             blocked_vias_rungs: Vec::new(),
             stub_proximity: FxHashMap::default(),
@@ -341,6 +350,7 @@ impl GridObstacleMap {
             static_blocked_bitmap: self.static_blocked_bitmap.clone(),
             static_via_bitmap: self.static_via_bitmap.clone(),
             diag_blocked_bitmap: self.diag_blocked_bitmap.clone(),
+            diag_blocked_cells: self.diag_blocked_cells.clone(),
             blocked_vias: self.blocked_vias.clone(),
             blocked_vias_rungs: self.blocked_vias_rungs.clone(),
             stub_proximity: self.stub_proximity.clone(),
@@ -369,6 +379,7 @@ impl GridObstacleMap {
             static_blocked_bitmap: self.static_blocked_bitmap.clone(),
             static_via_bitmap: self.static_via_bitmap.clone(),
             diag_blocked_bitmap: self.diag_blocked_bitmap.clone(),
+            diag_blocked_cells: self.diag_blocked_cells.clone(),
             blocked_vias: self.blocked_vias.clone(),
             blocked_vias_rungs: self.blocked_vias_rungs.clone(),
             stub_proximity: self.stub_proximity.clone(),
@@ -1093,9 +1104,30 @@ impl GridObstacleMap {
     /// Check if cell is blocked
     #[inline]
     /// Mark a cell crossable straight but not diagonally (see the field).
+    /// Reference counted: two pads' corner rings overlap.
     pub fn add_diag_blocked_cell(&mut self, gx: i32, gy: i32, layer: usize) {
         if layer < self.num_layers {
-            self.diag_blocked_bitmap.set(gx, gy, layer);
+            let key = pack_xy(gx, gy);
+            let cnt = self.diag_blocked_cells[layer].entry(key).or_insert(0);
+            *cnt += 1;
+            if *cnt == 1 {
+                self.diag_blocked_bitmap.set(gx, gy, layer);
+            }
+        }
+    }
+
+    /// Drop one owner's claim on a diagonal-restricted cell.
+    pub fn remove_diag_blocked_cell(&mut self, gx: i32, gy: i32, layer: usize) {
+        if layer < self.num_layers {
+            let key = pack_xy(gx, gy);
+            if let Some(count) = self.diag_blocked_cells[layer].get_mut(&key) {
+                if *count > 1 {
+                    *count -= 1;
+                } else {
+                    self.diag_blocked_cells[layer].remove(&key);
+                    self.diag_blocked_bitmap.clear(gx, gy, layer);
+                }
+            }
         }
     }
 
@@ -1103,10 +1135,15 @@ impl GridObstacleMap {
     pub fn add_diag_blocked_cells_batch(&mut self, cells: PyReadonlyArray2<i32>) {
         let a = cells.as_array();
         for row in a.rows() {
-            let (gx, gy, layer) = (row[0], row[1], row[2] as usize);
-            if layer < self.num_layers {
-                self.diag_blocked_bitmap.set(gx, gy, layer);
-            }
+            self.add_diag_blocked_cell(row[0], row[1], row[2] as usize);
+        }
+    }
+
+    /// Batch twin of remove_diag_blocked_cell: rows of (gx, gy, layer).
+    pub fn remove_diag_blocked_cells_batch(&mut self, cells: PyReadonlyArray2<i32>) {
+        let a = cells.as_array();
+        for row in a.rows() {
+            self.remove_diag_blocked_cell(row[0], row[1], row[2] as usize);
         }
     }
 
@@ -1642,5 +1679,48 @@ mod tests {
         m.add_diag_blocked_cell(6, 6, 0);
         assert!(m.segment_blocked(5, 5, 6, 6, 0, 0.0));
         assert!(!m.segment_blocked(5, 5, 5, 6, 0, 0.0), "still open straight");
+    }
+
+    // ---- refcounting, so the per-net cache can add and remove ------------
+
+    #[test]
+    fn diag_add_then_remove_leaves_the_cell_open() {
+        let mut m = map();
+        m.add_diag_blocked_cell(5, 5, 0);
+        assert!(m.is_diag_blocked(5, 5, 0));
+        m.remove_diag_blocked_cell(5, 5, 0);
+        assert!(!m.is_diag_blocked(5, 5, 0), "add then remove is a no-op");
+        assert!(!m.segment_blocked(4, 4, 5, 5, 0, 0.0), "and the diagonal is back");
+    }
+
+    #[test]
+    fn two_owners_of_a_diag_cell_both_have_to_leave() {
+        let mut m = map();
+        m.add_diag_blocked_cell(5, 5, 0);
+        m.add_diag_blocked_cell(5, 5, 0);
+        m.remove_diag_blocked_cell(5, 5, 0);
+        assert!(m.is_diag_blocked(5, 5, 0),
+                "one owner left, the other still holds it - a shared corner ring");
+        m.remove_diag_blocked_cell(5, 5, 0);
+        assert!(!m.is_diag_blocked(5, 5, 0));
+    }
+
+    #[test]
+    fn removing_a_diag_cell_nobody_added_is_harmless() {
+        let mut m = map();
+        m.remove_diag_blocked_cell(9, 9, 0);
+        assert!(!m.is_diag_blocked(9, 9, 0));
+        m.add_diag_blocked_cell(9, 9, 0);
+        assert!(m.is_diag_blocked(9, 9, 0), "and does not corrupt a later add");
+    }
+
+    #[test]
+    fn the_two_planes_do_not_share_refcounts() {
+        let mut m = map();
+        m.add_blocked_cell(5, 5, 0);
+        m.add_diag_blocked_cell(5, 5, 0);
+        m.remove_diag_blocked_cell(5, 5, 0);
+        assert!(m.is_blocked(5, 5, 0), "the hard block is untouched");
+        assert!(!m.is_diag_blocked(5, 5, 0));
     }
 }

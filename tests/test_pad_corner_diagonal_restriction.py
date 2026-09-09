@@ -94,12 +94,49 @@ def test_the_ring_is_what_the_pad_pass_marks():
           "5b: and disjoint from the cells blocked outright")
 
 
+def test_cache_add_then_remove_leaves_the_diagonal_plane_empty():
+    """The per-net cache adds a net's rings and removes them to route that net.
+    If the remove misses any of them the restriction leaks onto every net routed
+    afterwards, silently and forever."""
+    import numpy as np
+    from obstacle_cache import (NetObstacleData, add_net_obstacles_from_cache,
+                                remove_net_obstacles_from_cache)
+    m = GridObstacleMap(2)
+    cells = np.array([[1, 1, 0], [2, 2, 0], [3, 3, 1]], dtype=np.int32)
+    data = NetObstacleData(diag_cells=cells)
+    add_net_obstacles_from_cache(m, data)
+    check(all(m.is_diag_blocked(int(a), int(b), int(l)) for a, b, l in cells),
+          "6: the cache add marks every ring cell")
+    remove_net_obstacles_from_cache(m, data)
+    check(not any(m.is_diag_blocked(int(a), int(b), int(l)) for a, b, l in cells),
+          "6b: and the remove leaves none of them behind")
+
+
+def test_two_nets_sharing_a_ring_cell():
+    """Overlapping rings: the first net to leave must not open the cell."""
+    import numpy as np
+    from obstacle_cache import (NetObstacleData, add_net_obstacles_from_cache,
+                                remove_net_obstacles_from_cache)
+    m = GridObstacleMap(1)
+    shared = np.array([[4, 4, 0]], dtype=np.int32)
+    a = NetObstacleData(diag_cells=shared)
+    b = NetObstacleData(diag_cells=shared.copy())
+    add_net_obstacles_from_cache(m, a)
+    add_net_obstacles_from_cache(m, b)
+    remove_net_obstacles_from_cache(m, a)
+    check(m.is_diag_blocked(4, 4, 0), "7: the second net still holds the shared cell")
+    remove_net_obstacles_from_cache(m, b)
+    check(not m.is_diag_blocked(4, 4, 0), "7b: and it opens when both have gone")
+
+
 if __name__ == '__main__':
     for fn in (test_the_two_planes_are_independent,
                test_straight_through_diagonal_around,
                test_a_lane_one_cell_wide_stays_walkable,
                test_batch_matches_single,
-               test_the_ring_is_what_the_pad_pass_marks):
+               test_the_ring_is_what_the_pad_pass_marks,
+               test_cache_add_then_remove_leaves_the_diagonal_plane_empty,
+               test_two_nets_sharing_a_ring_cell):
         print(fn.__name__)
         fn()
     print()
