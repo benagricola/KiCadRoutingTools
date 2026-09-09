@@ -529,6 +529,10 @@ class NetObstacleData:
     # row-deduplicated: two overlapping same-net capsules refcount a shared
     # cell twice, which is harmless precisely because the remove is symmetric.
     blocked_cell_spans: np.ndarray = field(default_factory=lambda: np.empty((0, 4), dtype=np.int32))
+    # Cells this net's pads close to DIAGONAL travel only - the corner ring
+    # beyond the margin. Added and removed in lockstep with blocked_cells; the
+    # plane is refcounted in Rust because two pads' rings overlap.
+    diag_cells: np.ndarray = field(default_factory=lambda: np.empty((0, 3), dtype=np.int32))
     blocked_via_spans: np.ndarray = field(default_factory=lambda: np.empty((0, 3), dtype=np.int32))
 
 
@@ -666,6 +670,7 @@ def precompute_net_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
     # Collect cell arrays; deduplicated with np.unique at the end (same
     # unique-cell semantics as the per-cell sets this replaces)
     blocked_cells_set: List["np.ndarray"] = []
+    diag_cells_set: List["np.ndarray"] = []
     blocked_vias_set: List["np.ndarray"] = []
     # #815: segment keep-outs accumulate here in SPAN form; pads and vias stay
     # in the cell lists above (they come from integer offset tables, not the
@@ -810,7 +815,8 @@ def precompute_net_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
     for pad in pads:
         _collect_pad_obstacles(pad, coord, layer_map, config, extra_clearance,
                                 blocked_cells_set, blocked_vias_set,
-                                obs_clearance=obs_clearance)
+                                obs_clearance=obs_clearance,
+                                diag_cells=diag_cells_set)
 
     # Concatenate and deduplicate (the Rust map refcounts batch adds, so
     # each cell must appear once per net - same as the old set semantics)
@@ -834,8 +840,14 @@ def precompute_net_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
                              if blocked_via_spans_set
                              else np.empty((0, 3), dtype=np.int32))
 
+    # Deduplicated like blocked_cells: one row per cell per net, so the add and
+    # the remove walk the same multiset and the refcount comes back to zero.
+    diag_cells_arr = (_unique_rows(np.concatenate(diag_cells_set))
+                      if diag_cells_set else np.empty((0, 3), dtype=np.int32))
+
     data = NetObstacleData(
         blocked_cells=blocked_cells_arr,
+        diag_cells=diag_cells_arr,
         blocked_vias=blocked_vias_arr,
         blocked_cell_spans=blocked_cell_spans_arr,
         blocked_via_spans=blocked_via_spans_arr,
@@ -981,7 +993,8 @@ def _collect_pad_obstacles(pad, coord: GridCoord, layer_map: Dict[str, int],
                             config: GridRouteConfig, extra_clearance: float,
                             blocked_cells: List["np.ndarray"],
                             blocked_vias: List["np.ndarray"],
-                            obs_clearance: float = None):
+                            obs_clearance: float = None,
+                            diag_cells: List["np.ndarray"] = None):
     """Collect pad obstacle cells into sets (no obstacle map modification).
 
     Uses rectangular-with-rounded-corners pattern matching other pad blocking functions.
@@ -991,6 +1004,8 @@ def _collect_pad_obstacles(pad, coord: GridCoord, layer_map: Dict[str, int],
     """
     if obs_clearance is None:
         obs_clearance = config.clearance
+    if diag_cells is None:
+        diag_cells = []
     gx, gy = coord.to_grid(pad.global_x, pad.global_y)
     # Sub-cell offset of the real pad center from its grid cell (issue #70).
     off_x = pad.global_x - gx * coord.grid_step
@@ -1080,16 +1095,31 @@ def _collect_pad_obstacles(pad, coord: GridCoord, layer_map: Dict[str, int],
     # Batched rasterization (issue #35): same cell sets as the generator
     # (pad_blocked_cells_array is bit-identical to iter_pad_blocked_cells)
     for g_clr, g_idxs in _clr_groups(expanded_layers).items():
-        cells = pad_blocked_cells_array(gx, gy, half_width, half_height,
-                                        config.track_width / 2 + g_clr + extra_clearance,
+        margin = config.track_width / 2 + g_clr + extra_clearance
+        # Two sets, as the base-map pad pass does: within the margin is blocked
+        # outright, the corner ring beyond it only closes a DIAGONAL step. This
+        # is the path the routing loop actually uses, so a pad whose ring is
+        # blocked here walls off the escape lane of every net beside it.
+        hard = pad_blocked_cells_array(gx, gy, half_width, half_height, margin,
+                                       config.grid_step, corner_radius, 0.0,
+                                       off_x=off_x, off_y=off_y,
+                                       rotation_deg=pad.rect_rotation)
+        cells = pad_blocked_cells_array(gx, gy, half_width, half_height, margin,
                                         config.grid_step, corner_radius,
                                         off_x=off_x, off_y=off_y,
                                         rotation_deg=pad.rect_rotation)
+        from obstacle_map import _rows_not_in
+        ring = _rows_not_in(cells, hard)
         for layer_idx in g_idxs:
-            rows = np.empty((len(cells), 3), dtype=np.int32)
-            rows[:, :2] = cells
+            rows = np.empty((len(hard), 3), dtype=np.int32)
+            rows[:, :2] = hard
             rows[:, 2] = layer_idx
             blocked_cells.append(rows)
+            if len(ring):
+                drows = np.empty((len(ring), 3), dtype=np.int32)
+                drows[:, :2] = ring
+                drows[:, 2] = layer_idx
+                diag_cells.append(drows)
 
     # Via blocking around pads
     if any(layer.endswith('.Cu') for layer in expanded_layers):
@@ -1141,6 +1171,8 @@ def add_net_obstacles_from_cache(obstacles: GridObstacleMap, cache_data: NetObst
     if len(cache_data.blocked_cells) > 0:
         # Pass numpy array directly to Rust (no conversion needed)
         obstacles.add_blocked_cells_batch(cache_data.blocked_cells)
+    if len(cache_data.diag_cells) > 0:
+        obstacles.add_diag_blocked_cells_batch(cache_data.diag_cells)
     if len(cache_data.blocked_vias) > 0:
         obstacles.add_blocked_vias_batch(cache_data.blocked_vias)
     # #815: segment keep-outs, expanded in Rust. Must be mirrored EXACTLY by
@@ -1177,6 +1209,8 @@ def remove_net_obstacles_from_cache(obstacles: GridObstacleMap, cache_data: NetO
         _ledger_cache_op("remove", obstacles, cache_data)
     if len(cache_data.blocked_cells) > 0:
         obstacles.remove_blocked_cells_batch(cache_data.blocked_cells)
+    if len(cache_data.diag_cells) > 0:
+        obstacles.remove_diag_blocked_cells_batch(cache_data.diag_cells)
     if len(cache_data.blocked_vias) > 0:
         obstacles.remove_blocked_vias_batch(cache_data.blocked_vias)
     # #815: exact mirror of the add above -- same arrays, same order.
