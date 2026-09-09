@@ -204,7 +204,7 @@ def iter_pad_blocked_cells(
     # can occur with rectangular pads too. Callers whose geometry adds further
     # sub-grid deviation (diff pair P/N offsets) pass a larger buffer.
     if corner_buffer is None:
-        corner_buffer = grid_step / 2
+        corner_buffer = _default_corner_buffer(grid_step)
     # The sub-cell offset to a nanometre, as in pad_blocked_cells_array
     # (its bit-identical twin): the one absolute-coordinate input.
     off_x = round(off_x, 9)
@@ -271,6 +271,27 @@ _PAD_OFFSETS_ROWS = 0
 _PAD_OFFSETS_ROW_CAP = 2_000_000
 
 
+def _default_corner_buffer(grid_step: float) -> float:
+    """Half a grid step, unless the caller has said otherwise.
+
+    The buffer exists because a DIAGONAL step's midpoint can pass closer to a
+    pad than either of its endpoints, so a cell whose centre clears the pad may
+    still carry a track that does not. It is applied to every cell in the
+    corner region, which also catches AXIS-ALIGNED paths through those cells,
+    where the cell centre IS the track centre and the error is zero.
+
+    That over-application has a cost on fine pitch. The lane out of a 0.4 mm
+    pitch pad row with 0.2 mm pads is 0.30 mm from axis to neighbour edge
+    against a demand of track/2 + clearance = 0.30: legal by DRC, and walled
+    off by any buffer at all. KICAD_PAD_CORNER_BUFFER sets it (mm) for a board
+    whose escapes need the exact-clearance lane; the routed result still has to
+    pass DRC, which is what decides whether the trade was sound.
+    """
+    import env_knobs
+    v = env_knobs._f('KICAD_PAD_CORNER_BUFFER', -1.0)
+    return grid_step / 2 if v < 0 else v
+
+
 def pad_blocked_cells_array(
     pad_gx: int, pad_gy: int,
     half_width: float, half_height: float,
@@ -307,7 +328,7 @@ def pad_blocked_cells_array(
     case) takes the original bit-identical code path.
     """
     if corner_buffer is None:
-        corner_buffer = grid_step / 2
+        corner_buffer = _default_corner_buffer(grid_step)
     # The sub-cell offset is the one input that comes from ABSOLUTE
     # coordinates (pad.global_x - pad_gx*grid_step), and it carries their
     # last-bit noise: the same pad on the same board moved 10 mm arrives
