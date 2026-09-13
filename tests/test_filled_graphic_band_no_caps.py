@@ -20,6 +20,11 @@ Properties:
      point inside it is inside by the nearest edge.
   6. The blame map (which net boxed a failed search in) stamps the same
      rectangle, so a band never gets blamed for cells it does not block.
+  7. The frontier blocker finder (the pre-existing-copper hint after a
+     failed route) reads a band the same way, and in time proportional to
+     the frontier, not to the band's height: it used to scan a window half
+     the band's height around every cell along it, 4 million cells a step,
+     and one failed net cost 160 s of hints.
 
 Run:  python3 tests/test_filled_graphic_band_no_caps.py
 """
@@ -37,6 +42,8 @@ from routing_config import GridRouteConfig
 from obstacle_map import build_base_obstacle_map
 from single_ended_routing import _foreign_edge_dist
 from blocking_analysis import compute_net_obstacle_cells, _unpack_xy
+from plane_blocker_detection import find_route_blocker_from_frontier
+import time
 import numpy as np
 
 FAILS = []
@@ -102,6 +109,14 @@ def main():
     check("6a: inside the pour is blamed", blamed_at(30.0, 110.0))
     check("6b: 20 mm beside the pour is not blamed", not blamed_at(10.0, 110.0))
     check("6c: 1 mm above the pour's top edge is not blamed", not blamed_at(30.0, 9.0))
+    print("frontier blocker attribution to a band")
+    g = lambda x_mm, y_mm: (int(round(x_mm / cfg.grid_step)), int(round(y_mm / cfg.grid_step)), 0)
+    t0 = time.time()
+    who = find_route_blocker_from_frontier([g(25.0, 110.0), g(25.0, 110.1)], pcb, cfg, 1)
+    check("7a: a frontier inside the band names the band's net", who == 2)
+    who = find_route_blocker_from_frontier([g(10.0, 110.0), g(30.0, 5.0)], pcb, cfg, 1)
+    check("7b: a frontier 14 mm beside the band, or 5 mm past its end, names nothing", who is None)
+    check("7c: both answers took under a second", time.time() - t0 < 1.0)
     if FAILS:
         print("\nFAILED: %d" % len(FAILS))
         sys.exit(1)

@@ -168,13 +168,29 @@ def find_route_blocker_from_frontier(
             continue
 
         count = 0
-        for gx, gy in walk_line(gx1, gy1, gx2, gy2):
-            # Check expansion around this point
-            for ex in range(-expansion_grid, expansion_grid + 1):
-                for ey in range(-expansion_grid, expansion_grid + 1):
-                    cell = (gx + ex, gy + ey, layer_idx)
-                    if cell in blocked_set:
-                        count += 1
+        if getattr(seg, 'area_fill', False):
+            # A filled graphic's interior band: a rectangle with square ends
+            # (its width is the band's height), matching the obstacle map.
+            # Test the frontier cells against the rectangle rather than
+            # scanning a window half the band's height around every cell
+            # along it (a 200 mm band: 4 million cells a step).
+            across = coord.to_grid_dist(config.clearance + routing_half)
+            lo_x, hi_x = min(gx1, gx2) - across, max(gx1, gx2) + across
+            lo_y, hi_y = min(gy1, gy2) - expansion_grid, max(gy1, gy2) + expansion_grid
+            if gx1 == gx2:  # a vertical band: the width spans x
+                lo_x, hi_x = gx1 - expansion_grid, gx1 + expansion_grid
+                lo_y, hi_y = min(gy1, gy2) - across, max(gy1, gy2) + across
+            for (gx, gy, l) in blocked_set:
+                if l == layer_idx and lo_x <= gx <= hi_x and lo_y <= gy <= hi_y:
+                    count += 1
+        else:
+            for gx, gy in walk_line(gx1, gy1, gx2, gy2):
+                # Check expansion around this point
+                for ex in range(-expansion_grid, expansion_grid + 1):
+                    for ey in range(-expansion_grid, expansion_grid + 1):
+                        cell = (gx + ex, gy + ey, layer_idx)
+                        if cell in blocked_set:
+                            count += 1
 
         if count > 0:
             net_block_count[seg.net_id] = net_block_count.get(seg.net_id, 0) + count
