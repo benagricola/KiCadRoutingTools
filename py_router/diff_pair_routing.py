@@ -18,7 +18,7 @@ from connectivity import (
     get_stub_segments, get_stub_vias, calculate_stub_via_barrel_length
 )
 from obstacle_map import check_line_clearance
-from geometry_utils import simplify_path, segments_intersect_tuple
+from geometry_utils import simplify_path, segments_intersect_tuple, segment_to_rect_distance
 from net_queries import resolve_gnd_net_id, resolve_return_net_id
 # Note: Layer switching is now done upfront in route.py, not during routing
 
@@ -2578,6 +2578,26 @@ def _connector_grazes_foreign_copper(new_segments, pcb_data, p_net_id, n_net_id,
         # vs foreign tracks on the same layer (issue #246)
         for o in foreign_tracks_by_layer.get(seg.layer, ()):
             ow = o.width if getattr(o, 'width', 0) else seg.width
+            if getattr(o, 'area_fill', False):
+                # A filled graphic's interior band: its width is the band's
+                # height and its ends are square, so the distance is to the
+                # rectangle's edge, not to a capsule half its height wide.
+                need = _obs_clr(o.net_id, seg.layer) + seg.width / 2 - _DRC_CLEARANCE_MARGIN
+                if need <= 0:
+                    continue
+                hw = ow / 2
+                if o.start_y == o.end_y:
+                    rx0, rx1 = min(o.start_x, o.end_x), max(o.start_x, o.end_x)
+                    ry0, ry1 = o.start_y - hw, o.start_y + hw
+                else:
+                    rx0, rx1 = o.start_x - hw, o.start_x + hw
+                    ry0, ry1 = min(o.start_y, o.end_y), max(o.start_y, o.end_y)
+                if rx1 < sxmin - need or rx0 > sxmax + need or ry1 < symin - need or ry0 > symax + need:
+                    continue
+                d = segment_to_rect_distance(seg.start_x, seg.start_y, seg.end_x, seg.end_y, rx0, ry0, rx1, ry1)
+                if d < need:
+                    return ('track', o, seg, need - d)
+                continue
             need = _obs_clr(o.net_id, seg.layer) + seg.width / 2 + ow / 2 - _DRC_CLEARANCE_MARGIN
             if need <= 0:
                 continue

@@ -25,6 +25,10 @@ Properties:
      the frontier, not to the band's height: it used to scan a window half
      the band's height around every cell along it, 4 million cells a step,
      and one failed net cost 160 s of hints.
+  8. The differential router's connector graze check (#165) measures a band
+     as a rectangle: a pair connector beside a band, clear of it, is not a
+     graze, and one crossing into it is. It used to read a connector 26 mm
+     inside a 12 x 50 mm spine and reject every coupled route on the board.
 
 Run:  python3 tests/test_filled_graphic_band_no_caps.py
 """
@@ -43,6 +47,7 @@ from obstacle_map import build_base_obstacle_map
 from single_ended_routing import _foreign_edge_dist
 from blocking_analysis import compute_net_obstacle_cells, _unpack_xy
 from plane_blocker_detection import find_route_blocker_from_frontier
+from diff_pair_routing import _connector_grazes_foreign_copper
 import time
 import numpy as np
 
@@ -117,6 +122,17 @@ def main():
     who = find_route_blocker_from_frontier([g(10.0, 110.0), g(30.0, 5.0)], pcb, cfg, 1)
     check("7b: a frontier 14 mm beside the band, or 5 mm past its end, names nothing", who is None)
     check("7c: both answers took under a second", time.time() - t0 < 1.0)
+    print("pair connector graze against a band")
+    pcb.nets[3] = Net(3, 'SIG_N')
+    beside = [Segment(start_x=20.0, start_y=100.0, end_x=20.0, end_y=120.0, width=0.2, layer='F.Cu', net_id=1),
+              Segment(start_x=20.5, start_y=100.0, end_x=20.5, end_y=120.0, width=0.2, layer='F.Cu', net_id=3)]
+    check("8a: a pair 3.5 mm beside the band is not a graze", _connector_grazes_foreign_copper(beside, pcb, 1, 3, cfg) is None)
+    above = [Segment(start_x=30.0, start_y=5.0, end_x=30.0, end_y=9.0, width=0.2, layer='F.Cu', net_id=1)]
+    check("8b: a pair 1 mm past the band's square end is not a graze", _connector_grazes_foreign_copper(above, pcb, 1, 3, cfg) is None)
+    into = [Segment(start_x=20.0, start_y=110.0, end_x=25.0, end_y=110.0, width=0.2, layer='F.Cu', net_id=1)]
+    hit = _connector_grazes_foreign_copper(into, pcb, 1, 3, cfg)
+    check("8c: a connector running into the band is a graze by the whole clearance (as for a track it enters)",
+          hit is not None and hit[0] == 'track' and abs(hit[3] - (0.2 + 0.1)) < 0.05)
     if FAILS:
         print("\nFAILED: %d" % len(FAILS))
         sys.exit(1)
