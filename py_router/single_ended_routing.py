@@ -404,7 +404,7 @@ def _foreign_seg_arrays(pcb_data, layer):
     per_layer = cache[1]
     arr = per_layer.get(layer)
     if arr is None:
-        nid, ax, ay, bx, by, hw = [], [], [], [], [], []
+        nid, ax, ay, bx, by, hw, fill = [], [], [], [], [], [], []
         _row_segs = []
         _own_pad_nets = _cached_own_pad_nets(pcb_data)
         for s in pcb_data.segments:
@@ -413,12 +413,17 @@ def _foreign_seg_arrays(pcb_data, layer):
                 nid.append(s.net_id); ax.append(s.start_x); ay.append(s.start_y)
                 bx.append(s.end_x); by.append(s.end_y)
                 hw.append((s.width if s.width > 0 else 0.0) / 2.0)
+                # A filled graphic's interior band: its width is the band's
+                # height and its ends are square, so it is a RECTANGLE for
+                # distance, not a capsule (a capsule read a pad 45 mm from a
+                # 160 mm tall pour as 35 mm inside it).
+                fill.append(bool(getattr(s, 'area_fill', False)))
         # A via spans its drilled layers; treat every via as present on this copper
         # layer (a conservative over-approximation -- it only ever necks MORE).
         for v in pcb_data.vias:
             r = (v.size if getattr(v, 'size', 0) and v.size > 0 else 0.0) / 2.0
             nid.append(v.net_id); ax.append(v.x); ay.append(v.y)
-            bx.append(v.x); by.append(v.y); hw.append(r)
+            bx.append(v.x); by.append(v.y); hw.append(r); fill.append(False)
         # #908: which rows are a FOOTPRINT'S OWN copper, and which nets that
         # copper is the intended conductor for. A net tie's bridge is net 0, so
         # the plain `nid != net_id` test below calls it foreign to the very
@@ -435,12 +440,13 @@ def _foreign_seg_arrays(pcb_data, layer):
         per_layer[(layer, 'giftrows')] = (_g_rows, _g_nets)
         arr = (np.asarray(nid, dtype=np.int64), np.asarray(ax, dtype=float),
                np.asarray(ay, dtype=float), np.asarray(bx, dtype=float),
-               np.asarray(by, dtype=float), np.asarray(hw, dtype=float))
+               np.asarray(by, dtype=float), np.asarray(hw, dtype=float),
+               np.asarray(fill, dtype=bool))
         per_layer[layer] = arr
         # the per-item bounding boxes _seg_foreign_seg_dist windows on,
         # once per rebuild instead of four array ops per query (23.6k
         # queries per braid smoothing pass, 2026-09-06)
-        _n, _ax, _ay, _bx, _by, _hw = arr
+        _n, _ax, _ay, _bx, _by, _hw = arr[:6]
         per_layer[(layer, 'bbox')] = (np.minimum(_ax, _bx) - _hw,
                                       np.maximum(_ax, _bx) + _hw,
                                       np.minimum(_ay, _by) - _hw,
@@ -498,6 +504,40 @@ def _foreign_seg_bboxes(pcb_data, layer):
     return pcb_data._foreign_seg_arr_cache[1][(layer, 'bbox')]
 
 
+def _band_rect_dist(sx, sy, ax, ay, bx, by, hw):
+    """(S, M) edge distance from sample points to filled-graphic interior bands:
+    each an axis-aligned rectangle (ax..bx along, +-hw across, square ends),
+    never a capsule. Negative means the point is inside, by how far."""
+    minx = np.minimum(ax, bx); maxx = np.maximum(ax, bx)
+    miny = np.minimum(ay, by) - hw; maxy = np.maximum(ay, by) + hw
+    dxo = np.maximum(np.maximum(minx[None, :] - sx[:, None], sx[:, None] - maxx[None, :]), 0.0)
+    dyo = np.maximum(np.maximum(miny[None, :] - sy[:, None], sy[:, None] - maxy[None, :]), 0.0)
+    outside = np.hypot(dxo, dyo)
+    pen = np.minimum(np.minimum(sx[:, None] - minx[None, :], maxx[None, :] - sx[:, None]),
+                     np.minimum(sy[:, None] - miny[None, :], maxy[None, :] - sy[:, None]))
+    return np.where(pen > 0, -pen, outside)
+
+
+def _foreign_edge_dist(sx, sy, ax, ay, bx, by, hw, fill):
+    """(S, M) edge distance from sample points to foreign copper: a capsule
+    round the centreline for tracks and vias, an axis-aligned rectangle for a
+    filled graphic's interior band (ax..bx along, +-hw across). Negative
+    means the point is inside the copper, by how far."""
+    abx = bx - ax; aby = by - ay
+    L2 = abx * abx + aby * aby
+    pax = sx[:, None] - ax[None, :]
+    pay = sy[:, None] - ay[None, :]
+    safe_L2 = np.where(L2 > 0, L2, 1.0)
+    tt = (pax * abx[None, :] + pay * aby[None, :]) / safe_L2[None, :]
+    tt = np.where(L2[None, :] > 0, np.clip(tt, 0.0, 1.0), 0.0)
+    projx = ax[None, :] + tt * abx[None, :]
+    projy = ay[None, :] + tt * aby[None, :]
+    dist = np.hypot(sx[:, None] - projx, sy[:, None] - projy) - hw[None, :]
+    if fill is not None and fill.any():
+        dist[:, fill] = _band_rect_dist(sx, sy, ax[fill], ay[fill], bx[fill], by[fill], hw[fill])
+    return dist, projx, projy
+
+
 def _seg_foreign_seg_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
                           net_clearances=None, base_clearance=0.0,
                           track_clearances=None):
@@ -520,7 +560,7 @@ def _seg_foreign_seg_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
     seg-vs-seg ONLY, which is exactly what this helper measures, so a caller
     passing it here must NOT pass it to the pad/via helpers (KiCad's
     Type=='track' binds tracks to tracks). Inert when the map is empty."""
-    nid, fax, fay, fbx, fby, fhw = _foreign_seg_arrays(pcb_data, layer)
+    nid, fax, fay, fbx, fby, fhw, ffill = _foreign_seg_arrays(pcb_data, layer)
     if nid.size == 0:
         return 1e9
     n = max(2, int(math.hypot(x2 - x1, y2 - y1) / 0.02) + 1)
@@ -532,6 +572,7 @@ def _seg_foreign_seg_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
     if not near.any():
         return 1e9
     ax, ay, bx, by, hw = fax[near], fay[near], fbx[near], fby[near], fhw[near]
+    fill = ffill[near]                    # filled-graphic bands: rectangles
     t = np.linspace(0.0, 1.0, n + 1)
     sx = x1 + (x2 - x1) * t
     sy = y1 + (y2 - y1) * t
@@ -575,6 +616,10 @@ def _seg_foreign_seg_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
             c4 = abx * (y2 - ay) - aby * (x2 - ax)
             d = np.where((c1 * c2 < 0) & (c3 * c4 < 0), 0.0, d)
         dist = d - hw
+        if fill.any():
+            # a band is a rectangle, not a capsule: measured along the same
+            # samples as the sweep (the capsule form above does not apply)
+            dist[fill] = np.min(_band_rect_dist(sx, sy, ax[fill], ay[fill], bx[fill], by[fill], hw[fill]), axis=0)
         if excess is not None:
             dist = dist - excess
         return float(np.min(dist))
@@ -589,6 +634,8 @@ def _seg_foreign_seg_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
         projx = ax[None, :] + tt * abx[None, :]
         projy = ay[None, :] + tt * aby[None, :]
         dist = np.hypot(sxc[:, None] - projx, syc[:, None] - projy) - hw[None, :]
+        if fill.any():
+            dist[:, fill] = _band_rect_dist(sxc, syc, ax[fill], ay[fill], bx[fill], by[fill], hw[fill])
         if excess is not None:
             dist = dist - excess[None, :]
         best = min(best, float(np.min(dist)))
