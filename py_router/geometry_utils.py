@@ -302,6 +302,19 @@ def segment_to_segment_distance(seg1_x1: float, seg1_y1: float, seg1_x2: float, 
     return min(d1, d2, d3, d4)
 
 
+def segment_to_rect_distance(x1: float, y1: float, x2: float, y2: float,
+                             rx0: float, ry0: float, rx1: float, ry1: float) -> float:
+    """Minimum distance from the segment (x1,y1)-(x2,y2) to the axis-aligned
+    rectangle [rx0,rx1] x [ry0,ry1]: 0 when the segment enters it, else the
+    least distance to one of its four edges. A filled graphic's interior band
+    is such a rectangle, not a capsule round its centreline."""
+    if (rx0 <= x1 <= rx1 and ry0 <= y1 <= ry1) or (rx0 <= x2 <= rx1 and ry0 <= y2 <= ry1):
+        return 0.0
+    edges = ((rx0, ry0, rx1, ry0), (rx1, ry0, rx1, ry1), (rx1, ry1, rx0, ry1), (rx0, ry1, rx0, ry0))
+    return min(segment_to_segment_distance(x1, y1, x2, y2, ex0, ey0, ex1, ey1)
+               for ex0, ey0, ex1, ey1 in edges)
+
+
 def segment_to_segment_distance_seg(seg1: "Segment", seg2: "Segment") -> float:
     """Calculate minimum distance between two Segment objects."""
     return segment_to_segment_distance(
