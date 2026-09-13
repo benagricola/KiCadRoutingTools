@@ -5011,7 +5011,7 @@ def _seg_worst_offender(pcb_data, net_id, s, clearance, net_clearances=None,
     driven by `pcb_data.source_path`, so a caller with no config in hand still
     gets the board's declared floor."""
     import numpy as np
-    from single_ended_routing import (_foreign_pad_arrays, _foreign_seg_arrays,
+    from single_ended_routing import (_foreign_pad_arrays, _foreign_seg_arrays, _foreign_edge_dist,
                                       _foreign_via_arrays, _foreign_hole_capsules)
     from routing_defaults import NPTH_TO_TRACK_CLEARANCE
     from obstacle_map import resolve_hole_clearance
@@ -5127,7 +5127,7 @@ def _seg_worst_offender(pcb_data, net_id, s, clearance, net_clearances=None,
             i, j = np.unravel_index(int(np.argmin(d)), d.shape)
             consider(float(d[i, j]), i, qx[i, j], qy[i, j])
 
-    fnid, fax, fay, fbx, fby, fhw = _foreign_seg_arrays(pcb_data, s.layer)
+    fnid, fax, fay, fbx, fby, fhw, ffill = _foreign_seg_arrays(pcb_data, s.layer)
     if fnid.size:
         near = ((np.maximum(fax, fbx) + fhw >= sx.min() - R) &
                 (np.minimum(fax, fbx) - fhw <= sx.max() + R) &
@@ -5135,13 +5135,7 @@ def _seg_worst_offender(pcb_data, net_id, s, clearance, net_clearances=None,
                 (np.minimum(fay, fby) - fhw <= sy.max() + R) & (fnid != net_id))
         if near.any():
             ax, ay, bx, by, hw = fax[near], fay[near], fbx[near], fby[near], fhw[near]
-            abx, aby = bx - ax, by - ay
-            L2 = np.where(abx * abx + aby * aby > 0, abx * abx + aby * aby, 1.0)
-            tt = np.clip(((sx[:, None] - ax[None, :]) * abx[None, :] +
-                          (sy[:, None] - ay[None, :]) * aby[None, :]) / L2[None, :], 0.0, 1.0)
-            qx = ax[None, :] + tt * abx[None, :]
-            qy = ay[None, :] + tt * aby[None, :]
-            d = np.hypot(sx[:, None] - qx, sy[:, None] - qy) - hw[None, :]
+            d, qx, qy = _foreign_edge_dist(sx, sy, ax, ay, bx, by, hw, ffill[near])
             d = d - _excess(fnid[near])[None, :]  # #436 class-excess
             i, j = np.unravel_index(int(np.argmin(d)), d.shape)
             consider(float(d[i, j]), i, qx[i, j], qy[i, j])

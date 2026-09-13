@@ -15,7 +15,7 @@ import numpy as np
 from kicad_parser import PCBData, Pad, Segment
 from routing_config import GridRouteConfig, GridCoord
 from routing_utils import iter_pad_blocked_cells, pad_blocked_cells_array, \
-    segment_blocked_cells_array, segment_blocked_spans
+    segment_blocked_cells_array, segment_blocked_spans, rect_blocked_cells_array
 from obstacle_map import (point_in_polygon, point_to_polygon_edge_distance,
                           add_user_keepout_obstacles, add_rule_area_keepout_obstacles,
                           block_via_cells_near_drills, block_track_cells_near_drills,
@@ -568,8 +568,13 @@ def _add_segment_via_obstacle(obstacles: GridObstacleMap, seg: Segment,
     obstacle builder (issue #173). The previous bresenham stamp snapped the
     endpoints to the grid and walked integer cells, so an off-grid/diagonal
     segment's via keep-out under-covered sub-cell and a later via grazed it."""
-    vias = segment_blocked_cells_array(seg.start_x, seg.start_y,
-                                       seg.end_x, seg.end_y, expansion_mm, coord.grid_step)
+    if getattr(seg, 'area_fill', False):
+        # a filled graphic's interior band has square ends (its width is the band's height)
+        vias = rect_blocked_cells_array(seg.start_x, seg.start_y, seg.end_x, seg.end_y,
+                                        expansion_mm - seg.width / 2, expansion_mm, coord.grid_step)
+    else:
+        vias = segment_blocked_cells_array(seg.start_x, seg.start_y,
+                                           seg.end_x, seg.end_y, expansion_mm, coord.grid_step)
     _batch_vias(obstacles, vias)
 
 
@@ -1341,6 +1346,10 @@ def _add_segment_routing_obstacle(obstacles: GridObstacleMap, seg: Segment,
     point-to-segment (capsule) keep-out from the TRUE float segment, shared with
     route.py's obstacle builder (issue #173). Replaces the bresenham stamp that
     snapped endpoints to the grid and under-covered off-grid/diagonal copper."""
-    cells = segment_blocked_cells_array(seg.start_x, seg.start_y,
-                                        seg.end_x, seg.end_y, expansion_mm, coord.grid_step)
+    if getattr(seg, 'area_fill', False):
+        cells = rect_blocked_cells_array(seg.start_x, seg.start_y, seg.end_x, seg.end_y,
+                                         expansion_mm - seg.width / 2, expansion_mm, coord.grid_step)
+    else:
+        cells = segment_blocked_cells_array(seg.start_x, seg.start_y,
+                                            seg.end_x, seg.end_y, expansion_mm, coord.grid_step)
     _batch_cells_one_layer(obstacles, cells, layer_idx)

@@ -551,6 +551,52 @@ def _capsule_mask(x1: float, y1: float, x2: float, y2: float,
     return xs, ys, gxg, gyg, mask
 
 
+def rect_blocked_spans(x1: float, y1: float, x2: float, y2: float,
+                       along: float, across: float, grid_step: float) -> "np.ndarray":
+    """(M, 3) int32 spans (gx, gy_lo, gy_hi) for the RECTANGLE around the
+    axis-aligned segment (x1,y1)-(x2,y2): `along` beyond each end along the
+    segment, `across` either side of it. For a filled graphic's interior
+    band, whose `width` is the band's own height, a capsule would grow a
+    round cap of half that height past each end - a 12 x 200 mm pour became
+    a band with 100 mm caps and blanketed the board 40 mm away. A band's
+    ends are square. Boundary cells resolve OPEN by GRID_TIE_EPS, as for
+    the capsule."""
+    key = ("rect", x1, y1, x2, y2, along, across, grid_step)
+    cached = _SEG_SPAN_CACHE.get(key)
+    if cached is not None:
+        _SEG_SPAN_CACHE.move_to_end(key)
+        return cached
+    inv = 1.0 / grid_step
+    horizontal = abs(y2 - y1) <= abs(x2 - x1)
+    mx, my = (along, across) if horizontal else (across, along)
+    xlo, xhi = min(x1, x2) - mx + GRID_TIE_EPS, max(x1, x2) + mx - GRID_TIE_EPS
+    ylo, yhi = min(y1, y2) - my + GRID_TIE_EPS, max(y1, y2) + my - GRID_TIE_EPS
+    gx_lo, gx_hi = int(math.floor(xlo * inv)) + 1, int(math.ceil(xhi * inv)) - 1
+    gy_lo, gy_hi = int(math.floor(ylo * inv)) + 1, int(math.ceil(yhi * inv)) - 1
+    # a cell g is inside when g*step is strictly within (lo, hi)
+    while gx_lo * grid_step <= xlo:
+        gx_lo += 1
+    while gx_hi * grid_step >= xhi:
+        gx_hi -= 1
+    while gy_lo * grid_step <= ylo:
+        gy_lo += 1
+    while gy_hi * grid_step >= yhi:
+        gy_hi -= 1
+    if gx_hi < gx_lo or gy_hi < gy_lo:
+        out = np.empty((0, 3), dtype=np.int32)
+    else:
+        xs = np.arange(gx_lo, gx_hi + 1, dtype=np.int32)
+        out = np.empty((xs.size, 3), dtype=np.int32)
+        out[:, 0] = xs
+        out[:, 1] = gy_lo
+        out[:, 2] = gy_hi
+    out.setflags(write=False)
+    _SEG_SPAN_CACHE[key] = out
+    global _SEG_SPAN_ROWS
+    _SEG_SPAN_ROWS += len(out)
+    return out
+
+
 def segment_blocked_spans(x1: float, y1: float, x2: float, y2: float,
                           margin: float, grid_step: float) -> "np.ndarray":
     """(M, 3) int32 SPANS (gx, gy_lo, gy_hi -- both inclusive) covering exactly
@@ -601,6 +647,19 @@ def segment_blocked_spans(x1: float, y1: float, x2: float, y2: float,
         _, old_arr = _SEG_SPAN_CACHE.popitem(last=False)
         _SEG_SPAN_ROWS -= len(old_arr)
     return out
+
+
+def rect_blocked_cells_array(x1: float, y1: float, x2: float, y2: float,
+                             along: float, across: float, grid_step: float) -> "np.ndarray":
+    """(N, 2) int32 cells of rect_blocked_spans: the cell form, for consumers
+    that iterate cells (the removal side must stamp exactly what the add
+    side stamped, so both derive from the one span builder)."""
+    spans = rect_blocked_spans(x1, y1, x2, y2, along, across, grid_step)
+    if not len(spans):
+        return np.empty((0, 2), dtype=np.int32)
+    parts = [np.stack([np.full(hi - lo + 1, gx, dtype=np.int32), np.arange(lo, hi + 1, dtype=np.int32)], axis=1)
+             for gx, lo, hi in spans]
+    return np.concatenate(parts).astype(np.int32)
 
 
 def segment_blocked_cells_array(x1: float, y1: float, x2: float, y2: float,

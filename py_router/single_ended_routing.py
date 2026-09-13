@@ -357,23 +357,57 @@ def _foreign_seg_arrays(pcb_data, layer):
     per_layer = cache[1]
     arr = per_layer.get(layer)
     if arr is None:
-        nid, ax, ay, bx, by, hw = [], [], [], [], [], []
+        nid, ax, ay, bx, by, hw, fill = [], [], [], [], [], [], []
         for s in pcb_data.segments:
             if s.layer == layer:
                 nid.append(s.net_id); ax.append(s.start_x); ay.append(s.start_y)
                 bx.append(s.end_x); by.append(s.end_y)
                 hw.append((s.width if s.width > 0 else 0.0) / 2.0)
+                # A filled graphic's interior band: its width is the band's
+                # height and its ends are square, so it is a RECTANGLE for
+                # distance, not a capsule (a capsule read a pad 45 mm from a
+                # 160 mm tall pour as 35 mm inside it).
+                fill.append(bool(getattr(s, 'area_fill', False)))
         # A via spans its drilled layers; treat every via as present on this copper
         # layer (a conservative over-approximation -- it only ever necks MORE).
         for v in pcb_data.vias:
             r = (v.size if getattr(v, 'size', 0) and v.size > 0 else 0.0) / 2.0
             nid.append(v.net_id); ax.append(v.x); ay.append(v.y)
-            bx.append(v.x); by.append(v.y); hw.append(r)
+            bx.append(v.x); by.append(v.y); hw.append(r); fill.append(False)
         arr = (np.asarray(nid, dtype=np.int64), np.asarray(ax, dtype=float),
                np.asarray(ay, dtype=float), np.asarray(bx, dtype=float),
-               np.asarray(by, dtype=float), np.asarray(hw, dtype=float))
+               np.asarray(by, dtype=float), np.asarray(hw, dtype=float),
+               np.asarray(fill, dtype=bool))
         per_layer[layer] = arr
     return arr
+
+
+def _foreign_edge_dist(sx, sy, ax, ay, bx, by, hw, fill):
+    """(S, M) edge distance from sample points to foreign copper: a capsule
+    round the centreline for tracks and vias, an axis-aligned rectangle for a
+    filled graphic's interior band (ax..bx along, +-hw across). Negative
+    means the point is inside the copper, by how far."""
+    abx = bx - ax; aby = by - ay
+    L2 = abx * abx + aby * aby
+    pax = sx[:, None] - ax[None, :]
+    pay = sy[:, None] - ay[None, :]
+    safe_L2 = np.where(L2 > 0, L2, 1.0)
+    tt = (pax * abx[None, :] + pay * aby[None, :]) / safe_L2[None, :]
+    tt = np.where(L2[None, :] > 0, np.clip(tt, 0.0, 1.0), 0.0)
+    projx = ax[None, :] + tt * abx[None, :]
+    projy = ay[None, :] + tt * aby[None, :]
+    dist = np.hypot(sx[:, None] - projx, sy[:, None] - projy) - hw[None, :]
+    if fill is not None and fill.any():
+        minx = np.minimum(ax, bx); maxx = np.maximum(ax, bx)
+        miny = np.minimum(ay, by) - hw; maxy = np.maximum(ay, by) + hw
+        dxo = np.maximum(np.maximum(minx[None, :] - sx[:, None], sx[:, None] - maxx[None, :]), 0.0)
+        dyo = np.maximum(np.maximum(miny[None, :] - sy[:, None], sy[:, None] - maxy[None, :]), 0.0)
+        outside = np.hypot(dxo, dyo)
+        pen = np.minimum(np.minimum(sx[:, None] - minx[None, :], maxx[None, :] - sx[:, None]),
+                         np.minimum(sy[:, None] - miny[None, :], maxy[None, :] - sy[:, None]))
+        box = np.where(pen > 0, -pen, outside)
+        dist = np.where(fill[None, :], box, dist)
+    return dist, projx, projy
 
 
 def _seg_foreign_seg_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
@@ -398,7 +432,7 @@ def _seg_foreign_seg_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
     seg-vs-seg ONLY, which is exactly what this helper measures, so a caller
     passing it here must NOT pass it to the pad/via helpers (KiCad's
     Type=='track' binds tracks to tracks). Inert when the map is empty."""
-    nid, fax, fay, fbx, fby, fhw = _foreign_seg_arrays(pcb_data, layer)
+    nid, fax, fay, fbx, fby, fhw, ffill = _foreign_seg_arrays(pcb_data, layer)
     if nid.size == 0:
         return 1e9
     n = max(2, int(math.hypot(x2 - x1, y2 - y1) / 0.02) + 1)
@@ -413,16 +447,7 @@ def _seg_foreign_seg_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
     t = np.linspace(0.0, 1.0, n + 1)
     sx = x1 + (x2 - x1) * t
     sy = y1 + (y2 - y1) * t
-    abx = bx - ax; aby = by - ay                      # (M,)
-    L2 = abx * abx + aby * aby                         # (M,)
-    pax = sx[:, None] - ax[None, :]                    # (S, M)
-    pay = sy[:, None] - ay[None, :]
-    safe_L2 = np.where(L2 > 0, L2, 1.0)
-    tt = (pax * abx[None, :] + pay * aby[None, :]) / safe_L2[None, :]
-    tt = np.where(L2[None, :] > 0, np.clip(tt, 0.0, 1.0), 0.0)
-    projx = ax[None, :] + tt * abx[None, :]
-    projy = ay[None, :] + tt * aby[None, :]
-    dist = np.hypot(sx[:, None] - projx, sy[:, None] - projy) - hw[None, :]
+    dist, _projx, _projy = _foreign_edge_dist(sx, sy, ax, ay, bx, by, hw, ffill[near])
     if net_clearances or track_clearances:
         # #436: fold each foreign net's class-excess into its distance.
         # The track-rule value raises the same per-foreign requirement (#735).

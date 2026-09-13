@@ -16,7 +16,7 @@ import math
 from kicad_parser import PCBData, Segment, Via, Pad, pad_drill_circles, pad_drill_capsule
 from routing_config import GridRouteConfig, GridCoord
 import routing_defaults as defaults
-from routing_utils import build_layer_map, iter_pad_blocked_cells, pad_blocked_cells_array, \
+from routing_utils import rect_blocked_spans, build_layer_map, iter_pad_blocked_cells, pad_blocked_cells_array, \
     circle_offsets, segment_blocked_cells_array, segment_blocked_spans, GRID_TIE_EPS
 from net_queries import expand_pad_layers
 
@@ -261,14 +261,25 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
         # (memoized, read-only) cell arrays and stamp once per build below --
         # concatenation preserves the exact row multiset and order, and the
         # batch inserts process rows identically whether split or joined.
-        cells_arr = segment_blocked_spans(
-            seg.start_x, seg.start_y, seg.end_x, seg.end_y,
-            expansion_mm, coord.grid_step)
+        if getattr(seg, 'area_fill', False):
+            # A filled graphic's interior band: its `width` is the band's own
+            # height, so the ends are square - a rectangle, never a capsule
+            # (whose caps would reach half the pour's height past each end).
+            cells_arr = rect_blocked_spans(
+                seg.start_x, seg.start_y, seg.end_x, seg.end_y,
+                expansion_mm - seg_width / 2, expansion_mm, coord.grid_step)
+            vias_arr = rect_blocked_spans(
+                seg.start_x, seg.start_y, seg.end_x, seg.end_y,
+                via_block_mm - seg_width / 2, via_block_mm, coord.grid_step)
+        else:
+            cells_arr = segment_blocked_spans(
+                seg.start_x, seg.start_y, seg.end_x, seg.end_y,
+                expansion_mm, coord.grid_step)
+            vias_arr = segment_blocked_spans(
+                seg.start_x, seg.start_y, seg.end_x, seg.end_y,
+                via_block_mm, coord.grid_step)
         if len(cells_arr):
             _seg_cell_batch.setdefault(layer_idx, []).append(cells_arr)
-        vias_arr = segment_blocked_spans(
-            seg.start_x, seg.start_y, seg.end_x, seg.end_y,
-            via_block_mm, coord.grid_step)
         if len(vias_arr):
             _seg_via_batch.append(vias_arr)
 

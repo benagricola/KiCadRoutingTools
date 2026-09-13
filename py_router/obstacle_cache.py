@@ -16,6 +16,7 @@ from routing_config import GridRouteConfig, GridCoord
 import routing_defaults as defaults
 from routing_utils import build_layer_map, iter_pad_blocked_cells, \
     pad_blocked_cells_array, segment_blocked_cells_array, segment_blocked_spans, \
+    rect_blocked_spans, rect_blocked_cells_array, \
     circle_offsets, GRID_TIE_EPS
 from net_queries import expand_pad_layers
 
@@ -736,9 +737,13 @@ def precompute_net_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
                 via_block_mm = (config.via_size / 2 + seg_w / 2
                                 + config.layer_clearance(seg.layer, obs_clearance)  # #498
                                 + extra_clearance)
-                _vs = segment_blocked_spans(          # #815
-                    seg.start_x, seg.start_y, seg.end_x, seg.end_y,
-                    via_block_mm, coord.grid_step)
+                if getattr(seg, 'area_fill', False):
+                    _vs = rect_blocked_spans(seg.start_x, seg.start_y, seg.end_x, seg.end_y,
+                                             via_block_mm - seg_w / 2, via_block_mm, coord.grid_step)
+                else:
+                    _vs = segment_blocked_spans(          # #815
+                        seg.start_x, seg.start_y, seg.end_x, seg.end_y,
+                        via_block_mm, coord.grid_step)
                 if len(_vs):
                     blocked_via_spans_set.append(_vs)
             continue
@@ -929,16 +934,24 @@ def _collect_segment_obstacles(seg, coord: GridCoord, layer_idx: int,
     # derive from routing_utils._capsule_mask, so they cannot disagree), at
     # ~5.2x less memory -- which is what lets the capsule memo hold a working
     # set the cell form evicted. Rust expands these when stamping.
-    spans = segment_blocked_spans(seg.start_x, seg.start_y, seg.end_x, seg.end_y,
-                                  track_margin_mm, coord.grid_step)
+    if getattr(seg, 'area_fill', False):
+        # A filled graphic's interior band: `width` is the band's height, so
+        # its ends are square (see obstacle_map's stamp of the same band).
+        half = seg.width / 2
+        spans = rect_blocked_spans(seg.start_x, seg.start_y, seg.end_x, seg.end_y,
+                                   track_margin_mm - half, track_margin_mm, coord.grid_step)
+        vspans = rect_blocked_spans(seg.start_x, seg.start_y, seg.end_x, seg.end_y,
+                                    via_block_mm - half, via_block_mm, coord.grid_step)
+    else:
+        spans = segment_blocked_spans(seg.start_x, seg.start_y, seg.end_x, seg.end_y,
+                                      track_margin_mm, coord.grid_step)
+        vspans = segment_blocked_spans(
+            seg.start_x, seg.start_y, seg.end_x, seg.end_y, via_block_mm, coord.grid_step)
     if len(spans):
         rows = np.empty((len(spans), 4), dtype=np.int32)
         rows[:, :3] = spans
         rows[:, 3] = layer_idx
         blocked_cells.append(rows)
-
-    vspans = segment_blocked_spans(
-        seg.start_x, seg.start_y, seg.end_x, seg.end_y, via_block_mm, coord.grid_step)
     if len(vspans):
         blocked_vias.append(vspans)
 
@@ -1390,14 +1403,25 @@ def precompute_via_placement_obstacles(
         # exactly as build_via_obstacle_map prices this segment.
         via_margin = (config.via_size / 2 + seg.width / 2
                       + config.layer_clearance(seg.layer, obs_clr) + grid_cushion)
-        via_chunks.append(segment_blocked_cells_array(
-            seg.start_x, seg.start_y, seg.end_x, seg.end_y, via_margin, config.grid_step))
+        _fill = getattr(seg, 'area_fill', False)
+        if _fill:
+            via_chunks.append(rect_blocked_cells_array(
+                seg.start_x, seg.start_y, seg.end_x, seg.end_y,
+                via_margin - seg.width / 2, via_margin, config.grid_step))
+        else:
+            via_chunks.append(segment_blocked_cells_array(
+                seg.start_x, seg.start_y, seg.end_x, seg.end_y, via_margin, config.grid_step))
         # Routing map: capsule at the per-layer track width, NO cushion (== _add_segment_routing_obstacle).
         if seg.layer in cell_chunks:
             route_margin = (track_w_by_layer[seg.layer] / 2 + seg.width / 2
                             + config.layer_clearance(seg.layer, obs_clr))
-            cell_chunks[seg.layer].append(segment_blocked_cells_array(
-                seg.start_x, seg.start_y, seg.end_x, seg.end_y, route_margin, config.grid_step))
+            if _fill:
+                cell_chunks[seg.layer].append(rect_blocked_cells_array(
+                    seg.start_x, seg.start_y, seg.end_x, seg.end_y,
+                    route_margin - seg.width / 2, route_margin, config.grid_step))
+            else:
+                cell_chunks[seg.layer].append(segment_blocked_cells_array(
+                    seg.start_x, seg.start_y, seg.end_x, seg.end_y, route_margin, config.grid_step))
 
     # Process this net's vias - they block via placement and routing on all layers.
     for via in pcb_data.vias:
