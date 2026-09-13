@@ -30,7 +30,7 @@ import numpy as np
 from kicad_parser import PCBData, Segment, Via
 from routing_config import GridRouteConfig, GridCoord
 from check_drc import point_to_pad_distance
-from routing_utils import build_layer_map, segment_blocked_cells_array, pad_rect_halfspan
+from routing_utils import build_layer_map, segment_blocked_cells_array, rect_blocked_cells_array, pad_rect_halfspan
 
 _PACK_OFFSET = 1 << 20  # grid coords stay well within +/-2^20 at any allowed grid step
 _COORD_MASK = (1 << 21) - 1
@@ -190,7 +190,7 @@ def compute_net_obstacle_cells(
     track_parts: List["np.ndarray"] = []
     via_parts: List["np.ndarray"] = []
 
-    def add_track_segment(x1, y1, x2, y2, layer_idx, seg_width):
+    def add_track_segment(x1, y1, x2, y2, layer_idx, seg_width, area_fill=False):
         # Exact capsule keep-out from the TRUE float segment, matching
         # obstacle_map.add_net_stubs_as_obstacles / _add_segment_obstacle. The old
         # square box + bresenham line over-reached by ~sqrt(2) in diagonal corners
@@ -205,7 +205,11 @@ def compute_net_obstacle_cells(
         if hasattr(config, 'layer_clearance'):  # #498: layer rule replaces
             _clr = config.layer_clearance(config.layers[layer_idx], _clr)
         expansion_mm = reserve_width / 2 + seg_width / 2 + _clr + extra_clearance
-        cells = segment_blocked_cells_array(x1, y1, x2, y2, expansion_mm, grid_step)
+        if area_fill:
+            # a filled graphic's interior band: square ends, not a capsule
+            cells = rect_blocked_cells_array(x1, y1, x2, y2, expansion_mm - seg_width / 2, expansion_mm, grid_step)
+        else:
+            cells = segment_blocked_cells_array(x1, y1, x2, y2, expansion_mm, grid_step)
         if len(cells):
             track_parts.append(_pack_cells(cells, layer_idx))
 
@@ -244,7 +248,8 @@ def compute_net_obstacle_cells(
         if layer_idx is None:
             continue
         seg_width = seg.width if getattr(seg, 'width', 0) > 0 else config.get_track_width(seg.layer)
-        add_track_segment(seg.start_x, seg.start_y, seg.end_x, seg.end_y, layer_idx, seg_width)
+        add_track_segment(seg.start_x, seg.start_y, seg.end_x, seg.end_y, layer_idx, seg_width,
+                          getattr(seg, 'area_fill', False))
 
     # Add cells from existing vias (block all layers)
     if net_vias is None:
