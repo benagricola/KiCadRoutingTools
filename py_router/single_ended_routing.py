@@ -398,15 +398,20 @@ def _foreign_edge_dist(sx, sy, ax, ay, bx, by, hw, fill):
     projy = ay[None, :] + tt * aby[None, :]
     dist = np.hypot(sx[:, None] - projx, sy[:, None] - projy) - hw[None, :]
     if fill is not None and fill.any():
-        minx = np.minimum(ax, bx); maxx = np.maximum(ax, bx)
-        miny = np.minimum(ay, by) - hw; maxy = np.maximum(ay, by) + hw
-        dxo = np.maximum(np.maximum(minx[None, :] - sx[:, None], sx[:, None] - maxx[None, :]), 0.0)
-        dyo = np.maximum(np.maximum(miny[None, :] - sy[:, None], sy[:, None] - maxy[None, :]), 0.0)
+        # The rectangle is computed for the band columns only: bands are a
+        # few hundred of the thousands of foreign segments, and this runs
+        # tens of thousands of times in post-route smoothing.
+        f = np.flatnonzero(fill)
+        fax, fbx, fay, fby, fhw = ax[f], bx[f], ay[f], by[f], hw[f]
+        minx = np.minimum(fax, fbx); maxx = np.maximum(fax, fbx)
+        miny = np.minimum(fay, fby) - fhw; maxy = np.maximum(fay, fby) + fhw
+        px = sx[:, None]; py = sy[:, None]
+        dxo = np.maximum(np.maximum(minx[None, :] - px, px - maxx[None, :]), 0.0)
+        dyo = np.maximum(np.maximum(miny[None, :] - py, py - maxy[None, :]), 0.0)
         outside = np.hypot(dxo, dyo)
-        pen = np.minimum(np.minimum(sx[:, None] - minx[None, :], maxx[None, :] - sx[:, None]),
-                         np.minimum(sy[:, None] - miny[None, :], maxy[None, :] - sy[:, None]))
-        box = np.where(pen > 0, -pen, outside)
-        dist = np.where(fill[None, :], box, dist)
+        pen = np.minimum(np.minimum(px - minx[None, :], maxx[None, :] - px),
+                         np.minimum(py - miny[None, :], maxy[None, :] - py))
+        dist[:, f] = np.where(pen > 0, -pen, outside)
     return dist, projx, projy
 
 
