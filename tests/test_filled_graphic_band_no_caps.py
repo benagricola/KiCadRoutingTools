@@ -18,6 +18,8 @@ Properties:
   5. The terminal-graze distance to a band is a rectangle distance: a point
      beside a tall band is as far from it as it is from its edge, and a
      point inside it is inside by the nearest edge.
+  6. The blame map (which net boxed a failed search in) stamps the same
+     rectangle, so a band never gets blamed for cells it does not block.
 
 Run:  python3 tests/test_filled_graphic_band_no_caps.py
 """
@@ -34,6 +36,7 @@ from kicad_parser import PCBData, Segment, Net, BoardInfo
 from routing_config import GridRouteConfig
 from obstacle_map import build_base_obstacle_map
 from single_ended_routing import _foreign_edge_dist
+from blocking_analysis import compute_net_obstacle_cells, _unpack_xy
 import numpy as np
 
 FAILS = []
@@ -89,6 +92,16 @@ def main():
     check("5c: 1 mm inside the band's left edge reads -1 mm", abs(d[0, 0] + 1.0) < 1e-9)
     d, _, _ = _foreign_edge_dist(np.array([10.0]), np.array([110.0]), ax, ay, bx, by, hw, np.array([False]))
     check("5d: the same geometry as a capsule still reads as a capsule", abs(d[0, 0] + 86.0) < 1e-9)
+    print("blame map stamps a band as a rectangle")
+    keys, _ = compute_net_obstacle_cells(pcb, 2, None, cfg)
+    gx, gy = _unpack_xy(keys)
+    blamed = set(zip(gx.tolist(), gy.tolist()))
+
+    def blamed_at(x_mm, y_mm):
+        return (int(round(x_mm / cfg.grid_step)), int(round(y_mm / cfg.grid_step))) in blamed
+    check("6a: inside the pour is blamed", blamed_at(30.0, 110.0))
+    check("6b: 20 mm beside the pour is not blamed", not blamed_at(10.0, 110.0))
+    check("6c: 1 mm above the pour's top edge is not blamed", not blamed_at(30.0, 9.0))
     if FAILS:
         print("\nFAILED: %d" % len(FAILS))
         sys.exit(1)
