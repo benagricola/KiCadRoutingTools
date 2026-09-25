@@ -17,7 +17,8 @@ from kicad_parser import PCBData, Segment, Via, Pad, pad_drill_circles, pad_dril
 from routing_config import GridRouteConfig, GridCoord
 import routing_defaults as defaults
 from routing_utils import build_layer_map, iter_pad_blocked_cells, pad_blocked_cells_array, \
-    circle_offsets, segment_blocked_cells_array, segment_blocked_spans, GRID_TIE_EPS, pad_guard_rows
+    circle_offsets, segment_blocked_cells_array, segment_blocked_spans, GRID_TIE_EPS, pad_guard_rows, \
+    via_keepout
 from net_queries import expand_pad_layers
 
 # Import Rust router
@@ -407,7 +408,9 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
         # the base map holds the excluded nets' (GND/P3.3V) fanout vias, and without
         # the diagonal margin a 45deg track grazes them a sub-cell under clearance.
         _add_via_obstacle(obstacles, via, coord, num_layers, via_track_expansion_grid,
-                          via_via_expansion_grid, diagonal_margin=defaults.DIAGONAL_MARGIN)
+                          via_via_expansion_grid, diagonal_margin=defaults.DIAGONAL_MARGIN,
+                          radii_mm=(via_track_radii_mm(via_size, config, via_clearance)
+                                    if extra_clearance == 0 else None))
 
     # Add pads as obstacles (excluding nets we'll route - their pads added per-net)
     # Priced per obstacle: max(routing-side clearance, the pad net's own class clearance)
@@ -3249,6 +3252,14 @@ def _add_segment_obstacle(obstacles: GridObstacleMap, seg, coord: GridCoord,
     _batch_vias(obstacles, vias, blocked_vias)
 
 
+def via_track_radii_mm(via_size: float, config: GridRouteConfig, clearance: float):
+    """Per-layer via->track keep-out radius in mm (the float that
+    _via_track_expansion_per_layer ceils to cells): via/2 + the layer's
+    routing-side reserve width/2 + the layer's clearance."""
+    return [via_size / 2 + config.route_reserve_width(layer) / 2 + config.layer_clearance(layer, clearance)
+            for layer in config.layers]
+
+
 def _via_track_expansion_per_layer(via_size: float, config: GridRouteConfig,
                                    coord: GridCoord, clearance: float,
                                    extra_clearance: float = 0.0):
@@ -3274,8 +3285,14 @@ def _add_via_obstacle(obstacles: GridObstacleMap, via, coord: GridCoord,
                       num_layers: int, via_track_expansion_grid, via_via_expansion_grid: int,
                       diagonal_margin: float = 0.0,
                       blocked_cells: List[Set[Tuple[int, int]]] = None,
-                      blocked_vias: Set[Tuple[int, int]] = None):
+                      blocked_vias: Set[Tuple[int, int]] = None,
+                      radii_mm=None):
     """Add a via as obstacle to the map.
+
+    With `radii_mm` (the track keep-out per layer, mm) and a map that stores
+    guards, the track cells are exact and the via is a guard circle
+    (routing_utils.via_keepout); the ceiled expansion and the diagonal margin
+    are not used. The per-net cache does the same (_collect_via_obstacles).
 
     Args:
         via_track_expansion_grid: Either a single int (same for all layers) or a list of ints
@@ -3300,7 +3317,13 @@ def _add_via_obstacle(obstacles: GridObstacleMap, via, coord: GridCoord,
 
     # Batched rasterization (issue #35) - emits the same cell multiset as the
     # per-cell loops it replaces (each layer gets the full circle pattern).
-    if isinstance(via_track_expansion_grid, list):
+    if radii_mm is not None and _takes_guards(obstacles):
+        cells, guards = via_keepout(via.x, via.y, coord.grid_step, radii_mm)
+        for layer_idx, layer_cells in enumerate(cells):
+            if len(layer_cells):
+                _batch_cells_one_layer(obstacles, layer_cells, layer_idx, blocked_cells)
+        _put_guards(obstacles, None, guards)
+    elif isinstance(via_track_expansion_grid, list):
         # Per-layer blocking (impedance-controlled routing)
         for layer_idx in range(num_layers):
             layer_expansion = via_track_expansion_grid[layer_idx]
