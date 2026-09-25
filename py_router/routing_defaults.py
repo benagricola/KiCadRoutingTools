@@ -17,6 +17,13 @@ VIA_DRILL = 0.3  # mm
 # spare and keeps the order it had.
 FAN_ORDER_MAX_PITCH_FACTOR = 2.0
 
+# Exact escape stubs (docs/off-grid-exact-fit-design.md): for a pin whose probe
+# is stuck, octilinear stubs from the pad along its row's outward normal are
+# tried in exact geometry. REACH is how far from the pad centre a stub may end
+# (mm); ENDS how many legal stub ends are offered to the retry.
+EXACT_ESCAPE_REACH = 3.0
+EXACT_ESCAPE_ENDS = 16
+
 # The hybrid pair route's launch search (diff_pair_routing._closest_launch):
 # when the straight line from a terminal toward the other has no pair-wide
 # clear swath within this distance (mm), the nearest clear cell round the

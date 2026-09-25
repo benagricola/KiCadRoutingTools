@@ -69,6 +69,9 @@ def refresh() -> None:
     g['BUS_MULTIPOINT_SPAN'] = _on_default('KICAD_BUS_MULTIPOINT_SPAN')
     g['BARE_BALL_ZONE_EXEMPT'] = _on_default('KICAD_BARE_BALL_ZONE_EXEMPT')
     g['DIRECT_FIRST'] = _on_default('KICAD_DIRECT_FIRST')
+    # exact_escape.py, OFF by default (1 turns on): no measured case needs it
+    # since the static-base and via over-blocks were fixed (the spec's Status).
+    g['EXACT_ESCAPE'] = _opt_in('KICAD_EXACT_ESCAPE')
     # Seeded neighbour swaps of the net order after the fan pass
     # (order_jitter.py), for measuring order sensitivity; 0 = none.
     g['ORDER_JITTER'] = _i('KICAD_ORDER_JITTER', 0)

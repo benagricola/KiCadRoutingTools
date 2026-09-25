@@ -6759,6 +6759,15 @@ For differential pair routing, use route_diff.py:
                           "geometry or rules.")
     _fo.add_argument("--no-fan-order", dest="fan_order", action="store_false",
                      help="Restore the base net order untouched (no row re-sequencing).")
+    _ag = parser.add_mutually_exclusive_group()
+    _ag.add_argument("--align-grid", dest="align_grid", action="store_true", default=True,
+                     help="Grid alignment (docs/off-grid-exact-fit-design.md): route the "
+                          "board translated by the sub-grid offset that puts the most "
+                          "fine-pitch pin rows' centre lines on the routing grid, and "
+                          "translate the result back. ON by default; the board's "
+                          "geometry is unchanged.")
+    _ag.add_argument("--no-align-grid", dest="align_grid", action="store_false",
+                     help="Route the board where it is, on the grid from its origin.")
     parser.add_argument("--keep-input-copper", action="store_true",
                         help="Treat the input file's own copper as read-only: the post-route "
                              "cleanup passes (dead-end sweep, orphan islands, cycle/redundancy "
@@ -7050,6 +7059,27 @@ For differential pair routing, use route_diff.py:
         print("route.py: error: --group was given an empty name. Use "
               "--list-groups to see what exists.", file=sys.stderr)
         sys.exit(2)
+
+    # Grid alignment (docs/off-grid-exact-fit-design.md): at minimum pitch the
+    # only straight lane out of a pin is its own centre line, and the grid's
+    # origin is the board's, so a fine-pitch row whose centre lines fall off
+    # the grid seals. When the aligning offset is not (0, 0), this run routes
+    # a translated copy of the board (route.py again, alignment off) and
+    # translates the result back; --no-align-grid routes the board where it is.
+    if (args.align_grid and not args.preview and not args.skip_routing
+            and args.output_file.endswith('.kicad_pcb')):
+        import grid_align
+        from fan_order import find_fan_rows
+        _ga_pitch = defaults.FAN_ORDER_MAX_PITCH_FACTOR * (args.track_width + args.clearance)
+        _ga_dx, _ga_dy = grid_align.aligning_offset(pcb_data, args.grid_step, _ga_pitch)
+        if _ga_dx or _ga_dy:
+            _ga_rows = len(find_fan_rows(pcb_data, _ga_pitch))
+            print(f"Grid alignment: routing the board moved by ({_ga_dx}, {_ga_dy}) mm, "
+                  f"which puts {_ga_rows} fine-pitch row(s) on the grid; the result "
+                  f"is moved back.")
+            sys.exit(grid_align.route_aligned(os.path.abspath(__file__), sys.argv[1:],
+                                              args.input_file, args.output_file,
+                                              _ga_dx, _ga_dy, _ga_rows, args.json_out))
 
     # Combine positional net_patterns and --nets argument.
     # Strip surrounding whitespace, as route_diff.py already does: a net list
