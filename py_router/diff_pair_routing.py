@@ -2870,19 +2870,47 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
     # ends. Search inward from the terminal for the CLOSEST cell whose swath is clear.
     _swath_r = max(1, diff_pair_spacing_grid)
 
+    def _swath_clear(cx, cy, layer):
+        return not any(obstacles.is_blocked(cx + dxx, cy + dyy, layer)
+                       for dxx in range(-_swath_r, _swath_r + 1)
+                       for dyy in range(-_swath_r, _swath_r + 1))
+
+    import routing_defaults as _rdef
+    _launch_r = max(1, int(round(_rdef.HYBRID_LAUNCH_RADIUS / config.grid_step)))
+
     def _closest_launch(gx0, gy0, ox, oy, layer):
         """Closest cell to (gx0,gy0), stepping toward (ox,oy), whose
         diff-pair-wide swath is clear on `layer` -- couple as far as possible, the
-        single-ended leg spans the small remaining gap. Returns (cx,cy) or None."""
+        single-ended leg spans the small remaining gap. Returns (cx,cy) or None.
+
+        When that walk finds no clear swath within HYBRID_LAUNCH_RADIUS of the
+        terminal (a congested straight line), the nearest clear cell round the
+        terminal within that radius is taken instead, ties to the one nearer
+        (ox,oy): walking on would put the launch by the other terminal, and
+        both launches together there leave a middle that loops on itself."""
         steps = max(int(math.hypot(ox - gx0, oy - gy0)), 1)
+        walked = None
         for k in range(0, steps + 1):
             cx = int(round(gx0 + (ox - gx0) * k / steps))
             cy = int(round(gy0 + (oy - gy0) * k / steps))
-            if not any(obstacles.is_blocked(cx + dxx, cy + dyy, layer)
-                       for dxx in range(-_swath_r, _swath_r + 1)
-                       for dyy in range(-_swath_r, _swath_r + 1)):
-                return cx, cy
-        return None
+            if _swath_clear(cx, cy, layer):
+                walked = (cx, cy)
+                break
+        if walked is not None and math.hypot(walked[0] - gx0, walked[1] - gy0) <= _launch_r:
+            return walked
+        best = None
+        for dx in range(-_launch_r, _launch_r + 1):
+            for dy in range(-_launch_r, _launch_r + 1):
+                d = math.hypot(dx, dy)
+                if d > _launch_r:
+                    continue
+                cx, cy = gx0 + dx, gy0 + dy
+                key = (round(d, 6), math.hypot(ox - cx, oy - cy))
+                if best is not None and key >= best[0]:
+                    continue
+                if _swath_clear(cx, cy, layer):
+                    best = (key, (cx, cy))
+        return best[1] if best is not None else walked
 
     def _theta_options(ex, ey, slx, sly, arrival):
         """Ordered candidate pose headings (theta_idx) for one coupled-middle end.
@@ -3151,8 +3179,7 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
                 partner = n_net_id if net_id == p_net_id else p_net_id
                 ppads = pads_by_net.get(partner, [])
                 pseg = (mid_segs_by_net[partner] + leg_state['s'][partner]
-                        + [s for s in board_segs if s.net_id == partner]
-                        + [seg for pad in ppads for seg in _pad_obstacle_segments(pad, layer_names)])
+                        + [s for s in board_segs if s.net_id == partner])
                 pvia = ([v for v in pair_vias if v.net_id == partner]
                         + mid_vias_by_net[partner] + leg_state['v'][partner])
                 return pseg, pvia, ppads
@@ -3290,9 +3317,7 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
                     _attract = _ordered_grid_path(
                         _par_s, (_src_t[0], _src_t[1]), coord, layer_names)
                     _ppads = pads_by_net.get(_partner, [])
-                    _obs_s = (_par_s + [s for s in board_segs if s.net_id == _partner]
-                              + [seg for pad in _ppads
-                                 for seg in _pad_obstacle_segments(pad, layer_names)])
+                    _obs_s = _par_s + [s for s in board_segs if s.net_id == _partner]
                     _obs_v = _par_v + [v for v in pair_vias if v.net_id == _partner]
                     # Multipoint awareness: launch/land anywhere on each
                     # terminal's pre-existing copper island (stub/via/pad),
@@ -3735,6 +3760,7 @@ def _route_hybrid_leg(pcb_data, net_id, config, obstacles, layer_names, coord,
     from obstacle_map import (add_segments_list_as_obstacles, remove_segments_list_from_obstacles,
                               add_vias_list_as_obstacles, remove_vias_list_from_obstacles,
                               add_pads_via_keepout, remove_pads_via_keepout,
+                              add_pads_track_keepout, remove_pads_track_keepout,
                               get_same_net_through_hole_positions)
     partner_pads = partner_pads or []
     _att_radius = 0
@@ -3859,6 +3885,13 @@ def _route_hybrid_leg(pcb_data, net_id, config, obstacles, layer_names, coord,
         if ring_cells:
             obstacles.add_blocked_vias_batch(np.array(ring_cells, dtype=np.int32))
 
+    # The partner's pads block the leg's track by their exact copper where the
+    # map takes corner guards; upstream's widened capsule (kept as the
+    # fallback) closes the lane beside a 0.4 mm pitch partner pad.
+    held_pads = add_pads_track_keepout(obstacles, partner_pads, config)
+    if held_pads is None:
+        partner_segs = list(partner_segs) + [seg for pad in partner_pads
+                                             for seg in _pad_obstacle_segments(pad, layer_names)]
     add_segments_list_as_obstacles(obstacles, partner_segs, config)
     add_vias_list_as_obstacles(obstacles, partner_vias, config)
     add_pads_via_keepout(obstacles, partner_pads, config)
@@ -3960,6 +3993,7 @@ def _route_hybrid_leg(pcb_data, net_id, config, obstacles, layer_names, coord,
         remove_segments_list_from_obstacles(obstacles, partner_segs, config)
         remove_vias_list_from_obstacles(obstacles, partner_vias, config)
         remove_pads_via_keepout(obstacles, partner_pads, config)
+        remove_pads_track_keepout(obstacles, held_pads)
         if ring_cells:
             obstacles.remove_blocked_vias_batch(np.array(ring_cells, dtype=np.int32))
 
@@ -4049,8 +4083,7 @@ def seam_reask_chain_leg(pcb_data, pair, config, leg_obstacles, layer_names,
         attract = _ordered_grid_path(par_leg or par_all, (src_t[0], src_t[1]),
                                      coord, layer_names)
         ppads = pcb_data.pads_by_net.get(partner, [])
-        obs_s = par_all + [seg for pad in ppads
-                           for seg in _pad_obstacle_segments(pad, layer_names)]
+        obs_s = list(par_all)
         pair_vias_all = [v for v in pcb_data.vias if v.net_id in (p_id, n_id)]
         got = _route_hybrid_leg(
             pcb_data, net, config, leg_obstacles, layer_names, coord,

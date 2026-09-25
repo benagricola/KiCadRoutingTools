@@ -3919,6 +3919,53 @@ def add_pads_via_keepout(obstacles: GridObstacleMap, pads: list,
             obstacles.add_blocked_vias_batch(np.ascontiguousarray(cells.astype(np.int32)))
 
 
+def add_pads_track_keepout(obstacles: GridObstacleMap, pads: list,
+                           config: GridRouteConfig):
+    """Stamp `pads` as TRACK obstacles, exact (a cell at the rule open, the
+    corner guards refusing the moves that clip a corner), at each pad net's
+    cross-class clearance; their vias are left to add_pads_via_keepout.
+    Returns what was stamped, for remove_pads_track_keepout, or None when the
+    map takes no corner guards (nothing is stamped then).
+
+    A hybrid leg's partner pads (#241): upstream stamps them as capsules
+    widened to short*sqrt(2) (diff_pair_routing._pad_obstacle_segments),
+    which along a rect pad's sides bulge 0.21*short past its copper and close
+    the lane out of the pad beside it at 0.4 mm pitch
+    (docs/pair-via-crossover-plan.md, task 1)."""
+    if not _takes_guards(obstacles):
+        return None
+    coord = GridCoord(config.grid_step)
+    layer_map = build_layer_map(config.layers)
+    cell_sink, guard_sink = {}, []
+    for pad in pads:
+        _add_pad_obstacle(obstacles, pad, coord, layer_map, config,
+                          clearance_override=config.obstacle_clearance(pad.net_id),
+                          cell_sink=cell_sink, via_sink=[], guard_sink=guard_sink)
+    rows = [np.column_stack([np.concatenate(arrs).astype(np.int32),
+                             np.full(sum(len(a) for a in arrs), li, dtype=np.int32)])
+            for li, arrs in sorted(cell_sink.items())]
+    cells = (np.ascontiguousarray(np.concatenate(rows)) if rows
+             else np.empty((0, 3), dtype=np.int32))
+    guards = (np.ascontiguousarray(np.concatenate(guard_sink), dtype=np.float64)
+              if guard_sink else np.empty((0, 4), dtype=np.float64))
+    if len(cells):
+        obstacles.add_blocked_cells_batch(cells)
+    if len(guards):
+        obstacles.add_corner_guards_batch(guards)
+    return cells, guards
+
+
+def remove_pads_track_keepout(obstacles: GridObstacleMap, held):
+    """Undo add_pads_track_keepout (`held` is what it returned)."""
+    if held is None:
+        return
+    cells, guards = held
+    if len(cells):
+        obstacles.remove_blocked_cells_batch(cells)
+    if len(guards):
+        obstacles.remove_corner_guards_batch(guards)
+
+
 def remove_pads_via_keepout(obstacles: GridObstacleMap, pads: list,
                             config: GridRouteConfig, extra_clearance: float = 0.0):
     """Undo add_pads_via_keepout (decrements the ref-counted via keep-out)."""

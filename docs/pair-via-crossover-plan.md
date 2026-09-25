@@ -23,10 +23,12 @@
 
 **Files:** Modify `py_router/diff_pair_routing.py` (`_route_direct_coupled_middle._closest_launch`), `py_router/routing_defaults.py` (`HYBRID_LAUNCH_RADIUS`); Test `tests/test_hybrid_launch_search.py`, fixture `tests/fixtures/pair_crossover/usb_north.kicad_pcb` (the module fan-out case, only USB_MCU to route)
 
-- [ ] Failing test: route_diff on the fixture, `--nets 'USB_MCU_*'`, F.Cu + B.Cu: the pair report says `outcome: coupled`; both launch points lie within `HYBRID_LAUNCH_RADIUS` of their own terminals (today both land beside R2/R3); KiCad's DRC finds no clearance violation.
-- [ ] Implement: from each terminal, the nearest cell (breadth-first over open cells on the candidate layer, within the radius) whose pair-wide swath is clear, ties broken toward the other terminal; the straight-line walk stays the first try.
-- [ ] Run the router's diff-pair and hybrid tests.
-- [ ] Commit.
+- [x] Failing test: route_diff on the fixture, `--nets 'USB_MCU_*'`, F.Cu + B.Cu: the pair report says `outcome: coupled`; both launch points lie within `HYBRID_LAUNCH_RADIUS` of their own terminals (today both land beside R2/R3); KiCad's DRC finds no clearance violation.
+- [x] Implement: from each terminal, the nearest cell (breadth-first over open cells on the candidate layer, within the radius) whose pair-wide swath is clear, ties broken toward the other terminal; the straight-line walk stays the first try.
+- [x] Run the router's diff-pair and hybrid tests.
+- [x] Commit.
+- [x] Found on the way: the launch search alone left the legs unable to attach. The leg map stamped the partner's pads as capsules widened to short*sqrt(2) (`_pad_obstacle_segments`), which close the lane out of the pad beside a 0.4 mm pitch partner pad; the leg map now stamps them exact with corner guards (`obstacle_map.add_pads_track_keepout`, test `tests/test_partner_pad_exact.py`), the capsule kept as the fallback for a map without guards.
+- Result: USB_MCU coupled, DRC clean, launches 2.0 mm and 2.3 mm from their terminals. The resistor-end N leg loops about 5 mm round the resistors on F.Cu rather than dropping under the P pad.
 
 ### Task 2 (only if Task 1 leaves USB_MCU uncoupled): the staggered-via crossover
 
