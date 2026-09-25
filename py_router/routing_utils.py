@@ -494,6 +494,59 @@ _CIRCLE_OFFSETS_CACHE: Dict[Tuple[int, float], "np.ndarray"] = {}
 GRID_TIE_EPS = 1e-6
 
 
+def pad_corner_radius(pad) -> float:
+    """A pad's corner radius as the obstacle rasterisers model it: circles and
+    ovals as a rounded rect of half their short side, roundrects by their
+    ratio, everything else square-cornered."""
+    if pad.shape in ('circle', 'oval'):
+        return min(pad.size_x, pad.size_y) / 2
+    if pad.shape == 'roundrect':
+        return pad.roundrect_rratio * min(pad.size_x, pad.size_y)
+    return 0.0
+
+
+def pad_corner_guards(pad, grid_step: float, margin: float) -> "np.ndarray":
+    """The pad's corner guards for a track keep-out `margin` (track/2 +
+    clearance), as (N, 3) rows (gx, gy, r) in grid units
+    (docs/corner-move-check-design.md). A move whose segment passes inside a
+    guard clips the pad's keep-out; every point inside one is within `margin`
+    of the pad's copper, so a guard never refuses a legal move, and with the
+    pad's cells stamped exact (no corner buffer) a move between two open cells
+    comes nearest the pad at a vertex or corner arc, which a guard covers.
+
+    A custom-polygon pad: every vertex, radius `margin`. Otherwise the four
+    corner-arc centres of the (possibly rotated) rounded rect, deduplicated,
+    radius `margin` + the corner radius. The radius carries GRID_TIE_EPS as
+    the rasterisers do: a move exactly at the rule stays legal."""
+    inv = 1.0 / grid_step
+    rows = []
+    polys = getattr(pad, 'polygons', None)
+    if polys:
+        r = (margin - GRID_TIE_EPS) * inv
+        seen = set()
+        for poly in polys:
+            for x, y in poly:
+                if (x, y) not in seen:
+                    seen.add((x, y))
+                    rows.append((x * inv, y * inv, r))
+    else:
+        cr = pad_corner_radius(pad)
+        ex, ey = max(pad.size_x / 2 - cr, 0.0), max(pad.size_y / 2 - cr, 0.0)
+        a = math.radians(getattr(pad, 'rect_rotation', 0.0) or 0.0)
+        c, s = math.cos(a), math.sin(a)
+        r = (margin + cr - GRID_TIE_EPS) * inv
+        seen = set()
+        for lx in (-ex, ex):
+            for ly in (-ey, ey):
+                if (lx, ly) in seen:
+                    continue
+                seen.add((lx, ly))
+                x = pad.global_x + lx * c - ly * s
+                y = pad.global_y + lx * s + ly * c
+                rows.append((x * inv, y * inv, r))
+    return np.array(rows, dtype=np.float64).reshape(-1, 3)
+
+
 def _capsule_mask(x1: float, y1: float, x2: float, y2: float,
                   margin: float, grid_step: float):
     """(xs, ys, mask) for the capsule around (x1,y1)-(x2,y2).
