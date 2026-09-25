@@ -43,9 +43,9 @@
 
 **Files:** Modify `py_router/route.py` (CLI entry, around `batch_route`), argument parser (`--align-grid` default on, `--no-align-grid`), JSON summary (`grid_alignment: {dx, dy, rows}`); Test `tests/test_grid_align_route.py`
 
-- [ ] Failing test: the lab's bare QFN (built as text) moved by (0.05, 0.05) routes 80/80 on F.Cu at 0.2/0.2 with `--escalation off` and alignment on, the output's copper lands on the original board's coordinates, DRC clean at no margin; with `--no-align-grid` it fails pins.
-- [ ] Implement: when the offset is not (0, 0), write the translated input (and siblings) to a temp dir, route it to a temp output, translate the output back to the requested path, and carry the router's written project over.
-- [ ] Commit.
+- [x] Failing test: the lab's bare QFN (built as text) moved by (0.05, 0.05) routes 80/80 on F.Cu at 0.2/0.2 with `--escalation off` and alignment on, the output's copper lands on the original board's coordinates, DRC clean at no margin; with `--no-align-grid` it fails pins.
+- [x] Implement: when the offset is not (0, 0), write the translated input (and siblings) to a temp dir, route it to a temp output, translate the output back to the requested path, and carry the router's written project over.
+- [x] Commit.
 
 ### Task 4: Exact escape stubs
 
