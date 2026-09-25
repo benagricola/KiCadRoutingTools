@@ -1,4 +1,4 @@
-# Exact escape stubs
+# Grid alignment and exact escape stubs
 
 Date: 2026-09-25
 Status: proposal
@@ -39,6 +39,34 @@ On a 0.1 mm grid a 45 degree track can lie only on the lines x +/- y =
 k x 0.1 mm, 0.0707 mm apart; an exact fit past a tilted pad needs one line,
 and it is between two of them. A finer grid moves the problem rather than
 removing it, at four times the cells.
+
+## Grid alignment
+
+Measured with placemat's `fixtures/route_spread.py`, which routes the module
+case at 8 sub-grid offsets of the whole board (0.1 mm grid, F.Cu + B.Cu):
+
+| board offset (dx, dy) mm | failed nets |
+|---|---|
+| (0, 0): as placed | 5 |
+| dx a multiple of 0.025 (0.05, 0.025, 0.075) | 33 in each |
+| dx a multiple of 0.0125 but not 0.025 (0.0125, 0.0375, 0.0625, 0.0875) | 56 in each |
+
+The same with the east side moved out 0.5 mm: 3, 33, 56. At 0.2/0.2 and
+0.4 mm pitch the only legal straight lane out of a pin is on the pin's own
+centre line. As placed, the QFN's row centre lines fall on the 0.1 mm grid;
+moved off it, the nearest grid lane is too close to a neighbour and whole rows
+seal. So a board's routability at minimum pitch depends on where its fine-pitch
+parts sit relative to the router's grid origin, which is the board origin
+(`routing_config.py:801`, `GridCoord` rounds from zero).
+
+**Part 1, the cheaper fix**: before routing, choose the sub-grid translation
+(dx, dy) in [0, grid) that puts the most fine-pitch row centre lines (rows as
+the fan order finds them: pitch at most 2 x (track + clearance)) on grid
+lines, weighted by pin count; translate the board by it, route, and translate
+the result back. One origin serves the whole board, so two fine-pitch parts
+out of phase with each other cannot both be aligned; the rest of the board
+is unaffected by a sub-grid translation. The exact stubs below (part 2) are
+what covers a part the origin cannot align.
 
 ## The fix: exact escape stubs
 
@@ -93,6 +121,9 @@ per run (min, median, max) and failures per net.
   text, the designer's gpio24 geometry): the stub is found and the route is
   DRC clean with `check_drc.py --clearance-margin 0`; a pad with no way out
   at all: no stub, and the existing fallback runs.
+- Part 1: the module case routed at the 8 offsets above gives the same
+  failed nets as at (0, 0); a synthetic board with two QFNs out of phase
+  aligns the one with more pins.
 - The module case: gpio23 and gpio24 fail in 0 of 8 runs (today 8 of 8 is
   expected at 0.1 mm; to be measured first), no other net's failure rate
   up by more than 1 in 8, DRC clean.
