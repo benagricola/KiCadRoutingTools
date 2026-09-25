@@ -2,7 +2,7 @@
 
 High-performance A* grid router implemented in Rust with Python bindings via PyO3.
 
-**Current Version: 0.22.0**
+**Current Version: 0.23.0**
 
 > **Release note:** the 0.20.0 per-platform binaries are published as of
 > [v0.20.0](https://github.com/drandyhaas/KiCadRoutingTools/releases/tag/v0.20.0),
@@ -310,6 +310,15 @@ src/
 - **Costs**: ORTHO_COST=1000, DIAG_COST=1414 (sqrt(2) * 1000), DEFAULT_TURN_COST=1000
 
 ## Version History
+
+### 0.23.0 (2026-09-25)
+
+- Corner guards (docs/corner-move-check-design.md): `add_corner_guards_batch`,
+  `remove_corner_guards_batch`, `corner_guard_count` and `move_clips_corner` on
+  `GridObstacleMap`. A guard is a circle in grid units on one layer; the A*
+  expansion refuses a move whose segment passes inside one, so a pad's cells can
+  be stamped exact (no corner buffer) and a straight lane at exactly the
+  clearance stays open.
 
 ### 0.22.0 (2026-09-03)
 
