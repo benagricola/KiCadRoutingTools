@@ -3915,6 +3915,13 @@ def check_line_clearance(obstacles: GridObstacleMap,
     """
     coord = GridCoord(config.grid_step)
 
+    # Open cells are not enough where pads are stamped exact: the line must
+    # not clip a pad's corner either (docs/corner-move-check-design.md).
+    if hasattr(obstacles, 'move_clips_corner'):
+        (ga, gb), (gc, gd) = coord.to_grid(x1, y1), coord.to_grid(x2, y2)
+        if obstacles.move_clips_corner(ga, gb, gc, gd, layer_idx, 0.0):
+            return False
+
     dx = x2 - x1
     dy = y2 - y1
     length = (dx * dx + dy * dy) ** 0.5

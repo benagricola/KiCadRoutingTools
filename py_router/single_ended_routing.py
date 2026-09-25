@@ -5517,6 +5517,11 @@ def _segment_fits_wide(seg, obstacles, coord: GridCoord, layer_idx: int, margin:
     body of diagonal segments)."""
     gx1, gy1 = coord.to_grid(seg.start_x, seg.start_y)
     gx2, gy2 = coord.to_grid(seg.end_x, seg.end_y)
+    # Open cells are not enough where pads are stamped exact: the segment
+    # must not clip a pad's corner either (docs/corner-move-check-design.md).
+    if hasattr(obstacles, 'move_clips_corner') and obstacles.move_clips_corner(
+            gx1, gy1, gx2, gy2, layer_idx, float(max(margin, 0))):
+        return False
     if margin > 0:
         return not obstacles.segment_blocked(gx1, gy1, gx2, gy2, layer_idx, float(margin))
     # Zero margin (base-width): segment_blocked's r<=0 fast path only checks the

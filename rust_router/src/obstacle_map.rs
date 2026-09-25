@@ -430,9 +430,11 @@ impl GridObstacleMap {
         self.guard_rows
     }
 
-    /// Whether the one-step move (gx1, gy1) -> (gx2, gy2) on `layer` passes
-    /// nearer a guard's centre than its radius plus `extra` (the moving
-    /// track's own margin, grid units, as segment_blocked takes it).
+    /// Whether the segment (gx1, gy1) -> (gx2, gy2) on `layer` passes nearer
+    /// a guard's centre than its radius plus `extra` (the moving track's own
+    /// margin, grid units, as segment_blocked takes it). A one-step move with
+    /// no margin reads its two end cells; anything longer or wider scans the
+    /// cells round it.
     pub fn move_clips_corner(&self, gx1: i32, gy1: i32, gx2: i32, gy2: i32, layer: usize, extra: f64) -> bool {
         if layer >= self.num_layers || self.guard_rows == 0 {
             return false;
@@ -448,10 +450,11 @@ impl GridObstacleMap {
                 None => false,
             }
         };
-        if reach == 0 {
+        if reach == 0 && (gx2 - gx1).abs() <= 1 && (gy2 - gy1).abs() <= 1 {
             return check(gx1, gy1) || check(gx2, gy2);
         }
-        // A wide track: its margin reaches guards filed beyond the end cells.
+        // A longer segment, or a wide track whose margin reaches guards filed
+        // beyond the cells the segment itself crosses.
         for cx in (gx1.min(gx2) - reach)..=(gx1.max(gx2) + reach) {
             for cy in (gy1.min(gy2) - reach)..=(gy1.max(gy2) + reach) {
                 if check(cx, cy) {
