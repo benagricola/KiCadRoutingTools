@@ -22,6 +22,9 @@ import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, 'py_router'))
+from kicad_parser import parse_kicad_pcb  # noqa: E402
+
 FIX = os.path.join(ROOT, 'tests', 'fixtures', 'pair_crossover', 'usb_north')
 _fails = []
 
@@ -43,6 +46,12 @@ with tempfile.TemporaryDirectory() as tmp:
     m = [json.loads(x) for x in re.findall(r'JSON_SUMMARY: (\{.*\})', r.stdout) if '"routed_diff_pairs"' in x]
     rep = (m[-1].get('pair_reports') or [{}])[0] if m else {}
     check('the USB pair routes coupled', rep.get('outcome') == 'coupled', repr(rep))
+    if os.path.isfile(out):
+        # the fixture's project sets a 0.2 mm minimum track width
+        pcb = parse_kicad_pcb(out)
+        widths = [x.width for x in pcb.segments if pcb.nets[x.net_id].name.startswith('USB_MCU')]
+        check('no pair track is under the 0.2 mm minimum', widths and min(widths) >= 0.2 - 1e-9,
+              repr(sorted(set(widths))))
     if shutil.which('kicad-cli') and os.path.isfile(out):
         dj = os.path.join(tmp, 'drc.json')
         subprocess.run(['kicad-cli', 'pcb', 'drc', '--format', 'json', '-o', dj, out], capture_output=True)

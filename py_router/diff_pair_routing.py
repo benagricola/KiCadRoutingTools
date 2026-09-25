@@ -1286,8 +1286,14 @@ def _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data):
                     continue
                 d = _seg_seg_min_dist(s.start_x, s.start_y, s.end_x, s.end_y,
                                       o.start_x, o.start_y, o.end_x, o.end_y)
-                allowed_half = (d - o.width / 2.0
-                                - _pair_clearance(s.net_id, o.net_id) - 2e-4)
+                clr = _pair_clearance(s.net_id, o.net_id)
+                # A gap of exactly the clearance is legal: the map places
+                # copper there (margin minus GRID_TIE_EPS), and the hard check
+                # below uses the same tolerance. Diverges from upstream, which
+                # necks any gap within the 2e-4 cushion of the clearance.
+                if d - o.width / 2.0 - clr >= s.width / 2.0 - 1e-6:
+                    continue
+                allowed_half = d - o.width / 2.0 - clr - 2e-4
                 if allowed_half < s.width / 2.0 - 1e-9:
                     new_w = max(floor, 2.0 * allowed_half)
                     if new_w < s.width - 1e-9:
