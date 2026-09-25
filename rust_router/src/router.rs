@@ -732,6 +732,14 @@ impl GridSearch {
                     sink.on_blocked(ngx, ngy, current.layer);
                     continue;
                 }
+                // Both cells open, the step between them may still clip a
+                // foreign pad's corner (docs/corner-move-check-design.md).
+                if obstacles.move_clips_corner(current.gx, current.gy, ngx, ngy,
+                                               current.layer as usize,
+                                               self.opts.track_margin.at(current.layer as usize)) {
+                    sink.on_blocked(ngx, ngy, current.layer);
+                    continue;
+                }
 
                 // Via exclusion - can't approach our own vias once we've moved away
                 if check_via_exclusion(ngx, ngy, current.gx, current.gy,
