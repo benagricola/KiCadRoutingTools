@@ -72,6 +72,13 @@ class _StaticStampProxy:
     def add_blocked_via_spans_batch(self, spans):
         self._real.add_static_blocked_via_spans_batch(spans)
 
+    # Declared here, not left to __getattr__: _takes_guards asks the TYPE
+    # whether the map stores corner guards, and without this the base map's
+    # pads fell back to the half-cell corner buffer on every run (the base
+    # guards are permanent for the run, like the static cells).
+    def add_corner_guards_batch(self, rows):
+        self._real.add_corner_guards_batch(rows)
+
     def __getattr__(self, name):
         return getattr(self._real, name)
 
