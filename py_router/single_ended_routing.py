@@ -861,6 +861,19 @@ def _fab_track_floor(pcb_data) -> float:
     return fab_floors(n)['track_width']
 
 
+def _hard_text(entry):
+    """What a `_neck_terminal_grazes` refusal was, for the log: an overlap of
+    foreign track/via copper (a short at any width), or a graze only a
+    narrower track could clear, refused under --escalation off."""
+    s, dist, why = entry
+    if why == 'overlap':
+        return (f"on {s.layer} would OVERLAP a foreign track/via (centreline "
+                f"{dist:.3f}mm from its edge, under the floor half-width)")
+    return (f"on {s.layer} grazes foreign copper (centreline {dist:.3f}mm from "
+            f"its edge); only a narrower track clears it, and --escalation off "
+            f"forbids narrowing")
+
+
 def _neck_terminal_grazes(segments, term_pts, pcb_data, net_id, config, floor=None):
     """Neck a TERMINAL-connection segment that grazes foreign copper, down to `floor`.
 
@@ -907,7 +920,7 @@ def _neck_terminal_grazes(segments, term_pts, pcb_data, net_id, config, floor=No
                 return True
         return False
     necked = 0
-    hard = []
+    hard = []           # (segment, edge distance, 'overlap' | 'graze'); see _hard_text
     for s in segments:
         if not touches(s):
             continue
@@ -922,15 +935,20 @@ def _neck_terminal_grazes(segments, term_pts, pcb_data, net_id, config, floor=No
                                       base_clearance=own_l, net_clearances=nc),
                 _seg_foreign_seg_dist(pcb_data, net_id, s.start_x, s.start_y, s.end_x, s.end_y, s.layer,
                                       net_clearances=nc, base_clearance=own_l))
-        allowed_half = d - own_l - 1e-4  # 1e-4: stay just inside the rule
-        if allowed_half < s.width / 2.0 - 1e-9:
+        allowed_half = d - own_l - 1e-4  # 1e-4: a neck stays just inside the rule
+        # A graze is copper nearer than the rule. Copper exactly at it is legal
+        # (KiCad's DRC grades in whole nanometres): judged without the neck's
+        # inset, a 0.2 mm terminal out of a 0.4 mm pitch row of 0.2 mm pads
+        # read as a graze, and under --escalation off every pin of the row
+        # was refused.
+        if d - own_l < s.width / 2.0 - 1e-6:
             # Hard test BEFORE necking, on the RAW track/via distance: a
             # centreline within floor/2 of a foreign copper EDGE overlaps it
             # at any emittable width -- a physical short, not a graze.
             d_raw = _seg_foreign_seg_dist(pcb_data, net_id, s.start_x,
                                           s.start_y, s.end_x, s.end_y, s.layer)
             if d_raw < floor / 2.0 - 1e-6:
-                hard.append((s, d_raw))
+                hard.append((s, d_raw, 'overlap'))
                 continue
             new_w = max(floor, 2.0 * allowed_half)
             if new_w < s.width - 1e-9:
@@ -939,7 +957,7 @@ def _neck_terminal_grazes(segments, term_pts, pcb_data, net_id, config, floor=No
                 # list so the caller fails the route and reports it (#842).
                 from fab_tiers import may_narrow, note_narrowing
                 if not may_narrow():
-                    hard.append((s, d_raw))
+                    hard.append((s, d, 'graze'))
                     continue
                 note_narrowing(net_id, 'track_width', s.width, new_w, 'terminal neck')
                 s.width = round(new_w, 4)
@@ -2257,10 +2275,8 @@ def route_net_with_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
     # terminals legitimately overlap future nets' stubs (the probe map
     # excluded them), so the short gate must not veto the prediction.
     if _hard157 and not config.plan_probe:
-        _hs, _hd = _hard157[0]
-        print(f"  {YELLOW}terminal copper on {_hs.layer} would OVERLAP a "
-              f"foreign track/via (edge dist {_hd:.3f}mm < floor half-width) "
-              f"-- rejecting the route rather than shipping a short{RESET}")
+        print(f"  {YELLOW}terminal copper {_hard_text(_hard157[0])} "
+              f"-- rejecting the route{RESET}")
         return {
             'failed': True,
             'iterations': total_iterations,
@@ -4313,10 +4329,8 @@ def route_multipoint_main(
         # Terminal-bridge SHORT gate (ux pf9): the main edge's terminal copper
         # overlaps a foreign track/via at any width -- fail the edge so the
         # rip/retry ladder finds another approach instead of shipping a short.
-        _hs, _hd = _hard_p1[0]
-        print(f"  {YELLOW}Phase 1 terminal copper on {_hs.layer} would OVERLAP "
-              f"a foreign track/via (edge dist {_hd:.3f}mm) -- failing the "
-              f"edge rather than shipping a short{RESET}")
+        print(f"  {YELLOW}Phase 1 terminal copper {_hard_text(_hard_p1[0])} "
+              f"-- failing the edge{RESET}")
         return {'failed': True, 'iterations': total_iterations}
     # Fab-floor via dropped inside a boxed main-edge pad to unblock it (#189);
     # a #535 off-pad escape ships its pad->via stub alongside.
@@ -5050,10 +5064,8 @@ def _route_multipoint_taps_impl(
             # rip/retry ladder finds another approach. (A #189 unblock via
             # already registered for this edge stays in the map -- a
             # conservative over-block for later edges, never a short.)
-            _hs, _hd = _hard_tap[0]
-            print(f"      {YELLOW}terminal copper on {_hs.layer} would "
-                  f"OVERLAP a foreign track/via (edge dist {_hd:.3f}mm) -- "
-                  f"failing the MST edge rather than shipping a short{RESET}")
+            print(f"      {YELLOW}terminal copper {_hard_text(_hard_tap[0])} "
+                  f"-- failing the MST edge{RESET}")
             edge_key = (min(src_idx, tgt_idx), max(src_idx, tgt_idx))
             failed_edges.add(edge_key)
             blocked_cells = list(blocked_cells) + _via_conflict_extra
