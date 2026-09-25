@@ -1,8 +1,24 @@
 # Relief-via escape
 
 Date: 2026-09-25
-Status: proposal
+Status: proposal, to be re-scoped (see the correction below)
 Branch: fix/escape-at-min-pitch (local), after the corner move check
+
+## Correction (2026-09-25)
+
+The premise below is wrong for two of the four pins. gpio23 and gpio24 sit
+beside a supply pin whose cap is tilted 45 degrees, not on the pin's axis,
+and both escape outward on F.Cu: the board's designer drew them (the module's
+layout.kicad_pcb, saved 2026-09-25), and KiCad's DRC finds no violation. Every
+clearance on those paths is exactly 0.2 mm and the turns sit off the 0.1 mm
+grid (gpio23 turns at y = +5.737 mm from the chip centre), so the router
+misses them from grid quantization, not for want of a via: at a 0.05 mm grid
+it routed both in one of six runs, at 0.1 mm in none. That is the subject of
+docs/off-grid-exact-fit-design.md. LAYOUT-INTENT point 6 holds for caps on a
+pin's axis (the west face, the east face's flanking pairs), and the relief via
+stays the proposal for those pins; this document is to be re-scoped to them
+and re-measured with route spreads (the module's failing set changes between
+near-identical inputs, so single routes do not decide it).
 
 ## The problem
 
@@ -13,8 +29,8 @@ way out: a lane needs `pad_half_height + clearance` off the cap axis to clear
 it, which for a 0402 cap pad (0.31 mm half-height) is 0.61 mm -- more than the
 0.4 mm pitch gives at any track width. The hand-routed reference for this
 board says as much directly: "the +/-0.4 mm neighbours of a cap pin are
-impossible at any track width" (`MCU_RP2350B/LAYOUT-INTENT.md`, the escape and
-decoupling architecture, point 6). Its fix for the pins this hits on the west
+impossible at any track width" (the module's LAYOUT-INTENT notes, which live with the
+board, not in this repository: the escape and decoupling architecture, point 6). Its fix for the pins this hits on the west
 and east faces is a **relief via**: dive inward, under the package, to a via
 in the ring between the exposed pad (EP) and the pad row, and continue on the
 other copper layer.
@@ -45,7 +61,7 @@ ADC_AVDD pin, i.e. a cap axis):
 | gpio40_adc0 | (4.91, 0.6) | (4.91, 0.2) |
 | gpio47_adc7 | (4.91, -3.0) | (4.91, -3.4) |
 
-This is exactly the LAYOUT-INTENT.md point-6 geometry, on the south and east
+This is exactly the LAYOUT-INTENT point-6 geometry, on the south and east
 faces (the hand board only offers relief vias on the west/east faces; the
 south pair uses a different, placement-level trick -- see Alternatives).
 
@@ -165,7 +181,7 @@ one falls back to the existing radius search. The hand reference's own
 count -- vias 0.8 mm apart on the ring (double the 0.4 mm pin pitch, the
 minimum that clears via-to-via spacing at this class) and a documented dead
 row where "no x between two 0.4-pitch pads clears a 0.6 mm via"
-(LAYOUT-INTENT.md point 3) -- is what this emergent behaviour reproduces,
+(LAYOUT-INTENT point 3) -- is what this emergent behaviour reproduces,
 not a lattice the router has to know about.
 
 **Corner guards.** The pad-to-via stub is routed by `route_via_to_pad`
@@ -219,7 +235,7 @@ zone/ghost preferences do.
   0402 cap pad's real copper does not move. A finer grid only makes the
   probe more precise about the same wall.
 - **Match the hand layout's south-face fix (shift a neighbouring part to
-  open a gap).** This is what LAYOUT-INTENT.md does for `gpio23`/`gpio24`
+  open a gap).** This is what LAYOUT-INTENT does for `gpio23`/`gpio24`
   instead of a relief via (a 0.3 mm south slide of the crystal block). It is
   a placement-level decision specific to what else is near that pin on that
   board, not a general router mechanism, and it is out of scope here: this
