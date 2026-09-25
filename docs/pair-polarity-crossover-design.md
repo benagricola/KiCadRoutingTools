@@ -44,6 +44,16 @@ pads, by independent A*, with no coupled crossing." No new mechanism is
 proposed; the work is to find why the hybrid's candidates fail here and fix
 that.
 
+Upstream #266 (open) is the neighbouring gap: the hybrid cannot do a pad
+polarity swap, so a side-flipping pair "wraps around" (one track detours
+round the other); prior art PR #644 built part of it and was closed unmerged.
+A pad swap is denied for USB by policy (#279), so for this pair the
+wrap-around is the resolution upstream intends, and here even that is
+rejected ("coupled middle P/N tracks cross"). If the diagnosis finds the
+wrap-around cannot be clean at this geometry, the designer's layer-change
+crossover (staggered vias exchanging the sides) is the alternative to
+propose, as a separate change.
+
 ## Plan of the diagnosis
 
 1. Reproduce on a minimal case: the chip's north face (pins 60-72 with
