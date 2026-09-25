@@ -89,7 +89,19 @@ off = aligning_offset(board(('U1', 10.03, 10.05, 8)), GRID, 0.3)
 check('no fine-pitch rows gives no offset', near(off, (0, 0)), repr(off))
 
 off = aligning_offset(board(('U1', 10.029999, 10.050001, 8)), GRID, MAX_PITCH)
-check('pads a nanometre off one another vote together', near(off, (0.07, 0.05)), repr(off))
+check('pads a nanometre off the grid are moved exactly onto it', near(off, (0.070001, 0.049999)), repr(off))
+
+# a board shifted by 0.0333 mm (the route spread's offsets): its rows must land
+# EXACTLY on the grid; at minimum pitch the lanes sit at exactly the clearance
+# and the router's tie tolerance is 1 nm, so a 300 nm miss seals every row
+off = aligning_offset(board(('U1', 10.05, 10.0333, 8)), GRID, MAX_PITCH)
+check('an offset of 33.3 um is undone to the nanometre', near(off, (0.05, 0.0667)), repr(off))
+
+# pads 1 nm apart still vote together, and the offset follows their median
+pcb = board(('U1', 10.03, 10.05, 8), ('U2', 30.030001, 30.050001, 4))
+off = aligning_offset(pcb, GRID, MAX_PITCH)
+check('residues a nanometre apart share one bin; the offset is their median',
+      near(off, (0.07, 0.05)), repr(off))
 
 off = aligning_offset(board(('U1', -10.03, -10.05, 8)), GRID, MAX_PITCH)
 check('negative coordinates', near(off, (0.03, 0.05)), repr(off))

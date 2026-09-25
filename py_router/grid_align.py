@@ -13,18 +13,23 @@ from typing import Dict, Tuple
 
 from fan_order import find_fan_rows
 
-_UM = 1_000              # micrometres per mm: residues are voted in whole um, so
-                         # pads a few nm apart (12.349999 beside 12.35) vote together
+_NM = 1_000_000          # nanometres per mm: the offset is exact in these
+_UM = 1_000              # nanometres per micrometre: votes are binned in whole
+                         # micrometres, so pads a few nm apart (12.349999 beside
+                         # 12.35) vote together
 
 
 def aligning_offset(pcb_data, grid_step: float, max_pitch: float) -> Tuple[float, float]:
-    """(dx, dy) in mm, each in [0, grid_step) and whole micrometres: the
-    translation that puts the most fine-pitch row pins' centre lines on the
-    grid. Per axis, each row pin votes for its centre line's residue modulo
-    the grid; the most voted residue is moved to zero. Rows not along x or
-    y are not counted; no rows gives (0, 0)."""
-    step = round(grid_step * _UM)
-    votes: Tuple[Dict[int, int], Dict[int, int]] = ({}, {})
+    """(dx, dy) in mm, each in [0, grid_step): the translation that puts the
+    most fine-pitch row pins' centre lines EXACTLY on the grid. Per axis,
+    each row pin votes for its centre line's residue modulo the grid, binned
+    in whole micrometres; the offset moves the median of the winning bin's
+    exact nanometre residues to zero. Exact matters: at minimum pitch a lane
+    sits at exactly the clearance and the router's tie tolerance is 1 nm, so
+    a board left 300 nm off the grid seals its rows. Rows not along x or y
+    are not counted; no rows gives (0, 0)."""
+    step = round(grid_step * _NM)
+    residues: Tuple[Dict[int, list], Dict[int, list]] = ({}, {})
     for row in find_fan_rows(pcb_data, max_pitch):
         ax, ay = row.axis
         if abs(abs(ax) - 1.0) < 1e-6:
@@ -35,15 +40,19 @@ def aligning_offset(pcb_data, grid_step: float, max_pitch: float) -> Tuple[float
             continue
         for p in row.pads:
             c = p.global_x if axis == 0 else p.global_y
-            r = round(c * _UM) % step
-            votes[axis][r] = votes[axis][r] + 1 if r in votes[axis] else 1
+            r = round(c * _NM) % step
+            residues[axis].setdefault(round(r / _UM) % (step // _UM), []).append(r)
     out = []
-    for v in votes:
-        if not v:
+    for bins in residues:
+        if not bins:
             out.append(0.0)
             continue
-        r = max(sorted(v), key=lambda k: v[k])      # ties: the smallest residue
-        out.append(((step - r) % step) / _UM)
+        b = max(sorted(bins), key=lambda k: len(bins[k]))      # ties: the smallest bin
+        centre = b * _UM
+        # residues either side of the grid line fall in bin 0: unwrap them
+        vals = sorted(r - step if r - centre > step // 2 else r for r in bins[b])
+        med = vals[len(vals) // 2]
+        out.append(((-med) % step) / _NM)
     return out[0], out[1]
 
 
