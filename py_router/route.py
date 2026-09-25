@@ -523,6 +523,12 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 bga_exclusion_zones: Optional[List[Tuple[float, float, float, float]]] = None,
                 direction_order: str = None,
                 ordering_strategy: str = "inside_out",
+                # Row fan order (docs/row-fan-order-design.md): after the
+                # ordering strategy above picks a base order, re-sequence
+                # each fine-pitch pin row's nets outside-in. Order only --
+                # never geometry or rules. On by default; False restores the
+                # base order untouched (the --no-fan-order CLI switch).
+                fan_order: bool = True,
                 disable_bga_zones: Optional[List[str]] = None,
                 track_width: float = defaults.TRACK_WIDTH,
                 track_width_from_class: bool = False,
@@ -1663,6 +1669,26 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
 
     elif ordering_strategy == "original":
         print("\nUsing original net order (no sorting)")
+
+    # Row fan order (docs/row-fan-order-design.md): after the base order
+    # above (MPS, inside_out, bus or original), re-sequence each fine-pitch
+    # pin row's nets outside-in -- the outermost pin turns first, so each
+    # lane can lie beside the one routed before it. Order only, never
+    # geometry or rules; --no-fan-order restores the base order untouched.
+    _fan_order_rows_found = 0
+    _fan_order_nets_resequenced = 0
+    if fan_order and net_ids:
+        import fan_order as _fan_order_mod
+        _fan_max_pitch = defaults.FAN_ORDER_MAX_PITCH_FACTOR * (track_width + clearance)
+        _fan_rows = _fan_order_mod.find_fan_rows(pcb_data, _fan_max_pitch)
+        if _fan_rows:
+            _fan_row_net_ids = {p.net_id for r in _fan_rows for p in r.pads}
+            _fan_order_rows_found = len(_fan_rows)
+            _fan_order_nets_resequenced = sum(
+                1 for _nm, nid in net_ids if nid in _fan_row_net_ids)
+            print(f"Row fan order: {_fan_order_rows_found} row(s), "
+                 f"{_fan_order_nets_resequenced} net(s) re-sequenced")
+            net_ids = _fan_order_mod.fan_order(pcb_data, net_ids, _fan_max_pitch)
 
     # #472 direct-first ordering (KICAD_DIRECT_FIRST=0 disables): nets with a
     # BARE BGA ball (>=2 pads, no attached copper -- the fanout-deferred
@@ -4030,6 +4056,13 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         # Smallest copper clearance any step actually routed at (e.g. fine-pitch
         # taps below the nominal). Grade/check_drc the board at this floor.
         'min_clearance_used': __import__('clearance_ledger').effective(clearance),
+        # Row fan order (docs/row-fan-order-design.md): what the pass found
+        # and touched this run. rows/nets are 0 when --no-fan-order was given
+        # or the board carries no fine-pitch row.
+        'fan_order': {
+            'rows': _fan_order_rows_found,
+            'nets': _fan_order_nets_resequenced,
+        },
     }
     # #857/#842/#530: the escalation policy, every feature delivered below its
     # requested size, every fab-tier escalation, and the .kicad_dru rules this
@@ -6710,6 +6743,14 @@ For differential pair routing, use route_diff.py:
     _sm.add_argument("--no-smoothing", dest="smoothing", action="store_false",
                      help="Disable #536 octolinear smoothing for this step. "
                           "KICAD_SMOOTH_ROUTE=0/1 overrides either way.")
+    _fo = parser.add_mutually_exclusive_group()
+    _fo.add_argument("--fan-order", dest="fan_order", action="store_true", default=True,
+                     help="Row fan order (docs/row-fan-order-design.md): after the "
+                          "base ordering strategy, re-sequence each fine-pitch pin "
+                          "row's nets outside-in. ON by default; order only, never "
+                          "geometry or rules.")
+    _fo.add_argument("--no-fan-order", dest="fan_order", action="store_false",
+                     help="Restore the base net order untouched (no row re-sequencing).")
     parser.add_argument("--keep-input-copper", action="store_true",
                         help="Treat the input file's own copper as read-only: the post-route "
                              "cleanup passes (dead-end sweep, orphan islands, cycle/redundancy "
@@ -7281,6 +7322,7 @@ For differential pair routing, use route_diff.py:
                 return_results=args.preview,
                 direction_order=args.direction,
                 ordering_strategy=args.ordering,
+                fan_order=args.fan_order,
                 disable_bga_zones=args.no_bga_zones,
                 rip_existing_nets=args.rip_existing_nets,
                 force_reroute=args.force_reroute,

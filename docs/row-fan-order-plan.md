@@ -42,9 +42,9 @@
 **Interfaces:**
 - Consumes: `fan_order` (Task 1).
 
-- [ ] Failing test: a two-face row of pins at 0.4 mm pitch (a 20-pad row each side of a synthetic chip, 0.2/0.2, sinks spread 1 mm, 6 mm out) routed on F.Cu with `--escalation off`: every net connects and `check_drc.py --clearance-margin 0` is clean; with `--no-fan-order` at least one pin fails (the case must show the order matters).
-- [ ] Implement; print one line naming the rows found and the nets re-sequenced.
-- [ ] Tests pass; commit.
+- [x] Failing test: a two-face row of pins at 0.4 mm pitch (a 20-pad row each side of a synthetic chip, 0.2/0.2, sinks spread 1 mm, 6 mm out) routed on F.Cu with `--escalation off`: every net connects and `check_drc.py --clearance-margin 0` is clean; with `--no-fan-order` at least one pin fails (the case must show the order matters). Measured: a clean two-face-only case (no adjacent-face corners) routed 40/40 under plain MPS order on this build -- the failure is a corner effect (a lane from one face cutting across a not-yet-routed pin near the next face), so an isolated row does not reproduce it. The test uses four faces (80 pins), the shape the design doc's own escape lab measured: 12/80 failed with `--no-fan-order`, 0/80 with the fan order.
+- [x] Implement; print one line naming the rows found and the nets re-sequenced.
+- [x] Tests pass; commit.
 
 ### Task 3: Measurement
 
