@@ -88,7 +88,21 @@ check('rows at 45 degrees are not counted', near(off, (0, 0)), repr(off))
 off = aligning_offset(board(('U1', 10.03, 10.05, 8)), GRID, 0.3)
 check('no fine-pitch rows gives no offset', near(off, (0, 0)), repr(off))
 
+off = aligning_offset(board(('U1', 10.029999, 10.050001, 8)), GRID, MAX_PITCH)
+check('pads a nanometre off one another vote together', near(off, (0.07, 0.05)), repr(off))
+
 off = aligning_offset(board(('U1', -10.03, -10.05, 8)), GRID, MAX_PITCH)
 check('negative coordinates', near(off, (0.03, 0.05)), repr(off))
+
+from grid_align import child_argv  # noqa: E402
+
+a = child_argv(['b.kicad_pcb', 'o.kicad_pcb', '--nets', 'A', 'B', '--layers', 'F.Cu'],
+               'b.kicad_pcb', 'o.kicad_pcb', '/t/in.kicad_pcb', '/t/out.kicad_pcb')
+check('the child run routes the copy, alignment off',
+      a == ['/t/in.kicad_pcb', '/t/out.kicad_pcb', '--nets', 'A', 'B', '--layers', 'F.Cu', '--no-align-grid'], repr(a))
+a = child_argv(['--nets', 'A', 'b.kicad_pcb', '--output', 'o.kicad_pcb'], 'b.kicad_pcb', 'o.kicad_pcb', 'I', 'O')
+check('--output is dropped', a == ['I', 'O', '--nets', 'A', '--no-align-grid'], repr(a))
+a = child_argv(['b.kicad_pcb', '--overwrite'], 'b.kicad_pcb', 'b.kicad_pcb', 'I', 'O')
+check('--overwrite is dropped', a == ['I', 'O', '--no-align-grid'], repr(a))
 
 sys.exit(1 if _fails else 0)
