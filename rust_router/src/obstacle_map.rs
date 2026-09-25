@@ -425,6 +425,13 @@ impl GridObstacleMap {
         }
     }
 
+    /// Whether (gx, gy) is a route's own endpoint cell on `layer`: exempt from
+    /// blocking, and a move touching it from the corner guards too -- the
+    /// terminal segment is judged exactly afterwards (_neck_terminal_grazes).
+    pub fn is_terminal_cell(&self, gx: i32, gy: i32, layer: usize) -> bool {
+        layer < self.num_layers && self.source_target_cells[layer].contains(&pack_xy(gx, gy))
+    }
+
     /// Guard rows added and not yet removed.
     pub fn corner_guard_count(&self) -> usize {
         self.guard_rows
