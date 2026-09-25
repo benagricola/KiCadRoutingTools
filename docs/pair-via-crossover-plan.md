@@ -4,6 +4,8 @@
 
 **Goal:** a pair whose P and N sit on opposite sides at its two ends routes coupled, exchanging sides where it changes layer, instead of looping or falling back to single-ended.
 
+**Status:** done (Task 1 2c1b0fac, 32d03387; Task 2 not needed).
+
 **Architecture:** first the upstream mechanism the diagnosis found broken: the hybrid (coupled middle, single-ended legs that each drop a via and resolve the side swap at the pads) fails on USB_MCU only because its launch search walks the straight line between the terminals. Task 1 lets it search round each terminal. Only if the case still fails does Task 2 add the staggered-via crossover to the coupled route (the spec's geometry) as one more polarity candidate.
 
 **Tech Stack:** Python in `py_router/` (`diff_pair_routing.py`); tests are scripts.
@@ -40,6 +42,6 @@
 
 ### Task 3: Measurement
 
-- [ ] The module fan-out case through placemat's route step: USB_MCU coupled, nets open no more than 1.
-- [ ] Tracked boards with pairs (lvds_converter_dualclk, lvds_converter_dualclk_gnd, qfn_diffpair_escape, qfn_csi_underpad_diff, watchy, tigard): pairs coupled equal or more, no new DRC violations.
-- [ ] Spec status; commit.
+- [x] The module fan-out case through placemat's route step (32d03387): USB_MCU coupled (single-ended before), KiCad DRC clean. One run left 2 nets open (gpio18, gpio38) against 1 before; gpio38 fails at its own pin on the far face, boxed by neighbours from an earlier round. A jitter spread (8 runs each, the same router, only the pair copper differing) puts it in the noise: disconnected nets per run median 5.0 (4-8) with the coupled pair against 5.5 (4-10) before, three of them the excluded plane nets in every run; gpio38 fails in 2 of 8 against 1 of 8.
+- [x] Tracked boards with pairs, route_diff on the board's copper layers, before (e5d08f7a) and after (2c1b0fac): pair outcomes and new DRC counts identical on all six. Their own pipeline tests (fanout then route_diff: watchy, tigard, qfn_csi_underpad_diff) pass.
+- [x] Task 2 is not needed (USB_MCU routes coupled). What remains: the resistor-end N leg loops about 5 mm round the resistors on F.Cu rather than dropping under the P pad, which the leg's via cost (75, two vias against 5 mm) prefers. The placement fix is the pair-crossing weight (placemat 0.36: swap the two series resistors).
