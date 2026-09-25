@@ -11,6 +11,12 @@ CLEARANCE = 0.25  # mm
 VIA_SIZE = 0.5  # mm
 VIA_DRILL = 0.3  # mm
 
+# Row fan order (docs/row-fan-order-design.md): a row qualifies for the
+# ordering pass only when its pitch leaves room for one lane per pitch, i.e.
+# at most this many track-widths-plus-clearance. A wider row has room to
+# spare and keeps the order it had.
+FAN_ORDER_MAX_PITCH_FACTOR = 2.0
+
 # Fab tier and escalation policy (#857/#530): THE one place these defaults
 # live -- fab_tiers.add_fab_tier_args (every routing CLI) and the GUI's
 # controls read them from here. Completion first (Andy, 2026-09-03): 'auto'

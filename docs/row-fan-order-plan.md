@@ -29,9 +29,9 @@
 **Interfaces:**
 - Produces: `find_fan_rows(pcb_data, max_pitch) -> list[FanRow]` (FanRow: ref, pads in order along the row, axis (ux, uy), outward normal, pitch); `fan_order(pcb_data, net_ids, max_pitch) -> list` taking and returning route.py's `(name, id)` pairs.
 
-- [ ] Failing tests, on boards written as text: (a) a 9-pad row whose nets' far pads lie left, right and ahead: the left group from the left end inward, then the right group from the right end inward, then the ahead group; the row's nets occupy the base order's slot of its first net and non-row nets keep their positions; (b) a net between two rows' footprints keeps its base position; (c) a row at 1.27 mm pitch (above 2 x 0.4) is left alone; (d) a net on two rows is sequenced by the finer row; (e) pads of a 2-pad part never form a row.
-- [ ] Implement, porting the prototype (scratchpad `fan/fan_order.py`, block mode, chip-to-chip rule), with the far end of a net as the centroid of its pads off the row's footprint (its own footprint's other pads when it has none elsewhere).
-- [ ] Tests pass; commit.
+- [x] Failing tests, on boards written as text: (a) a 9-pad row whose nets' far pads lie left, right and ahead: the left group from the left end inward, then the right group from the right end inward, then the ahead group; the row's nets occupy the base order's slot of its first net and non-row nets keep their positions; (b) a net between two rows' footprints keeps its base position; (c) a row at 1.27 mm pitch (above 2 x 0.4) is left alone; (d) a net on two rows is sequenced by the finer row; (e) pads of a 2-pad part never form a row.
+- [x] Implement, porting the prototype (scratchpad `fan/fan_order.py`, block mode, chip-to-chip rule), with the far end of a net as the centroid of its pads off the row's footprint (its own footprint's other pads when it has none elsewhere).
+- [x] Tests pass; commit.
 
 ### Task 2: In route.py
 
