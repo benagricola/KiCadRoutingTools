@@ -1,7 +1,7 @@
 # A pair whose P and N swap sides between its ends
 
 Date: 2026-09-25
-Status: diagnosed (see Findings); the fix is a new proposal, for review
+Status: diagnosed; fixed by docs/pair-via-crossover-plan.md (Task 1)
 Branch: feat/fanout-fixes (local)
 
 ## The problem

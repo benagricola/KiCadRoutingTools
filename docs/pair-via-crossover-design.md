@@ -1,7 +1,7 @@
 # A pair exchanges its sides at a layer change
 
 Date: 2026-09-25
-Status: proposal, for review
+Status: approved; implemented by the hybrid launch search and exact partner pads (docs/pair-via-crossover-plan.md, Task 1). The staggered-via geometry below was not needed for the case that motivated it and is not built.
 Branch: feat/fanout-fixes (local)
 Follows: docs/pair-polarity-crossover-design.md (the diagnosis)
 
