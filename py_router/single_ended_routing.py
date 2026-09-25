@@ -2899,12 +2899,20 @@ def _route_with_via_unblock(router, obstacles, config, sources, targets, track_m
                                  single_direction, waypoints)
     if res[0] is not None:
         return res + ([], [])
-    layer_names = config.layers
-    if len(layer_names) < 2:
-        return res + ([], [])
     fwd_i, bwd_i = res[5], res[6]
     lim = config.max_probe_iterations
     coord = GridCoord(config.grid_step)
+    # Exact escape stubs (docs/off-grid-exact-fit-design.md) come first: an
+    # exact fit on the pad's own layer needs no via.
+    if env_knobs.EXACT_ESCAPE and ((fwd_i and fwd_i < lim) or (bwd_i and bwd_i < lim)):
+        _ex = _route_with_exact_escape(router, obstacles, config, sources, targets, track_margin,
+                                       pcb_data, net_id, print_prefix, direction_labels,
+                                       single_direction, waypoints, fwd_i, bwd_i, coord)
+        if _ex is not None:
+            return _ex
+    layer_names = config.layers
+    if len(layer_names) < 2:
+        return res + ([], [])
 
     # #568 rust mode: before COMMITTING copper (the #189 pre-placed in-pad
     # via), let the search itself try the small rung -- a boxed pad is often
@@ -3089,6 +3097,66 @@ def _route_with_via_unblock(router, obstacles, config, sources, targets, track_m
         print(f"{print_prefix}{GREEN}Via-in-pad unblock: dropped {len(used)} fab-floor "
               f"via(s) to reach a boxed endpoint{_off}{RESET}")
     return res2 + (used, used_stub_segs)
+
+
+def _route_with_exact_escape(router, obstacles, config, sources, targets, track_margin,
+                             pcb_data, net_id, print_prefix, direction_labels,
+                             single_direction, waypoints, fwd_i, bwd_i, coord):
+    """For each stuck side whose endpoint pad is on a fine-pitch row, offer
+    the ends of its exact escape stubs (exact_escape.py) as extra endpoints
+    and route again. Returns _route_with_via_unblock's tuple with the stubs
+    the route used as its segments, or None when there were no stubs or the
+    route still failed."""
+    from exact_escape import exact_escapes
+    lim = config.max_probe_iterations
+    layer_names = config.layers
+
+    def is_open(gx, gy, li):
+        return not obstacles.is_blocked(gx, gy, li)
+
+    def centre(cells):
+        pts = [coord.to_float(c[0], c[1]) for c in cells]
+        return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts)) if pts else None
+
+    stubs = {}                      # end cell -> stub segments
+    new_sources, new_targets = list(sources), list(targets)
+    for stuck, side, other in ((fwd_i and fwd_i < lim, new_sources, targets),
+                               (bwd_i and bwd_i < lim, new_targets, sources)):
+        if not stuck:
+            continue
+        pad = _net_pad_near(pcb_data, net_id, side, coord)
+        if pad is None:
+            continue
+        found = exact_escapes(pcb_data, net_id, pad, config, coord, layer_names,
+                              is_open=is_open, start_cells=[tuple(c[:3]) for c in side],
+                              toward=centre(other))
+        for end, segs in found:
+            if end not in stubs:
+                stubs[end] = segs
+                side.append(end)
+    if not stubs:
+        return None
+    res = _route_main_connection(router, obstacles, config, new_sources, new_targets, track_margin,
+                                 pcb_data, net_id, print_prefix, direction_labels,
+                                 single_direction, waypoints)
+    if res[0] is None:
+        return None
+    used = []
+    for e in (res[0][0], res[0][-1]):
+        segs = stubs.get(tuple(e[:3]))
+        if segs:
+            used += segs
+    if used and not getattr(config, 'plan_probe', False):
+        # committed now, as the #189 unblock copper is (#803)
+        _have = {id(sg) for sg in pcb_data.segments}
+        for sg in used:
+            if id(sg) not in _have:
+                pcb_data.segments.append(sg)
+        pcb_data._copper_epoch = getattr(pcb_data, '_copper_epoch', 0) + 1
+    if used:
+        print(f"{print_prefix}{GREEN}Exact escape: a stub of {len(used)} segment(s) "
+              f"out of a boxed pad{RESET}")
+    return res + ([], used)
 
 
 def _route_main_connection(router, obstacles, config, sources, targets, track_margin,

@@ -49,13 +49,13 @@
 
 ### Task 4: Exact escape stubs
 
-**Files:** Create `py_router/exact_escape.py`; Modify `py_router/single_ended_routing.py` (the boxed-probe path before the #189 fallback); Test `tests/test_exact_escape.py`
+**Files:** Create `py_router/exact_escape.py`; Modify `py_router/single_ended_routing.py` (`_route_with_via_unblock`, ahead of the rung search and the #189 fallback), `routing_defaults.py` (`EXACT_ESCAPE_REACH`, `EXACT_ESCAPE_ENDS`), `env_knobs.py` (`KICAD_EXACT_ESCAPE`); Test `tests/test_exact_escape.py`
 
-**Interfaces:** Produces `find_exact_escape(pcb_data, net_id, pad, config, coord) -> list[Segment] | None`.
+**Interfaces:** Produces `exact_escapes(pcb_data, net_id, pad, config, coord, layer_names, is_open=None, start_cells=(), toward=None, reach=None, limit=None) -> list[((gx, gy, layer), list[Segment])]` (changed from the single-stub `find_exact_escape` first planned: the retry is offered several ends at once).
 
-- [ ] Failing tests on a board written as text with the module's gpio24 geometry (pad row at 0.4 mm, a tilted 0402 on the neighbouring supply pin with its serve trace and via-in-pad, gpio22's track): the stub is found, it is DRC clean at no margin, and a route from its end reaches a sink; a pad walled in on its layer: None.
-- [ ] Implement the search as the spec: straight L1 along the row normal, optional 45 degree turn either side (L2), optional turn back; L1, L2 in 0.005 mm steps to 3 mm; exact distance tests against foreign pads (real copper), tracks and vias at the pair clearance with the 1e-6 mm tie; the end snapped to the grid by the last leg; shortest first, a turn toward the target first. Commit the stub as the net's copper and route from its end; otherwise fall through to the existing fallbacks.
-- [ ] Commit.
+- [x] Failing tests on a board written as text with the module's gpio23/gpio24 geometry (pad row at 0.4 mm, the tilted 0402 on the supply pin between them with its serve trace and via-in-pad, the neighbouring pins' hand tracks): stubs are found, exactly clear, ending on their grid cells; routed, both nets connect, KiCad's DRC finds no clearance violation and every other net keeps its copper; a pad walled in on its layer: none.
+- [x] Implement the search as the spec (the first leg's length solved exactly rather than sampled); offer the ends to one retry; commit the stub the route used.
+- [x] Commit.
 
 ### Task 5: Measurement
 

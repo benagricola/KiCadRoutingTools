@@ -72,31 +72,40 @@ what covers a part the origin cannot align.
 
 When a pin's probe from its pad stops early (the existing "stuck (N < probe
 limit)" signal), before the boxed-pad fallbacks, search a small family of
-escape stubs in exact geometry:
+escape stubs in exact geometry (`py_router/exact_escape.py`):
 
-- **Shapes**: from the pad's centre along its row's outward normal for a
-  length L1; then optionally a 45 degree turn to either side for a length L2;
-  then optionally a turn back to the normal. L1 and L2 are continuous,
-  sampled finely (a setting, default 0.005 mm), up to a reach (a setting,
-  default 3 mm, the row's escape region).
+- **Shapes**: from the pad's centre along its row's outward normal n to an
+  open grid cell E; or along n for a length t, a 45 degree turn to either
+  side, then along n again to E (no last leg when the turn lands on E). A
+  diagonal that ends on a grid point lies on a grid diagonal, which the
+  search has anyway; the leg back along n is what lets the diagonal sit on
+  any line (the designer's gpio24 diagonal is 0.0127 mm off the nearest
+  grid diagonal, with every clearance at the rule).
+- **Solving t**: for a given E and turn, t is the only free length. Each
+  foreign item's gap to the sliding diagonal is convex in t, so the t at
+  which it is too close form one interval; the legal t are what the two
+  straight legs allow minus the union of those intervals, solved to 1e-7 mm
+  (a fit whose window is a micrometre wide is found). Of the legal t, the
+  turn landing on E, else the middle of the highest window, else its ends:
+  the first with no overlap at all, else the least.
 - **Legality**: each stub, at the net's track width, is checked exactly
   against foreign copper on its layer at the pair's clearance: pads as their
   real copper (rect, roundrect, rotated, custom polygons), tracks as
   capsules, vias as discs; a stub exactly at the rule is legal (the 1e-6 mm
   tie tolerance the rasterisers use).
-- **Acceptance**: the stub's end is an open grid cell from which the probe
-  toward the net's target is no longer stuck. The end is snapped onto the
-  grid by adjusting the last leg's length.
-- **Order of candidates**: shortest total length first; a turn toward the
-  net's target before one away from it; no turn before one turn before two.
-- **Use**: the accepted stub is committed as the net's copper for this route
-  (as fan-out stubs are) and the route continues from its end. If no stub is
-  accepted, the existing fallbacks run as today (the relief via where it
-  applies, the #189 via-in-pad escape, rip-up).
+- **Which ends**: only cells outside the pocket the grid search can reach
+  from the stuck side's endpoint cells (a flood fill that counts a diagonal
+  step only where both cells beside it are open), within a reach of the pad
+  (a setting, default 3 mm).
+- **Use**: the shortest legal stubs, one per end cell (a setting, default
+  16; among equals, the end nearer the other side first), have their ends
+  added to the stuck side's endpoints and the route is tried again; the stub
+  whose end the route starts from is committed as the net's copper (as the
+  via-in-pad unblock's copper is). If no stub is legal or the route still
+  fails, the existing fallbacks run as today (the rung search, the #189
+  via-in-pad escape, rip-up). `KICAD_EXACT_ESCAPE=0` turns this off.
 
-This is Python only: the search is small (one pin, a few hundred candidate
-stubs, each an exact distance test against the copper near the pad), and it
-runs only for pins whose probe is stuck.
+This is Python only, and it runs only for pins whose probe is stuck.
 
 ## Alternatives considered
 
@@ -119,8 +128,11 @@ per run (min, median, max) and failures per net.
 
 - Unit: a pad whose only way out is an exact-fit octilinear path (built as
   text, the designer's gpio24 geometry): the stub is found and the route is
-  DRC clean with `check_drc.py --clearance-margin 0`; a pad with no way out
-  at all: no stub, and the existing fallback runs.
+  clean by KiCad's DRC; a pad with no way out at all: no stub, and the
+  existing fallback runs. KiCad works in whole nanometres and passes a fit
+  exactly at the rule; `check_drc.py --clearance-margin 0` grades the
+  nanometre residue of such a fit (it flags the designer's own layout of
+  these pins at 0.000 mm), so an exact fit is judged by KiCad.
 - Part 1: the module case routed at the 8 offsets above gives the same
   failed nets as at (0, 0); a synthetic board with two QFNs out of phase
   aligns the one with more pins.

@@ -17,6 +17,13 @@ VIA_DRILL = 0.3  # mm
 # spare and keeps the order it had.
 FAN_ORDER_MAX_PITCH_FACTOR = 2.0
 
+# Exact escape stubs (docs/off-grid-exact-fit-design.md): for a pin whose probe
+# is stuck, octilinear stubs from the pad along its row's outward normal are
+# tried in exact geometry. REACH is how far from the pad centre a stub may end
+# (mm); ENDS how many legal stub ends are offered to the retry.
+EXACT_ESCAPE_REACH = 3.0
+EXACT_ESCAPE_ENDS = 16
+
 # Fab tier and escalation policy (#857/#530): THE one place these defaults
 # live -- fab_tiers.add_fab_tier_args (every routing CLI) and the GUI's
 # controls read them from here. Completion first (Andy, 2026-09-03): 'auto'
