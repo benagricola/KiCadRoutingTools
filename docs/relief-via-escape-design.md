@@ -1,8 +1,24 @@
 # Relief-via escape
 
 Date: 2026-09-25
-Status: proposal
+Status: proposal, to be re-scoped (see the correction below)
 Branch: fix/escape-at-min-pitch (local), after the corner move check
+
+## Correction (2026-09-25)
+
+The premise below is wrong for two of the four pins. gpio23 and gpio24 sit
+beside a supply pin whose cap is tilted 45 degrees, not on the pin's axis,
+and both escape outward on F.Cu: the board's designer drew them (the module's
+layout.kicad_pcb, saved 2026-09-25), and KiCad's DRC finds no violation. Every
+clearance on those paths is exactly 0.2 mm and the turns sit off the 0.1 mm
+grid (gpio23 turns at y = +5.737 mm from the chip centre), so the router
+misses them from grid quantization, not for want of a via: at a 0.05 mm grid
+it routed both in one of six runs, at 0.1 mm in none. That is the subject of
+docs/off-grid-exact-fit-design.md. LAYOUT-INTENT point 6 holds for caps on a
+pin's axis (the west face, the east face's flanking pairs), and the relief via
+stays the proposal for those pins; this document is to be re-scoped to them
+and re-measured with route spreads (the module's failing set changes between
+near-identical inputs, so single routes do not decide it).
 
 ## The problem
 
