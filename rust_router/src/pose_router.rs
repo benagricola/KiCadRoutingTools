@@ -385,7 +385,9 @@ impl PoseRouter {
 
             if layer_ok {
                 if obstacles.is_blocked(nx, ny, current.layer as usize)
-                    || obstacles.move_clips_corner(current.gx, current.gy, nx, ny, current.layer as usize, 0.0) {
+                    || (!obstacles.is_terminal_cell(current.gx, current.gy, current.layer as usize)
+                        && !obstacles.is_terminal_cell(nx, ny, current.layer as usize)
+                        && obstacles.move_clips_corner(current.gx, current.gy, nx, ny, current.layer as usize, 0.0)) {
                     // B6: only genuinely blocked cells reach the tracker
                     sink.on_blocked(nx, ny, current.layer);
                 } else {
@@ -452,7 +454,9 @@ impl PoseRouter {
                     let ny = current.gy + dy;
 
                     if obstacles.is_blocked(nx, ny, current.layer as usize)
-                        || obstacles.move_clips_corner(current.gx, current.gy, nx, ny, current.layer as usize, 0.0) {
+                        || (!obstacles.is_terminal_cell(current.gx, current.gy, current.layer as usize)
+                        && !obstacles.is_terminal_cell(nx, ny, current.layer as usize)
+                        && obstacles.move_clips_corner(current.gx, current.gy, nx, ny, current.layer as usize, 0.0)) {
                         sink.on_blocked(nx, ny, current.layer);  // B6: real blocks only
                         continue;
                     }

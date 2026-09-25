@@ -733,10 +733,14 @@ impl GridSearch {
                     continue;
                 }
                 // Both cells open, the step between them may still clip a
-                // foreign pad's corner (docs/corner-move-check-design.md).
-                if obstacles.move_clips_corner(current.gx, current.gy, ngx, ngy,
-                                               current.layer as usize,
-                                               self.opts.track_margin.at(current.layer as usize)) {
+                // foreign pad's corner (docs/corner-move-check-design.md). A
+                // step onto or off a route's own endpoint cell is exempt, as
+                // the cell is: the terminal segment is judged exactly later.
+                let lyr = current.layer as usize;
+                if !obstacles.is_terminal_cell(current.gx, current.gy, lyr)
+                    && !obstacles.is_terminal_cell(ngx, ngy, lyr)
+                    && obstacles.move_clips_corner(current.gx, current.gy, ngx, ngy, lyr,
+                                                   self.opts.track_margin.at(lyr)) {
                     sink.on_blocked(ngx, ngy, current.layer);
                     continue;
                 }
