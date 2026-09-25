@@ -25,9 +25,9 @@
 
 **Interfaces:** Produces `aligning_offset(pcb_data, grid_step, max_pitch) -> (dx, dy)` in mm, each in [0, grid_step), rounded to 1 nm.
 
-- [ ] Failing tests: a QFN whose west/east rows' pad centre lines sit at y = k*0.4 + 0.05 gets dy = 0.05 and dx aligning its north/south rows; an aligned part gets (0, 0); two parts out of phase: the offset aligns the one with more row pins; no fine-pitch rows: (0, 0).
-- [ ] Implement: for each row from `find_fan_rows`, the residue of its pins' across-row coordinate modulo the grid (the lane line); pick per axis the residue class carrying the most pins; the offset moves that residue to 0.
-- [ ] Commit.
+- [x] Failing tests: a QFN whose west/east rows' pad centre lines sit at y = k*0.4 + 0.05 gets dy = 0.05 and dx aligning its north/south rows; an aligned part gets (0, 0); two parts out of phase: the offset aligns the one with more row pins; no fine-pitch rows: (0, 0).
+- [x] Implement: for each row from `find_fan_rows`, the residue of its pins' across-row coordinate modulo the grid (the lane line); pick per axis the residue class carrying the most pins; the offset moves that residue to 0.
+- [x] Commit.
 
 ### Task 2: Translating a board's text
 
