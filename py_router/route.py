@@ -1690,6 +1690,14 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                  f"{_fan_order_nets_resequenced} net(s) re-sequenced")
             net_ids = _fan_order_mod.fan_order(pcb_data, net_ids, _fan_max_pitch)
 
+    # KICAD_ORDER_JITTER (a seed, 0 = none): a few seeded neighbour swaps of
+    # the order so far, for measuring how much a board's outcome depends on
+    # its net order (order_jitter.py). The passes below act on the result.
+    if env_knobs.ORDER_JITTER and net_ids:
+        from order_jitter import jittered as _jittered
+        net_ids = _jittered(net_ids, env_knobs.ORDER_JITTER)
+        print(f"Order jitter: seed {env_knobs.ORDER_JITTER}")
+
     # #472 direct-first ordering (KICAD_DIRECT_FIRST=0 disables): nets with a
     # BARE BGA ball (>=2 pads, no attached copper -- the fanout-deferred
     # direct-route class) move to the FRONT of the order, keeping relative
