@@ -1,4 +1,4 @@
-# Relief-via escape: a boxed-in pin dives inward, not past its blocker
+# Relief-via escape
 
 Date: 2026-09-25
 Status: proposal
@@ -78,7 +78,7 @@ that, per LAYOUT-INTENT's own rule, are not the real obstacle: clearing them
 still leaves a 0.4 mm lane against the 0.61 mm a cap pad needs. Ripping
 anything nameable here cannot open a path.
 
-### The router already has a fallback here, and it doesn't find this option
+### The existing boxed-pad fallback
 
 Issue #189 gives a boxed SMD pad a last-resort rescue: drop a fab-legal via
 in or near the pad and retry (`single_ended_routing.py:2883-2967`,
@@ -106,7 +106,7 @@ ring between the EP and the row" as a place worth looking; and it plugs into
 the same generic search whether the pad's neighbour is a via-blocked trace two
 cells away or a package's EP 2.5 mm inward.
 
-### The option is real and legal -- proven directly
+### The inward via, placed by hand
 
 For each of the four nets, adding one via at the ring position that mirrors
 the hand layout's own scheme (`gpio40_adc0`'s matches the reference exactly,
