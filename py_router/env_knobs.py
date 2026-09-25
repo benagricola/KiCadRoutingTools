@@ -69,8 +69,6 @@ def refresh() -> None:
     g['BUS_MULTIPOINT_SPAN'] = _on_default('KICAD_BUS_MULTIPOINT_SPAN')
     g['BARE_BALL_ZONE_EXEMPT'] = _on_default('KICAD_BARE_BALL_ZONE_EXEMPT')
     g['DIRECT_FIRST'] = _on_default('KICAD_DIRECT_FIRST')
-    # leg_rip.keep_row_escape: a ripped row net keeps its escape; 0 = whole rips
-    g['RIP_KEEP_ESCAPE'] = _on_default('KICAD_RIP_KEEP_ESCAPE')
     # Seeded neighbour swaps of the net order after the fan pass
     # (order_jitter.py), for measuring order sensitivity; 0 = none.
     g['ORDER_JITTER'] = _i('KICAD_ORDER_JITTER', 0)

@@ -17,12 +17,6 @@ VIA_DRILL = 0.3  # mm
 # spare and keeps the order it had.
 FAN_ORDER_MAX_PITCH_FACTOR = 2.0
 
-# A net ripped as a blocker keeps its escape out of a fine-pitch row
-# (docs/rip-keeps-escape-design.md): its copper out to this many
-# track-widths-plus-clearance past the row pad's outer edge, the zone where
-# only the pin's own lane exists.
-RIP_KEEP_ESCAPE_DEPTH_FACTOR = 2.0
-
 # Fab tier and escalation policy (#857/#530): THE one place these defaults
 # live -- fab_tiers.add_fab_tier_args (every routing CLI) and the GUI's
 # controls read them from here. Completion first (Andy, 2026-09-03): 'auto'
