@@ -56,6 +56,18 @@ def test_the_move_check_is_the_exact_distance():
     assert hits > 500
 
 
+def test_a_longer_segment_is_checked_along_its_whole_length():
+    rng = random.Random(9)
+    guards = [(rng.uniform(0, 30), rng.uniform(0, 30), rng.uniform(0.5, 3.0), 0) for _ in range(40)]
+    m = GridObstacleMap(1)
+    m.add_corner_guards_batch(rows(guards))
+    for _ in range(5000):
+        gx, gy = rng.randint(-3, 33), rng.randint(-3, 33)
+        gx2, gy2 = gx + rng.randint(-12, 12), gy + rng.randint(-12, 12)
+        extra = rng.choice((0.0, 0.7))
+        assert m.move_clips_corner(gx, gy, gx2, gy2, 0, extra) == brute(guards, gx, gy, gx2, gy2, 0, extra)
+
+
 def test_a_move_exactly_at_the_radius_is_legal():
     m = GridObstacleMap(1)
     m.add_corner_guards_batch(rows([(5.0, 5.0, 3.0, 0)]))
@@ -82,6 +94,7 @@ def test_guards_are_refcounted_and_copied():
 
 if __name__ == '__main__':
     test_the_move_check_is_the_exact_distance()
+    test_a_longer_segment_is_checked_along_its_whole_length()
     test_a_move_exactly_at_the_radius_is_legal()
     test_guards_are_refcounted_and_copied()
     print("PASS")
