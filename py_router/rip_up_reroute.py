@@ -357,6 +357,11 @@ def _saved_route_collides(saved_result: dict, pcb_data: PCBData,
                                        clearance, first_only=True))
 
 
+# Copper exactly at the clearance is legal; the tolerance keeps float rounding
+# from reading it as a short (the grid rasterisers' GRID_TIE_EPS, in mm).
+_TIE = 1e-6
+
+
 def _saved_route_colliders(saved_result: dict, pcb_data: PCBData,
                            own_net_ids: List[int], clearance: float,
                            first_only: bool = False) -> list:
@@ -408,14 +413,14 @@ def _saved_route_colliders(saved_result: dict, pcb_data: PCBData,
         for o in o_segs:
             if o.layer != s.layer:
                 continue
-            thr = hw + o.width / 2.0 + clearance
+            thr = hw + o.width / 2.0 + clearance - _TIE
             if _seg_seg_dist_sq(s.start_x, s.start_y, s.end_x, s.end_y,
                                 o.start_x, o.start_y, o.end_x, o.end_y) < thr * thr:
                 _hit('segment', o)
                 if first_only:
                     return hits
         for v in o_vias:
-            thr = hw + v.size / 2.0 + clearance
+            thr = hw + v.size / 2.0 + clearance - _TIE
             if _pt_seg_dist_sq(v.x, v.y, s.start_x, s.start_y,
                                s.end_x, s.end_y) < thr * thr:
                 _hit('via', v)
@@ -426,13 +431,13 @@ def _saved_route_colliders(saved_result: dict, pcb_data: PCBData,
     for vv in vias:
         vr = vv.size / 2.0
         for v in o_vias:
-            thr = vr + v.size / 2.0 + clearance
+            thr = vr + v.size / 2.0 + clearance - _TIE
             if (vv.x - v.x) ** 2 + (vv.y - v.y) ** 2 < thr * thr:
                 _hit('via', v)
                 if first_only:
                     return hits
         for o in o_segs:
-            thr = vr + o.width / 2.0 + clearance
+            thr = vr + o.width / 2.0 + clearance - _TIE
             if _pt_seg_dist_sq(vv.x, vv.y, o.start_x, o.start_y,
                                o.end_x, o.end_y) < thr * thr:
                 _hit('segment', o)
