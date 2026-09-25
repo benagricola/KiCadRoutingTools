@@ -123,6 +123,11 @@ def fan_order(pcb_data: PCBData, net_ids: List[Tuple[str, int]],
             if row_of_net.get(p.net_id) != ri or p.net_id not in base_id_set:
                 continue
             other_pads = pcb_data.pads_by_net.get(p.net_id, [])
+            # A net with more than two pads (a rail, a bus tap) has no one
+            # other end to fan toward: it keeps its base-order place, and
+            # does not pull the row's block to its own slot.
+            if len(other_pads) > 2:
+                continue
             # Chip to chip: a net with a pad on ANOTHER chip's row keeps its
             # base-order place -- MPS already sequences it by where both
             # ends sit (docs/row-fan-order-design.md).

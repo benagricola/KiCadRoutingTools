@@ -256,6 +256,33 @@ def t_e_two_pad_part_never_a_row():
           'a 2-pad part formed a row: %r' % rows)
 
 
+def t_f_net_with_more_than_two_pads_keeps_its_place():
+    # A 5-pad row; P1 is a rail (its row pad plus two far pads), first in the
+    # base order. It keeps its place, and the row's block goes to the slot of
+    # the first two-pad net (P3), not to the rail's.
+    pin_pads = ''
+    nets = []
+    for i in range(5):
+        nid = 200 + i + 1
+        nets.append((nid, 'P%d' % (i + 1)))
+        pin_pads += _pad(str(i + 1), '%.1f' % (i * 0.4), '0', '0.2', '0.6', nid, 'P%d' % (i + 1))
+    fps = [_footprint('U1', '0', '0', pin_pads)]
+    fps.append(_sink('R1', '-30', '30', 201, 'P1'))
+    fps.append(_sink('R2', '30', '30', 201, 'P1'))
+    for i in range(2, 6):
+        fps.append(_sink('S%d' % i, '20', str(i), 200 + i, 'P%d' % i))
+    other = (900, 'OTHER')
+    fps.append(_sink('OA', '-40', '-40', *other))
+    fps.append(_sink('OB', '-40', '-41', *other))
+    pcb = _parse(_board(fps, nets + [other]))
+    base = [('P1', 201), ('OTHER', 900), ('P3', 203), ('P2', 202), ('P4', 204), ('P5', 205)]
+    names = [n for n, _ in FO.fan_order(pcb, base, MAX_PITCH)]
+    check(names[:2] == ['P1', 'OTHER'],
+          'the rail or the net after it moved: %r' % names)
+    check(sorted(names[2:]) == ['P2', 'P3', 'P4', 'P5'],
+          'the row block is not at the first two-pad net: %r' % names)
+
+
 def main():
     tests = sorted(n for n in globals() if n.startswith('t_'))
     for name in tests:
