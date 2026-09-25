@@ -406,6 +406,12 @@ python py_router/route_diff.py kicad_files/input.kicad_pcb kicad_files/output.ki
 python py_router/route.py kicad_files/input.kicad_pcb kicad_files/output.kicad_pcb --nets "Net*" \
   --power-nets "*GND*" "*VCC*" "+3.3V" --power-nets-widths 0.4 0.5 0.3 --track-width 0.2
 
+# Grid alignment is on by default: the board is routed translated by the
+# sub-grid offset that puts the most fine-pitch pin rows on the routing grid,
+# and the result translated back (docs/off-grid-exact-fit-design.md). To route
+# the board where it is:
+python py_router/route.py kicad_files/input.kicad_pcb kicad_files/output.kicad_pcb --no-align-grid
+
 # Typical workflow: create GND plane first, then route all signals
 python py_router/route_planes.py kicad_files/flat_hierarchy.kicad_pcb --nets GND --plane-layers B.Cu
 python py_router/route.py kicad_files/flat_hierarchy_routed.kicad_pcb --overwrite

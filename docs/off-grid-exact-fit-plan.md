@@ -59,9 +59,11 @@
 
 ### Task 5: Measurement
 
-- [ ] Module case (placemat scratch `fan/module`), `route_spread --perturb offset`, 8 runs: failed nets equal in every run to the aligned run (Part 1).
-- [ ] Module case, `route_spread` (order), 8 runs: gpio23 and gpio24 in 0 of 8 (Part 2); no other net's failures up by more than 1 of 8.
-- [ ] Bare QFN 80/80; cap sweep failed pins no more than the fan-order build's.
-- [ ] Tracked-board A/B against the fan-order build: no new DRC violations, connectivity equal or better, time within 20%.
-- [ ] Router tests touching routing, terminals, fallbacks and the CLI, both builds.
-- [ ] Spec status, README note for the flag; commit.
+Measured 2026-09-25 on feat/grid-align at 7e5c2a1d (feat/fanout-fixes merged in, so the two builds differ by the alignment alone).
+
+- [x] Module case (placemat scratch `fo/case3`), `route_spread --perturb offset`, 8 runs: 2 failed nets in every run (V1V1, gpio18), the aligned run's. Without alignment: median 46.5 (2 to 56).
+- [x] Module case, order spread, 8 runs: 2 failed in every run (V1V1, gpio18); gpio23 and gpio24 in 0 of 8. The fan-order build: 7 in every run, gpio24 in 8 of 8. Jitter spread: median 2.5 against 8.5. Not met in full: gpio18 fails in 8 of 8 order runs against 0 of 8 on the fan build, and gpio9 in 4 of 8 jitter runs against 1. gpio18 fails at its sink (29 of 32 frontier cells at the target, boxed by gpio14 and gpio27), the case's ring of sinks, not at its escape.
+- [x] Bare QFN, escape lab: 80/80 at 0.2/0.2, 0.15/0.15 and 0.1/0.1, one and two layers, no vias (the fan-order build the same). Cap sweep: 19 and 11 failed pins, as the dev build (fan-order build 21 and 16).
+- [ ] Tracked-board A/B against dev (14 boards, haasoscope left out for time): no new DRC violations; rp2350 5 failed nets against 8, esp_prog 0 against 1, time within 20% (tigard +14%; the small boards gain about 1 s for the alignment step). Not met: tigard leaves /BD4 and GND disconnected in 8 of 8 jitter runs with alignment, 0 of 8 without. U3.43's first route fails in both builds (walled by the +3V3 track along the row); dev reconnects it in the rescue pass at a 0.025 mm grid and 0.0889 mm track, while in the aligned run a /BD2 track also runs there and the rescue finds no room. The same walled-pin class as the sweep's remaining failures.
+- [x] Router tests touching routing, terminals, fallbacks, escapes, alignment and the CLI: 174 of 174 pass on the aligned build.
+- [x] README note for the flag. Spec status unchanged: alignment stays on by default pending the tigard decision.
