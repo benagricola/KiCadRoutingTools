@@ -505,6 +505,15 @@ def pad_corner_radius(pad) -> float:
     return 0.0
 
 
+def pad_guard_rows(pad, grid_step: float, margin: float, layer_idxs) -> "np.ndarray":
+    """pad_corner_guards on each of `layer_idxs`: (N, 4) rows (gx, gy, r,
+    layer), what GridObstacleMap.add_corner_guards_batch takes."""
+    g = pad_corner_guards(pad, grid_step, margin)
+    if not len(g) or not layer_idxs:
+        return np.empty((0, 4), dtype=np.float64)
+    return np.concatenate([np.column_stack([g, np.full(len(g), float(li))]) for li in layer_idxs])
+
+
 def pad_corner_guards(pad, grid_step: float, margin: float) -> "np.ndarray":
     """The pad's corner guards for a track keep-out `margin` (track/2 +
     clearance), as (N, 3) rows (gx, gy, r) in grid units

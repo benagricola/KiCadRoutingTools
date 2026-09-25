@@ -16,7 +16,7 @@ from routing_config import GridRouteConfig, GridCoord
 import routing_defaults as defaults
 from routing_utils import build_layer_map, iter_pad_blocked_cells, \
     pad_blocked_cells_array, segment_blocked_cells_array, segment_blocked_spans, \
-    circle_offsets, GRID_TIE_EPS
+    circle_offsets, GRID_TIE_EPS, pad_guard_rows
 from net_queries import expand_pad_layers
 
 
@@ -36,6 +36,10 @@ try:
     from grid_router import GridObstacleMap
 except ImportError:
     GridObstacleMap = None
+
+# Corner guards (docs/corner-move-check-design.md): a Rust map from 0.23.0
+# on stores them; an older one keeps the pads' half-cell corner buffer.
+_GUARDS = GridObstacleMap is not None and hasattr(GridObstacleMap, 'add_corner_guards_batch')
 
 
 _PACK_OFFSET = 1 << 20  # grid coords stay well within +/-2^20 at any allowed grid step
@@ -556,6 +560,10 @@ class NetObstacleData:
     # cell twice, which is harmless precisely because the remove is symmetric.
     blocked_cell_spans: np.ndarray = field(default_factory=lambda: np.empty((0, 4), dtype=np.int32))
     blocked_via_spans: np.ndarray = field(default_factory=lambda: np.empty((0, 3), dtype=np.int32))
+    # Corner guards (docs/corner-move-check-design.md): (G, 4) f64 rows
+    # [gx, gy, r, layer] for the net's pads, whose track cells are then
+    # stamped exact. Added and removed with the cells.
+    corner_guards: np.ndarray = field(default_factory=lambda: np.empty((0, 4), dtype=np.float64))
 
 
 # #568 run-scoped interlock. `_via_rung_unsafe` lives on pcb_data, but the
@@ -833,10 +841,11 @@ def precompute_net_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
 
     # Process pads
     pads = pcb_data.pads_by_net.get(net_id, [])
+    guards_set: Optional[List["np.ndarray"]] = [] if (_GUARDS and extra_clearance == 0) else None
     for pad in pads:
         _collect_pad_obstacles(pad, coord, layer_map, config, extra_clearance,
                                 blocked_cells_set, blocked_vias_set,
-                                obs_clearance=obs_clearance)
+                                obs_clearance=obs_clearance, corner_guards=guards_set)
 
     # Concatenate and deduplicate (the Rust map refcounts batch adds, so
     # each cell must appear once per net - same as the old set semantics)
@@ -865,6 +874,8 @@ def precompute_net_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
         blocked_vias=blocked_vias_arr,
         blocked_cell_spans=blocked_cell_spans_arr,
         blocked_via_spans=blocked_via_spans_arr,
+        corner_guards=(np.unique(np.concatenate(guards_set), axis=0) if guards_set
+                       else np.empty((0, 4), dtype=np.float64)),
     )
     # #568 dual stamping: a second pass with the via size/drill swapped for the
     # small fab rung; only its blocked_vias survive (blocked_cells are
@@ -1007,8 +1018,13 @@ def _collect_pad_obstacles(pad, coord: GridCoord, layer_map: Dict[str, int],
                             config: GridRouteConfig, extra_clearance: float,
                             blocked_cells: List["np.ndarray"],
                             blocked_vias: List["np.ndarray"],
-                            obs_clearance: float = None):
+                            obs_clearance: float = None,
+                            corner_guards: Optional[List["np.ndarray"]] = None):
     """Collect pad obstacle cells into sets (no obstacle map modification).
+
+    With `corner_guards` (a list; the map takes guards and the keep-out has no
+    extra clearance) the track cells are stamped exact and the pad's corner
+    guards are appended there, as `_add_pad_obstacle` does for the base map.
 
     Uses rectangular-with-rounded-corners pattern matching other pad blocking functions.
 
@@ -1091,6 +1107,10 @@ def _collect_pad_obstacles(pad, coord: GridCoord, layer_map: Dict[str, int],
                     if vm.any():
                         vgxs, vgys = _box_masked_cells(vgx_lo, vgy_lo, vnx, vm)
                         blocked_vias.append(np.column_stack([vgxs, vgys]))
+        if corner_guards is not None:
+            for g_clr, g_idxs in clr_groups.items():
+                corner_guards.append(pad_guard_rows(pad, config.grid_step,
+                                                    config.track_width / 2 + g_clr, g_idxs))
         return
 
     # Corner radius based on pad shape (circle/oval use min dimension, roundrect uses rratio)
@@ -1106,11 +1126,18 @@ def _collect_pad_obstacles(pad, coord: GridCoord, layer_map: Dict[str, int],
     # Batched rasterization (issue #35): same cell sets as the generator
     # (pad_blocked_cells_array is bit-identical to iter_pad_blocked_cells)
     for g_clr, g_idxs in _clr_groups(expanded_layers).items():
-        cells = pad_blocked_cells_array(gx, gy, half_width, half_height,
-                                        config.track_width / 2 + g_clr + extra_clearance,
-                                        config.grid_step, corner_radius,
-                                        off_x=off_x, off_y=off_y,
-                                        rotation_deg=pad.rect_rotation)
+        margin = config.track_width / 2 + g_clr + extra_clearance
+        if corner_guards is not None:
+            cells = pad_blocked_cells_array(gx, gy, half_width, half_height, margin - GRID_TIE_EPS,
+                                            config.grid_step, corner_radius, 0.0,
+                                            off_x=off_x, off_y=off_y,
+                                            rotation_deg=pad.rect_rotation)
+            corner_guards.append(pad_guard_rows(pad, config.grid_step, margin, g_idxs))
+        else:
+            cells = pad_blocked_cells_array(gx, gy, half_width, half_height, margin,
+                                            config.grid_step, corner_radius,
+                                            off_x=off_x, off_y=off_y,
+                                            rotation_deg=pad.rect_rotation)
         for layer_idx in g_idxs:
             rows = np.empty((len(cells), 3), dtype=np.int32)
             rows[:, :2] = cells
@@ -1169,6 +1196,9 @@ def add_net_obstacles_from_cache(obstacles: GridObstacleMap, cache_data: NetObst
         obstacles.add_blocked_cells_batch(cache_data.blocked_cells)
     if len(cache_data.blocked_vias) > 0:
         obstacles.add_blocked_vias_batch(cache_data.blocked_vias)
+    _g = getattr(cache_data, 'corner_guards', None)
+    if _g is not None and len(_g) > 0:
+        obstacles.add_corner_guards_batch(_g)
     # #815: segment keep-outs, expanded in Rust. Must be mirrored EXACTLY by
     # remove_net_obstacles_from_cache or cells leak blocked.
     _cs = getattr(cache_data, 'blocked_cell_spans', None)
@@ -1205,6 +1235,9 @@ def remove_net_obstacles_from_cache(obstacles: GridObstacleMap, cache_data: NetO
         obstacles.remove_blocked_cells_batch(cache_data.blocked_cells)
     if len(cache_data.blocked_vias) > 0:
         obstacles.remove_blocked_vias_batch(cache_data.blocked_vias)
+    _g = getattr(cache_data, 'corner_guards', None)
+    if _g is not None and len(_g) > 0:
+        obstacles.remove_corner_guards_batch(_g)
     # #815: exact mirror of the add above -- same arrays, same order.
     _cs = getattr(cache_data, 'blocked_cell_spans', None)
     if _cs is not None and len(_cs) > 0:

@@ -17,7 +17,7 @@ from kicad_parser import PCBData, Segment, Via, Pad, pad_drill_circles, pad_dril
 from routing_config import GridRouteConfig, GridCoord
 import routing_defaults as defaults
 from routing_utils import build_layer_map, iter_pad_blocked_cells, pad_blocked_cells_array, \
-    circle_offsets, segment_blocked_cells_array, segment_blocked_spans, GRID_TIE_EPS
+    circle_offsets, segment_blocked_cells_array, segment_blocked_spans, GRID_TIE_EPS, pad_guard_rows
 from net_queries import expand_pad_layers
 
 # Import Rust router
@@ -407,6 +407,7 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
     _n_pad_nets = len(pcb_data.pads_by_net)
     _pad_cell_sink: Dict[int, list] = {}
     _pad_via_sink: list = []
+    _pad_guard_sink: list = []
     for _pn_i, (net_id, pads) in enumerate(pcb_data.pads_by_net.items()):
         if (_pn_i & 63) == 0:
             _report("pads", _pn_i, _n_pad_nets)
@@ -422,12 +423,15 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
                 continue
             _add_pad_obstacle(obstacles, pad, coord, layer_map, config, extra_clearance,
                               clearance_override=_obstacle_clearance(net_id),
-                              cell_sink=_pad_cell_sink, via_sink=_pad_via_sink)
+                              cell_sink=_pad_cell_sink, via_sink=_pad_via_sink,
+                              guard_sink=_pad_guard_sink)
     # One Rust call per layer for every pad's track keep-out, one for the via
     # keep-outs -- the segment loop above has done this since 2026-08-14; the
     # pad loop was calling the batch API once PER PAD (measured on glasgow:
     # 1,593 batch entries for 1,136 pads, per base build, 629 builds/route).
     _flush_cell_sink(obstacles, _pad_cell_sink)
+    if _pad_guard_sink:
+        obstacles.add_corner_guards_batch(np.concatenate(_pad_guard_sink))
     _flush_via_sink(obstacles, _pad_via_sink)
 
     # Intersect each tied net's corridor with the recorded tie-copper stamps:
@@ -3633,6 +3637,22 @@ def _assemble_net_tie_lifts(corridors, recorded, layer_map):
     return lifts
 
 
+def _takes_guards(obstacles) -> bool:
+    """Whether this map stores corner guards: a Rust map from 0.23.0 on. A
+    recording wrapper (tie-partner pads, stamped later) is not the map, and
+    its pads keep the corner buffer."""
+    return hasattr(type(obstacles), 'add_corner_guards_batch')
+
+
+def _put_guards(obstacles, guard_sink, rows):
+    if not len(rows):
+        return
+    if guard_sink is not None:
+        guard_sink.append(rows)
+    else:
+        obstacles.add_corner_guards_batch(rows)
+
+
 def _add_pad_obstacle(obstacles: GridObstacleMap, pad, coord: GridCoord,
                       layer_map: Dict[str, int], config: GridRouteConfig,
                       extra_clearance: float = 0.0,
@@ -3640,7 +3660,7 @@ def _add_pad_obstacle(obstacles: GridObstacleMap, pad, coord: GridCoord,
                       blocked_vias: Set[Tuple[int, int]] = None,
                       clearance_override: float = None,
                       skip_cell=None,
-                      cell_sink=None, via_sink=None):
+                      cell_sink=None, via_sink=None, guard_sink=None):
     """Add a pad as obstacle to the map.
 
     Uses rectangular-with-rounded-corners pattern matching other pad blocking functions.
@@ -3657,7 +3677,17 @@ def _add_pad_obstacle(obstacles: GridObstacleMap, pad, coord: GridCoord,
         clearance_override: If provided, use this clearance instead of config.clearance
         skip_cell: Optional (gx, gy) -> bool predicate; cells for which it returns
             True are left unblocked (used for connector-region exemptions)
+        guard_sink: Optional list collecting the pad's corner-guard rows for
+            one batch add, as cell_sink does for cells
+
+    Where the map takes corner guards (docs/corner-move-check-design.md) and
+    the keep-out is a plain one (no diff-pair extra clearance, no connector
+    exemption), the track cells are stamped exact -- no corner buffer, a cell
+    at the rule open -- and the pad's corner guards refuse the moves between
+    open cells that would clip it. Otherwise the half-cell corner buffer
+    stands in for them, as before.
     """
+    guards = (extra_clearance == 0 and skip_cell is None and _takes_guards(obstacles))
     gx, gy = coord.to_grid(pad.global_x, pad.global_y)
     # Sub-cell offset of the real pad center from its quantized cell, so blocking
     # is measured from the real center, not the grid cell (issue #70).
@@ -3739,6 +3769,10 @@ def _add_pad_obstacle(obstacles: GridObstacleMap, pad, coord: GridCoord,
                       via_pass=False, layer_idxs=g_idxs)
             if on_copper:
                 _emit(poly, via_margin, via_pass=True)
+        if guards:
+            for g_clr, g_idxs in clr_groups.items():
+                _put_guards(obstacles, guard_sink, pad_guard_rows(
+                    pad, coord.grid_step, config.track_width / 2 + g_clr, g_idxs))
         return
 
     # Compute corner radius based on pad shape:
@@ -3766,10 +3800,16 @@ def _add_pad_obstacle(obstacles: GridObstacleMap, pad, coord: GridCoord,
     # rare skip_cell path (per-cell Python predicate, used for connector
     # exemptions) filters the array with the same predicate.
     for g_clr, g_idxs in _clr_groups(expanded_layers).items():
-        cells = pad_blocked_cells_array(gx, gy, half_width, half_height,
-                                        config.track_width / 2 + g_clr + extra_clearance,
-                                        config.grid_step, corner_radius, corner_buffer,
-                                        off_x, off_y, rotation_deg=pad.rect_rotation)
+        margin = config.track_width / 2 + g_clr + extra_clearance
+        if guards:
+            cells = pad_blocked_cells_array(gx, gy, half_width, half_height, margin - GRID_TIE_EPS,
+                                            config.grid_step, corner_radius, 0.0,
+                                            off_x, off_y, rotation_deg=pad.rect_rotation)
+            _put_guards(obstacles, guard_sink, pad_guard_rows(pad, coord.grid_step, margin, g_idxs))
+        else:
+            cells = pad_blocked_cells_array(gx, gy, half_width, half_height, margin,
+                                            config.grid_step, corner_radius, corner_buffer,
+                                            off_x, off_y, rotation_deg=pad.rect_rotation)
         if skip_cell is not None and len(cells):
             keep = np.fromiter((not skip_cell(int(cx), int(cy)) for cx, cy in cells),
                                dtype=bool, count=len(cells))
