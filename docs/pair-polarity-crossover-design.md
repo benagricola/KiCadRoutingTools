@@ -1,7 +1,7 @@
 # A pair whose P and N swap sides between its ends
 
 Date: 2026-09-25
-Status: proposal (diagnosis first)
+Status: diagnosed (see Findings); the fix is a new proposal, for review
 Branch: feat/fanout-fixes (local)
 
 ## The problem
@@ -69,6 +69,40 @@ propose, as a separate change.
    other, so the crossing is with the middle's via processing
    (_process_via_positions) or a leg; identify which.
 4. Fix what is found, with a test on the minimal case, and write it up.
+
+## Findings (2026-09-25)
+
+Every rejected candidate was dumped where `_pn_tracks_cross_full` rejected
+it and drawn to scale over the pads (P red, N blue, F.Cu solid, B.Cu
+dashed, P/N crossings circled):
+
+- **The flip (standard route)**, `img/pair-polarity/flip-route.png`: the
+  pair launches inward from pins 66/67 as the designer does, but stays on
+  F.Cu, runs south through the annulus between the exposed pad and the east
+  pad row, comes back north-east, and resolves polarity by a loop beside
+  R2/R3 that still crosses once. The coupled route has no way to exchange
+  sides except by a loop.
+- **The hybrid**, `img/pair-polarity/hybrid-middle.png`: its launch search
+  (`_closest_launch`) walks the straight line from each terminal toward the
+  other until a pair-wide swath is clear. From the chip's USB pins that line
+  runs through the north-east decoupling caps almost all the way, so both
+  launch points land beside R2/R3; the coupled middle between two nearly
+  coincident points loops on itself and crosses twice. The hybrid is built
+  for a terminal with room near it (docs/differential-pairs.md, "Scope"),
+  which neither end of this pair has on the straight line.
+
+Neither mechanism can exchange P and N at a layer change, which is how the
+designer resolves it (staggered vias in the annulus, the pair continuing on
+B.Cu with its sides swapped). Upstream has no such mechanism; #266 (open)
+adds a pad swap to the hybrid, which USB may not use (#279).
+
+## Next: a layer-change crossover (to be proposed)
+
+A polarity resolution that, where the coupled route changes layer, places
+P's and N's vias so that the offset tracks continue on the new layer with
+their sides exchanged, within the pair's own width, instead of a loop. It
+is a change to the coupled route's via handling (`_process_via_positions`
+and the polarity stage), so it gets its own spec and plan.
 
 ## Verification
 
