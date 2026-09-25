@@ -35,9 +35,9 @@
 
 **Interfaces:** Produces `translate_board_text(text, dx, dy) -> str`.
 
-- [ ] Failing tests on tracked boards (`kicad_files/*.kicad_pcb`): translating by (dx, dy) then (-dx, -dy) parses to the same geometry as the original (every pad, segment, via, zone outline, edge shape equal to 1 nm); translating by (dx, dy) moves every parsed pad centre and track end by exactly (dx, dy); coordinates inside footprints (pad `at`, fp_* shapes) are untouched.
-- [ ] Implement: shift the coordinates of the board's top-level items only (footprint `at`; segment/arc `start`/`mid`/`end`; via `at`; zone `polygon` and `filled_polygon` `pts`; `gr_*` `start`/`end`/`mid`/`center`/`pts`; text and dimension points), numbers written back in KiCad's own style (up to 6 decimals, trailing zeros dropped).
-- [ ] Commit.
+- [x] Failing tests on tracked boards (`kicad_files/*.kicad_pcb`): translating by (dx, dy) then (-dx, -dy) parses to the same geometry as the original (every pad, segment, via, zone outline, edge shape equal to 1 nm); translating by (dx, dy) moves every parsed pad centre and track end by exactly (dx, dy); coordinates inside footprints (pad `at`, fp_* shapes) are untouched.
+- [x] Implement: shift the coordinates of the board's top-level items only (footprint `at`; segment/arc `start`/`mid`/`end`; via `at`; zone `polygon` and `filled_polygon` `pts`; `gr_*` `start`/`end`/`mid`/`center`/`pts`; text and dimension points), numbers written back in KiCad's own style (up to 6 decimals, trailing zeros dropped).
+- [x] Commit.
 
 ### Task 3: Aligned routing in route.py
 
