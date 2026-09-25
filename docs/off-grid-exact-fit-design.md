@@ -1,7 +1,16 @@
 # Grid alignment and exact escape stubs
 
 Date: 2026-09-25
-Status: proposal
+Status: part 1 (grid alignment) implemented, on by default. Part 2 (exact
+escape stubs) implemented and OFF by default (KICAD_EXACT_ESCAPE=1 turns it
+on): its motivating case no longer needs it. gpio23 and gpio24 were sealed
+by two over-blocking bugs, fixed on feat/fanout-fixes (every base-map pad
+kept the half-cell corner buffer, c319ff35; every via blocked tracks 0.125
+mm past its clearance, 78bd7dd3), and with those fixed both route on the
+grid with or without stubs, clean by KiCad's DRC. On the cap sweep (36
+cases, both layer setups) the build with stubs and their rip-up rule
+routes exactly as the build without: 19 and 11 failed pins. The code stays
+for a case that needs it.
 Branch: fix/escape-at-min-pitch (local)
 
 ## The problem
