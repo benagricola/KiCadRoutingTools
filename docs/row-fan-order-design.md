@@ -1,7 +1,7 @@
 # Row fan order: a pin row is routed outside-in, as a person fans it out
 
 Date: 2026-09-25
-Status: proposal (revised: fan order replaces the escape lanes first proposed)
+Status: proposal (revised twice: fan order replaces escape lanes; chip-to-chip nets keep their place)
 Branch: fix/escape-at-min-pitch (local), after the corner move check
 
 ## The problem
@@ -50,11 +50,38 @@ nets that leave a fine-pitch row:
   can lie beside the previous one: the outermost turns first.
 - **Across rows and the rest of the board**: row nets keep the positions
   the base order gave the row as a whole (the first of its nets in the base
-  order); within that block they are re-sequenced as above. A net on two
-  fine-pitch rows (chip to chip) is sequenced by the finer row, else by the
-  first in the base order.
+  order); within that block they are re-sequenced as above.
+- **Chip to chip**: a net with pads on two footprints that each have a
+  fine-pitch row keeps its place in the base order. MPS already sequences
+  such nets by where both ends sit; re-sequencing them by one end lost a
+  QSPI line on the MCU module (below).
 - **Switch**: `--fan-order` on by default, `--no-fan-order` for the old
   behaviour. It changes order only, never geometry or rules.
+
+## With parts round the chip
+
+Measured 2026-09-25 with a prototype of this order passed to the router as
+`--ordering original --nets ...` (F.Cu + B.Cu, `--escalation off`), failed
+pins in total:
+
+| case | default order | fan order |
+|---|---|---|
+| bare QFN, F.Cu only | 2 | 0 |
+| bare QFN, F.Cu + B.Cu | 3 | 0 |
+| one 0402 on a mid-row supply pin, 36 placements (3 turns x 4 slides along the row x 3 gaps), F.Cu only | 204 (1 of 36 all routed) | 24 (23 of 36) |
+| the same, F.Cu + B.Cu | 74 (7 of 36) | 13 (26 of 36) |
+| the MCU module (its caps, crystal, flash and LDO placed; rail copper kept; each GPIO to a sink), F.Cu + B.Cu | 4 | 6 (7 without the chip-to-chip rule) |
+| the same, F.Cu only | 19 | 21 |
+
+With the fan order, the sweep's failures sit within a few pins of the
+served pin, where the cap takes the room; with the default order they are
+spread over all four faces. On the module both orders lose the pins beside
+cap-served supply pins (gpio23/24/40/47, RUN, USB_MCU_P), which the hand
+layout escapes partly by relief vias under the package; that is a separate
+mechanism (docs/relief-via-escape-design.md), and the module is re-measured
+with it. A variant that keeps every net in its base-order slot and only
+sorts within a row's fan groups did worse on the sweep (66 and 24) and was
+dropped.
 
 ## Findings, not in this change
 
