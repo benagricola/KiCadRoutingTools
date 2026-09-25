@@ -262,6 +262,49 @@ pub struct GridObstacleMap {
     /// Free via positions: positions where layer changes have zero cost
     /// (e.g., through-hole pads on the same net - reuse existing holes instead of adding vias)
     pub free_via_positions: FxHashSet<u64>,
+    /// Corner guards (docs/corner-move-check-design.md): per layer, cell ->
+    /// the guards whose disc meets that cell's unit square, each (gx, gy, r)
+    /// in grid units with its refcount. A pad's cells are exact; a move
+    /// between two open cells that passes inside a guard clips the pad's
+    /// corner and is refused (move_clips_corner). Every point of a one-step
+    /// move lies in one of its two end cells' squares, so those two lists
+    /// hold every guard the move can meet.
+    pub corner_guards: Vec<FxHashMap<u64, Vec<(f64, f64, f64, u16)>>>,
+    /// Cells whose guard list is non-empty, per layer: the move check's
+    /// fast "nothing here".
+    guard_bitmap: BlockedBitmap,
+    /// Guard rows added and not yet removed (a row filed in several cells counts once).
+    guard_rows: usize,
+}
+
+/// Guard radius tolerance, grid units: float noise only. The caller's radius
+/// already carries the clearance rule's own tie (GRID_TIE_EPS), so a move
+/// exactly at the rule stays legal as a cell exactly at it does.
+const GUARD_EPS: f64 = 1e-9;
+
+fn seg_point_dist(ax: f64, ay: f64, bx: f64, by: f64, px: f64, py: f64) -> f64 {
+    let (dx, dy) = (bx - ax, by - ay);
+    let l2 = dx * dx + dy * dy;
+    let t = if l2 <= 0.0 { 0.0 } else { (((px - ax) * dx + (py - ay) * dy) / l2).clamp(0.0, 1.0) };
+    let (ex, ey) = (px - (ax + t * dx), py - (ay + t * dy));
+    (ex * ex + ey * ey).sqrt()
+}
+
+/// The cells whose unit square a disc meets.
+fn disc_cells(x: f64, y: f64, r: f64) -> Vec<(i32, i32)> {
+    let mut out = Vec::new();
+    let (x0, x1) = ((x - r - 0.5).floor() as i32, (x + r + 0.5).ceil() as i32);
+    let (y0, y1) = ((y - r - 0.5).floor() as i32, (y + r + 0.5).ceil() as i32);
+    for cx in x0..=x1 {
+        for cy in y0..=y1 {
+            let nx = x.clamp(cx as f64 - 0.5, cx as f64 + 0.5);
+            let ny = y.clamp(cy as f64 - 0.5, cy as f64 + 0.5);
+            if (nx - x).hypot(ny - y) <= r {
+                out.push((cx, cy));
+            }
+        }
+    }
+    out
 }
 
 #[pymethods]
@@ -287,6 +330,9 @@ impl GridObstacleMap {
             endpoint_exempt_positions: Vec::new(),
             endpoint_exempt_radius: 0,
             free_via_positions: FxHashSet::default(),
+            corner_guards: (0..num_layers).map(|_| FxHashMap::default()).collect(),
+            guard_bitmap: BlockedBitmap::new(num_layers),
+            guard_rows: 0,
         }
     }
 
@@ -322,6 +368,100 @@ impl GridObstacleMap {
         }
     }
 
+    /// Add corner guards: rows (gx, gy, r, layer), grid units (N x 4, f64).
+    /// The same guard added twice needs two removes.
+    pub fn add_corner_guards_batch(&mut self, rows: PyReadonlyArray2<f64>) {
+        let arr = rows.as_array();
+        for row in arr.rows() {
+            let (x, y, r, layer) = (row[0], row[1], row[2], row[3] as usize);
+            if layer >= self.num_layers || !(r > 0.0) {
+                continue;
+            }
+            for (cx, cy) in disc_cells(x, y, r) {
+                let list = self.corner_guards[layer].entry(pack_xy(cx, cy)).or_default();
+                if let Some(g) = list.iter_mut().find(|g| g.0 == x && g.1 == y && g.2 == r) {
+                    g.3 += 1;
+                } else {
+                    list.push((x, y, r, 1));
+                    if list.len() == 1 {
+                        self.guard_bitmap.set(cx, cy, layer);
+                    }
+                }
+            }
+            self.guard_rows += 1;
+        }
+    }
+
+    /// Remove corner guards: the exact mirror of add_corner_guards_batch.
+    pub fn remove_corner_guards_batch(&mut self, rows: PyReadonlyArray2<f64>) {
+        let arr = rows.as_array();
+        for row in arr.rows() {
+            let (x, y, r, layer) = (row[0], row[1], row[2], row[3] as usize);
+            if layer >= self.num_layers || !(r > 0.0) {
+                continue;
+            }
+            let mut found = false;
+            for (cx, cy) in disc_cells(x, y, r) {
+                let key = pack_xy(cx, cy);
+                let mut emptied = false;
+                if let Some(list) = self.corner_guards[layer].get_mut(&key) {
+                    if let Some(i) = list.iter().position(|g| g.0 == x && g.1 == y && g.2 == r) {
+                        found = true;
+                        list[i].3 -= 1;
+                        if list[i].3 == 0 {
+                            list.swap_remove(i);
+                        }
+                    }
+                    emptied = list.is_empty();
+                }
+                if emptied {
+                    self.corner_guards[layer].remove(&key);
+                    self.guard_bitmap.clear(cx, cy, layer);
+                }
+            }
+            if found && self.guard_rows > 0 {
+                self.guard_rows -= 1;
+            }
+        }
+    }
+
+    /// Guard rows added and not yet removed.
+    pub fn corner_guard_count(&self) -> usize {
+        self.guard_rows
+    }
+
+    /// Whether the one-step move (gx1, gy1) -> (gx2, gy2) on `layer` passes
+    /// nearer a guard's centre than its radius plus `extra` (the moving
+    /// track's own margin, grid units, as segment_blocked takes it).
+    pub fn move_clips_corner(&self, gx1: i32, gy1: i32, gx2: i32, gy2: i32, layer: usize, extra: f64) -> bool {
+        if layer >= self.num_layers || self.guard_rows == 0 {
+            return false;
+        }
+        let (ax, ay, bx, by) = (gx1 as f64, gy1 as f64, gx2 as f64, gy2 as f64);
+        let reach = if extra > 0.0 { extra.ceil() as i32 } else { 0 };
+        let check = |cx: i32, cy: i32| -> bool {
+            if !self.guard_bitmap.test(cx, cy, layer) {
+                return false;
+            }
+            match self.corner_guards[layer].get(&pack_xy(cx, cy)) {
+                Some(list) => list.iter().any(|g| seg_point_dist(ax, ay, bx, by, g.0, g.1) < g.2 + extra - GUARD_EPS),
+                None => false,
+            }
+        };
+        if reach == 0 {
+            return check(gx1, gy1) || check(gx2, gy2);
+        }
+        // A wide track: its margin reaches guards filed beyond the end cells.
+        for cx in (gx1.min(gx2) - reach)..=(gx1.max(gx2) + reach) {
+            for cy in (gy1.min(gy2) - reach)..=(gy1.max(gy2) + reach) {
+                if check(cx, cy) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Create a deep copy of this obstacle map
     #[pyo3(name = "clone")]
     pub fn py_clone(&self) -> Self {
@@ -344,6 +484,9 @@ impl GridObstacleMap {
             endpoint_exempt_positions: self.endpoint_exempt_positions.clone(),
             endpoint_exempt_radius: self.endpoint_exempt_radius,
             free_via_positions: self.free_via_positions.clone(),
+            corner_guards: self.corner_guards.clone(),
+            guard_bitmap: self.guard_bitmap.clone(),
+            guard_rows: self.guard_rows,
         }
     }
 
@@ -371,6 +514,9 @@ impl GridObstacleMap {
             endpoint_exempt_positions: self.endpoint_exempt_positions.clone(),
             endpoint_exempt_radius: self.endpoint_exempt_radius,
             free_via_positions: self.free_via_positions.clone(),
+            corner_guards: self.corner_guards.clone(),
+            guard_bitmap: self.guard_bitmap.clone(),
+            guard_rows: self.guard_rows,
         }
     }
 
