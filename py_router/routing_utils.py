@@ -505,6 +505,30 @@ def pad_corner_radius(pad) -> float:
     return 0.0
 
 
+def via_keepout(x: float, y: float, grid_step: float, radii_mm) -> tuple:
+    """A via's exact track keep-out on each layer: ([cells per layer], guard
+    rows). A cell is blocked when its centre is within the layer's radius
+    (via/2 + track/2 + clearance) of the via's TRUE centre, a cell exactly at
+    it open (GRID_TIE_EPS, as the pads); each (N, 2) int32. The guard rows
+    (gx, gy, r, layer index), in grid units, make the via a guard circle, so a
+    move between two open cells that passes within the radius is refused
+    (docs/corner-move-check-design.md). Replaces the ceiled radius plus a
+    quarter-cell diagonal margin, which blocked legal cells up to 0.125 mm out."""
+    inv = 1.0 / grid_step
+    cx, cy = x * inv, y * inv
+    cells, rows = [], []
+    for li, r_mm in enumerate(radii_mm):
+        r = (r_mm - GRID_TIE_EPS) * inv
+        span = int(math.ceil(r)) + 1
+        gx = np.arange(int(math.floor(cx)) - span, int(math.ceil(cx)) + span + 1)
+        gy = np.arange(int(math.floor(cy)) - span, int(math.ceil(cy)) + span + 1)
+        X, Y = np.meshgrid(gx, gy, indexing="ij")
+        inside = (X - cx) ** 2 + (Y - cy) ** 2 < r * r
+        cells.append(np.column_stack([X[inside], Y[inside]]).astype(np.int32))
+        rows.append((cx, cy, r, float(li)))
+    return cells, np.array(rows, dtype=np.float64).reshape(-1, 4)
+
+
 def pad_guard_rows(pad, grid_step: float, margin: float, layer_idxs) -> "np.ndarray":
     """pad_corner_guards on each of `layer_idxs`: (N, 4) rows (gx, gy, r,
     layer), what GridObstacleMap.add_corner_guards_batch takes."""

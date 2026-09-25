@@ -794,6 +794,9 @@ def precompute_net_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
     # off-grid offset (off_cells) of those vias; at grid 0.05 the same vias land
     # on-grid (off_cells=0), exposing 74 track-via grazes. Matches the non-cache
     # add_net_vias_as_obstacles, which already uses via.size.
+    # Corner guards (pads) and via guards: the map stores them, and this
+    # keep-out has no extra clearance (docs/corner-move-check-design.md).
+    guards_set: Optional[List["np.ndarray"]] = [] if (_GUARDS and extra_clearance == 0) else None
     for via in pcb_data.vias:
         if via.net_id != net_id:
             continue
@@ -809,7 +812,11 @@ def precompute_net_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
                                    + config.stack_clearance(obs_clearance)) * coord.inv_step)
         _collect_via_obstacles(via, coord, num_layers, via_track_list,
                                 via_via_radius, diagonal_margin,
-                                blocked_cells_set, blocked_vias_set)
+                                blocked_cells_set, blocked_vias_set,
+                                radii_mm=([vs / 2 + lw / 2 + config.layer_clearance(ln, obs_clearance)
+                                           for ln, lw in zip(config.layers, layer_widths)]
+                                          if guards_set is not None else None),
+                                corner_guards=guards_set)
         # #441: net-INDEPENDENT drill hole-to-hole keepout, stamped into the via
         # map IN ADDITION to the copper via-via disc above (which is copper-only:
         # vs/2 + via_size/2 + clearance). A future ROUTE via must also clear this
@@ -841,7 +848,6 @@ def precompute_net_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
 
     # Process pads
     pads = pcb_data.pads_by_net.get(net_id, [])
-    guards_set: Optional[List["np.ndarray"]] = [] if (_GUARDS and extra_clearance == 0) else None
     for pad in pads:
         _collect_pad_obstacles(pad, coord, layer_map, config, extra_clearance,
                                 blocked_cells_set, blocked_vias_set,
@@ -972,8 +978,13 @@ def _collect_via_obstacles(via, coord: GridCoord, num_layers: int,
                             via_track_expansion_grid, via_via_expansion_grid: int,
                             diagonal_margin: float,
                             blocked_cells: List["np.ndarray"],
-                            blocked_vias: List["np.ndarray"]):
+                            blocked_vias: List["np.ndarray"],
+                            radii_mm=None, corner_guards=None):
     """Collect via obstacle cells into sets (no obstacle map modification).
+
+    With `radii_mm` and `corner_guards` (a list), the track cells are exact
+    and the via's guard rows are appended there (routing_utils.via_keepout),
+    as obstacle_map._add_via_obstacle does for the base map.
 
     Args:
         via_track_expansion_grid: Either a single int or list of ints (per-layer) for impedance control
@@ -998,7 +1009,18 @@ def _collect_via_obstacles(via, coord: GridCoord, num_layers: int,
         blocked_cells.append(rows)
 
     # Support per-layer expansion for impedance-controlled routing
-    if isinstance(via_track_expansion_grid, list):
+    if radii_mm is not None and corner_guards is not None:
+        from routing_utils import via_keepout
+        cells, guards = via_keepout(via.x, via.y, coord.grid_step, radii_mm)
+        for layer_idx, layer_cells in enumerate(cells):
+            if len(layer_cells):
+                rows = np.empty((len(layer_cells), 3), dtype=np.int32)
+                rows[:, :2] = layer_cells
+                rows[:, 2] = layer_idx
+                blocked_cells.append(rows)
+        if len(guards):
+            corner_guards.append(guards)
+    elif isinstance(via_track_expansion_grid, list):
         for layer_idx in range(num_layers):
             layer_expansion = via_track_expansion_grid[layer_idx]
             radius = layer_expansion + diagonal_margin + off_cells

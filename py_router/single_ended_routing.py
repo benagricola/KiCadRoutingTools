@@ -990,6 +990,46 @@ def _neck_route_terminal_grazes(segments, path, coord, start_original, end_origi
     return _hard
 
 
+def _prev_on_layer(path, i, j, coord):
+    """path[j]'s position when it is on path[i]'s layer (the segment arriving
+    at path[i]), else None."""
+    if 0 <= j < len(path) and path[j][2] == path[i][2]:
+        return coord.to_float(path[j][0], path[j][1])
+    return None
+
+
+def _pad_join_is_kink(pcb_data, net_id, original, end_xy, prev_xy, layer_name) -> bool:
+    """Whether the short join from a route's grid end `end_xy` to `original`
+    (x, y, layer) should be left out: `original` is the centre of one of the
+    net's own pads with copper on `layer_name`, the grid end already lies
+    inside that pad's copper (KiCad connects any track end inside a pad), and
+    the join would turn 90 degrees or more against the segment arriving from
+    `prev_xy`. Such joins were most of the router's sharp turns, 0.01-0.1 mm
+    kinks into pads; a join that continues the track or turns less is kept."""
+    if pcb_data is None or original is None or prev_xy is None:
+        return False
+    ox, oy, ol = original
+    if ol != layer_name:
+        return False
+    ex, ey = end_xy
+    jx, jy = ox - ex, oy - ey
+    ax, ay = ex - prev_xy[0], ey - prev_xy[1]
+    if math.hypot(jx, jy) < 1e-9 or math.hypot(ax, ay) < 1e-9:
+        return False
+    if jx * ax + jy * ay > 1e-9 * math.hypot(jx, jy) * math.hypot(ax, ay):
+        return False            # turns less than 90 degrees
+    from check_drc import point_to_pad_distance
+    from net_queries import expand_pad_layers
+    for pad in pcb_data.pads_by_net.get(net_id, []):
+        if abs(pad.global_x - ox) > 1e-6 or abs(pad.global_y - oy) > 1e-6:
+            continue
+        if layer_name not in expand_pad_layers(pad.layers, [layer_name]):
+            continue
+        if point_to_pad_distance(ex, ey, pad) <= 1e-9:
+            return True
+    return False
+
+
 def _merge_terminal_to_exact(path, term_idx, neighbor_idx, original, pts,
                              pcb_data, net_id, config, layer_names):
     """#4: route.py is on-grid, but a route's TERMINAL connects to an off-grid pad
@@ -2190,7 +2230,9 @@ def route_net_with_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
     if start_original:
         first_grid_x, first_grid_y = coord.to_float(path_start[0], path_start[1])
         orig_x, orig_y, orig_layer = start_original
-        if abs(orig_x - first_grid_x) > 0.001 or abs(orig_y - first_grid_y) > 0.001:
+        if ((abs(orig_x - first_grid_x) > 0.001 or abs(orig_y - first_grid_y) > 0.001)
+                and not _pad_join_is_kink(pcb_data, net_id, start_original, (first_grid_x, first_grid_y),
+                                          _prev_on_layer(path, 0, 1, coord), layer_names[path_start[2]])):
             seg = Segment(
                 start_x=orig_x, start_y=orig_y,
                 end_x=first_grid_x, end_y=first_grid_y,
@@ -2236,7 +2278,10 @@ def route_net_with_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
     if end_original:
         last_grid_x, last_grid_y = coord.to_float(path_end[0], path_end[1])
         orig_x, orig_y, orig_layer = end_original
-        if abs(orig_x - last_grid_x) > 0.001 or abs(orig_y - last_grid_y) > 0.001:
+        if ((abs(orig_x - last_grid_x) > 0.001 or abs(orig_y - last_grid_y) > 0.001)
+                and not _pad_join_is_kink(pcb_data, net_id, end_original, (last_grid_x, last_grid_y),
+                                          _prev_on_layer(path, len(path) - 1, len(path) - 2, coord),
+                                          layer_names[path_end[2]])):
             seg = Segment(
                 start_x=last_grid_x, start_y=last_grid_y,
                 end_x=orig_x, end_y=orig_y,
@@ -5451,6 +5496,9 @@ def _path_to_segments_vias(
         # layer-specific target projected onto a layer the A* merely ended on
         # joins nothing and can short whatever occupies that layer.
         if ((abs(orig_x - first_grid_x) > 0.001 or abs(orig_y - first_grid_y) > 0.001)
+                and not _pad_join_is_kink(pcb_data, net_id, start_original, pts[0],
+                                          pts[1] if len(path) > 1 and path[1][2] == path[0][2] else None,
+                                          path_start_layer)
                 and (orig_layer == path_start_layer or pcb_data is None
                      or _terminal_copper_on_layer(pcb_data, net_id, orig_x, orig_y,
                                                   path_start_layer))):
@@ -5524,6 +5572,9 @@ def _path_to_segments_vias(
         # ...but only when the terminal really has copper there (#505) -- see
         # the start-side note above.
         if ((abs(orig_x - last_grid_x) > 0.001 or abs(orig_y - last_grid_y) > 0.001)
+                and not _pad_join_is_kink(pcb_data, net_id, end_original, pts[-1],
+                                          pts[-2] if len(path) > 1 and path[-2][2] == path[-1][2] else None,
+                                          path_end_layer)
                 and (orig_layer == path_end_layer or pcb_data is None
                      or _terminal_copper_on_layer(pcb_data, net_id, orig_x, orig_y,
                                                   path_end_layer))):
