@@ -215,6 +215,56 @@ def _pocket(start_cells, is_open, box):
     return seen
 
 
+def walled_by_routed(pcb_data, net_id: int, config, coord, layer_names, is_open, start_cells,
+                     reach: float = None) -> bool:
+    """Whether any blocked cell walling in the pocket reachable from
+    `start_cells` is blocked by copper this run routed: a foreign track or
+    via with no uuid (a board file's copper carries one; the router's new
+    copper has none until it is written). Such a wall can be ripped up and
+    rerouted, which leaves the pin its ordinary lane; an exact stub squeezed
+    past it takes that lane's room from the pins after it (measured on the
+    cap sweep: P20 squeezed past P9's new track, three later pins failed).
+    Exact stubs are for pins walled in by copper that stays."""
+    from geometry_utils import point_to_segment_distance
+    reach = defaults.EXACT_ESCAPE_REACH if reach is None else reach
+    g = config.grid_step
+    cells = [tuple(c[:3]) for c in start_cells]
+    if not cells:
+        return False
+    xs = [c[0] for c in cells]
+    ys = [c[1] for c in cells]
+    r = int(math.ceil(reach / g)) + 1
+    box = (min(xs) - r, min(ys) - r, max(xs) + r, max(ys) + r)
+    pocket = _pocket(cells, is_open, box)
+    wall = set()
+    for x, y, li in pocket:
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                c = (x + dx, y + dy, li)
+                if c not in pocket and not is_open(*c):
+                    wall.add(c)
+    if not wall:
+        return False
+    own = config.obstacle_clearance(net_id)
+    segs = [s for s in pcb_data.segments if not s.uuid and s.net_id != net_id]
+    vias = [v for v in pcb_data.vias if not v.uuid and v.net_id != net_id]
+    for gx, gy, li in wall:
+        x, y = coord.to_float(gx, gy)
+        layer = layer_names[li]
+        w = config.get_net_track_width(net_id, layer)
+        for s in segs:
+            if s.layer != layer:
+                continue
+            c = max(own, config.obstacle_clearance(s.net_id))
+            if point_to_segment_distance(x, y, s.start_x, s.start_y, s.end_x, s.end_y) < s.width / 2 + w / 2 + c + 1e-6:
+                return True
+        for v in vias:
+            c = max(own, config.obstacle_clearance(v.net_id))
+            if math.hypot(x - v.x, y - v.y) < v.size / 2 + w / 2 + c + 1e-6:
+                return True
+    return False
+
+
 def exact_escapes(pcb_data, net_id: int, pad, config, coord,
                   layer_names: List[str], is_open=None, start_cells=(),
                   toward=None, reach: float = None, limit: int = None

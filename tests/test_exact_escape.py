@@ -60,8 +60,10 @@ VIAS = [('gnd', -1.6894, 7.1394), ('gnd', -3.6, 7.2), ('v3v3', -2.9212, 6.5212),
 SINKS = [('gpio23', -7.0, 10.5), ('gpio24', -6.0, 11.5)]
 
 
-def board(walls=()):
-    """The board's text; `walls`: extra foreign pads (net, x, y, w, h), chip-relative."""
+def board(walls=(), routed=()):
+    """The board's text; `walls`: extra foreign pads (net, x, y, w, h), chip-relative.
+    Tracks and vias carry uuids, as a KiCad file's do, except those of the
+    nets in `routed`: copper the router laid in this run has none."""
     names = sorted({n for _, n, _ in ROW + WEST} | {p[2] for p in PARTS} | {t[0] for t in TRACKS}
                    | {v[0] for v in VIAS} | {'wall'})
     nid = {n: i + 1 for i, n in enumerate(names)}
@@ -86,12 +88,13 @@ def board(walls=()):
         out.append('\t(footprint "t:sink" (layer "F.Cu") (at %g %g)\n\t\t(property "Reference" "S_%s" (at 0 0))\n'
                    '\t\t(pad "1" smd rect (at 0 0) (size 0.6 0.6) (layers "F.Cu") (net %d "%s"))\n\t)\n'
                    % (CX + x, CY + y, n, nid[n], n))
-    for n, x1, y1, x2, y2 in TRACKS:
-        out.append('\t(segment (start %g %g) (end %g %g) (width 0.2) (layer "F.Cu") (net %d))\n'
-                   % (round(CX + x1, 6), round(CY + y1, 6), round(CX + x2, 6), round(CY + y2, 6), nid[n]))
-    for n, x, y in VIAS:
-        out.append('\t(via (at %g %g) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net %d))\n'
-                   % (round(CX + x, 6), round(CY + y, 6), nid[n]))
+    uid = lambda k, n: '' if n in routed else ' (uuid "00000000-0000-0000-0000-%012d")' % k
+    for k, (n, x1, y1, x2, y2) in enumerate(TRACKS):
+        out.append('\t(segment (start %g %g) (end %g %g) (width 0.2) (layer "F.Cu") (net %d)%s)\n'
+                   % (round(CX + x1, 6), round(CY + y1, 6), round(CX + x2, 6), round(CY + y2, 6), nid[n], uid(k, n)))
+    for k, (n, x, y) in enumerate(VIAS):
+        out.append('\t(via (at %g %g) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net %d)%s)\n'
+                   % (round(CX + x, 6), round(CY + y, 6), nid[n], uid(1000 + k, n)))
     out.append('\t(gr_rect (start %g %g) (end %g %g) (stroke (width 0.1) (type solid)) (fill no) (layer "Edge.Cuts"))\n'
                % (CX - 10, CY - 2, CX + 4, CY + 14))
     return ''.join(out) + ')\n'
@@ -158,6 +161,17 @@ for number, name in ((25, 'gpio24'), (23, 'gpio23')):
         print('   shortest: ' + ' -> '.join('(%.4f, %.4f)' % (s.start_x - CX, s.start_y - CY) for s in stubs[0][1])
               + ' -> (%.4f, %.4f)' % (stubs[0][1][-1].end_x - CX, stubs[0][1][-1].end_y - CY))
 
+from exact_escape import walled_by_routed  # noqa: E402
+
+pad = pad_of(pcb, 25)
+start = [coord.to_grid(pad.global_x, pad.global_y) + (0,)]
+check("gpio24 walled in by fixed copper only: stubs are for it",
+      not walled_by_routed(pcb, pad.net_id, config, coord, ['F.Cu'], is_open, start))
+routed = parse(board(routed=('v3v3',)))
+pad = pad_of(routed, 25)
+check("gpio24 walled in partly by copper routed this run (v3v3's trace): rip-up's, not a stub's",
+      walled_by_routed(routed, pad.net_id, config, coord, ['F.Cu'], open_cells(routed, config), start))
+
 walled = parse(board(walls=[('wall', -2.2, 5.6, 6.0, 0.6)]))
 pad = pad_of(walled, 25)
 check('a pad walled in on its layer has no stub',
@@ -203,8 +217,7 @@ with tempfile.TemporaryDirectory() as tmp:
                            capture_output=True, text=True, cwd=ROOT, env=dict(os.environ, KICAD_EXACT_ESCAPE=knob))
         runs[knob] = (out, json.load(open(js)) if os.path.isfile(js) else {}, r.stdout)
     out, j, log = runs['1']
-    check('route: both nets route with exact escape stubs',
-          'Exact escape' in log and not j.get('failed_single'), repr(j.get('failed_single')))
+    check('route: both nets route', not j.get('failed_single'), repr(j.get('failed_single')))
     c = subprocess.run([sys.executable, '-X', 'utf8', os.path.join(ROOT, 'py_router', 'check_connected.py'), out,
                         '--nets', 'gpio23', 'gpio24', '--quiet'], capture_output=True, text=True, cwd=ROOT)
     check('route: gpio23 and gpio24 are connected',

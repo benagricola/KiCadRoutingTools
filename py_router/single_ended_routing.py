@@ -3152,7 +3152,7 @@ def _route_with_exact_escape(router, obstacles, config, sources, targets, track_
     and route again. Returns _route_with_via_unblock's tuple with the stubs
     the route used as its segments, or None when there were no stubs or the
     route still failed."""
-    from exact_escape import exact_escapes
+    from exact_escape import exact_escapes, walled_by_routed
     lim = config.max_probe_iterations
     layer_names = config.layers
 
@@ -3172,6 +3172,9 @@ def _route_with_exact_escape(router, obstacles, config, sources, targets, track_
         pad = _net_pad_near(pcb_data, net_id, side, coord)
         if pad is None:
             continue
+        side_cells = [tuple(c[:3]) for c in side]
+        if walled_by_routed(pcb_data, net_id, config, coord, layer_names, is_open, side_cells):
+            continue            # copper this run routed walls it in: rip-up's to clear
         found = exact_escapes(pcb_data, net_id, pad, config, coord, layer_names,
                               is_open=is_open, start_cells=[tuple(c[:3]) for c in side],
                               toward=centre(other))
