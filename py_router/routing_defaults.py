@@ -24,6 +24,13 @@ FAN_ORDER_MAX_PITCH_FACTOR = 2.0
 EXACT_ESCAPE_REACH = 3.0
 EXACT_ESCAPE_ENDS = 16
 
+# The hybrid pair route's launch search (diff_pair_routing._closest_launch):
+# when the straight line from a terminal toward the other has no pair-wide
+# clear swath within this distance (mm), the nearest clear cell round the
+# terminal within it is taken instead, so a congested straight line does not
+# push both launches to the far end (docs/pair-via-crossover-plan.md).
+HYBRID_LAUNCH_RADIUS = 2.5
+
 # Fab tier and escalation policy (#857/#530): THE one place these defaults
 # live -- fab_tiers.add_fab_tier_args (every routing CLI) and the GUI's
 # controls read them from here. Completion first (Andy, 2026-09-03): 'auto'

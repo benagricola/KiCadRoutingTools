@@ -1,8 +1,21 @@
 # Relief-via escape
 
 Date: 2026-09-25
-Status: proposal, to be re-scoped (see the correction below)
+Status: parked -- not needed on current evidence (see "Parked" below)
 Branch: fix/escape-at-min-pitch (local), after the corner move check
+
+## Parked (2026-09-25)
+
+The pins this was for (gpio7, gpio23, gpio24, gpio40_adc0, gpio47_adc7) were
+sealed by two over-blocking bugs, not by the geometry: every pad of a net
+not being routed kept the half-cell corner buffer in the base map (fixed,
+c319ff35), and every via blocked tracks 0.125 mm past its clearance (fixed,
+78bd7dd3). With both fixed (feat/fanout-fixes), the MCU module fan-out case
+(the designer's all-routed layout, rails kept, a sink beyond each stub end,
+routed through placemat 0.35.0) routes all five; one net of 67 stays open,
+gpio18, at its sink. A relief via is a design choice the router would now
+make only where a pin's outward lane is truly closed, and no such pin has
+been measured. This comes back with a case that needs it.
 
 ## Correction (2026-09-25)
 
