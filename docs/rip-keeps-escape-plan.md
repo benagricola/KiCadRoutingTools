@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status:** abandoned after task 2's measurement -- see the spec's Result.
+
 **Goal:** a net ripped as a blocker keeps its escape out of a fine-pitch row, so its neighbours cannot take its only lane while it waits to be rerouted.
 
 **Architecture:** `leg_rip.keep_row_escape` narrows the rip set that `select_blocking_branch` (#510) chose, removing the escape from it; the existing partial rip (`rip_up_net(only_segments=...)`) does the rest (removal, cache recompute, requeue, restore). The three blocker-rip call sites that already call `select_blocking_branch` call it after.

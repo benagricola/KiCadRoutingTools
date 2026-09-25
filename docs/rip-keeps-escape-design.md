@@ -1,7 +1,7 @@
 # A ripped net keeps its escape out of a fine-pitch row
 
 Date: 2026-09-25
-Status: proposal, for review
+Status: tried and not adopted (see "Result")
 Branch: feat/fanout-fixes (local)
 
 ## The problem
@@ -75,6 +75,27 @@ rip the rest.
 - The tracked-board A/B loop: no new DRC violations, connectivity equal or
   better on each board.
 - The router's rip-up, restore, custody and multipoint tests.
+
+## Result (2026-09-25)
+
+Implemented as planned (plan task 1, 2a15a3ac; wired at the five blocker-rip
+sites) and measured on the cap sweep against the same build without it:
+
+| | F.Cu | F.Cu + B.Cu |
+|---|---|---|
+| without | 19 failed pins | 11 |
+| with | 31 | 18 |
+
+18 of the 72 case/setup runs got worse. The kept escapes also stand in the
+way of the nets that caused the rip, which need to turn near the row, and a
+victim rerouting from the end of its escape has less freedom than one
+starting at its pad; the rip set chosen by the blame changes too (the case
+the plan named, cap-0402-diagonal-s0.4-g0.5, still lost one pin, P15 in
+place of P17). A first version that kept the whole rip whenever a blocked
+cell touched the escape never kept one: at minimum pitch a neighbour's lane
+borders the escape, so such a cell is always among the blocked ones.
+Reverted (08ff696f). The failure pattern in "The problem" stands and needs
+another approach.
 
 ## Not in scope
 
