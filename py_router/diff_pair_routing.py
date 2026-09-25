@@ -1062,8 +1062,16 @@ def _pair_via_offset(config, spacing_mm):
                track_via_clearance - spacing_mm)
 
 
-def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gnd_net_id, gnd_via_dirs):
+def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gnd_net_id, gnd_via_dirs,
+                     own_segments=()):
     """Create GND vias at layer changes in the centerline path.
+
+    The router chose each change's side (ahead or behind) against the
+    obstacle map, which does not hold the pair's own copper, so a pair that
+    turns back on itself near its layer change could have a GND via dropped
+    on its own track. A layer change whose GND vias would break the clearance
+    to `own_segments` (the pair's P and N tracks) gets none. Diverges from
+    upstream, which places them unchecked.
 
     Args:
         simplified_path: List of (gx, gy, layer_idx) grid points
@@ -1148,6 +1156,13 @@ def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gn
             gnd_n_x = cx - perp_x * gnd_via_perp_mm + dx * via_via_dist_mm * gnd_dir
             gnd_n_y = cy - perp_y * gnd_via_perp_mm + dy * via_via_dist_mm * gnd_dir
 
+            if any(_via_hits_segments(x, y, config, gnd_net_id, own_segments)
+                   for x, y in ((gnd_p_x, gnd_p_y), (gnd_n_x, gnd_n_y))):
+                if config.verbose:
+                    print(f"      GND vias at the layer change ({cx:.3f},{cy:.3f}) would sit "
+                          f"on the pair's own tracks; none placed there")
+                continue
+
             # Create GND vias (free=True prevents KiCad auto-assigning net)
             gnd_vias.append(Via(
                 x=gnd_p_x, y=gnd_p_y,
@@ -1167,6 +1182,26 @@ def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gn
             ))
 
     return gnd_vias
+
+
+def _via_hits_segments(x, y, config, via_net_id, segments):
+    """Whether a through via at (x, y) sits within clearance of any of
+    `segments` (every layer: the via spans them all), at the pairwise
+    clearance of the two nets."""
+    oc = getattr(config, 'obstacle_clearance', None)
+    for sg in segments:
+        clr = max(config.clearance, oc(via_net_id), oc(sg.net_id)) if oc else config.clearance
+        d = _point_seg_distance(x, y, sg.start_x, sg.start_y, sg.end_x, sg.end_y)
+        if d < config.via_size / 2.0 + sg.width / 2.0 + clr - 1e-6:
+            return True
+    return False
+
+
+def _point_seg_distance(px, py, ax, ay, bx, by):
+    dx, dy = bx - ax, by - ay
+    L2 = dx * dx + dy * dy
+    t = 0.0 if L2 == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
+    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
 
 
 def _make_route_data(pose_path, p_src_x, p_src_y, n_src_x, n_src_y,
@@ -4774,7 +4809,8 @@ def route_diff_pair_with_obstacles(pcb_data: PCBData, diff_pair: DiffPairNet,
 
     # Create GND vias at layer changes if enabled
     gnd_vias = _create_gnd_vias(
-        simplified_path, coord, config, layer_names, spacing_mm, gnd_net_id, gnd_via_dirs
+        simplified_path, coord, config, layer_names, spacing_mm, gnd_net_id, gnd_via_dirs,
+        own_segments=new_segments
     )
     new_vias.extend(gnd_vias)
 
