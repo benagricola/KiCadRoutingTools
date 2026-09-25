@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status:** done; merged into feat/fanout-fixes (alignment on by default).
+
 **Goal:** a fine-pitch part routes the same wherever it sits relative to the grid, and a pin whose only way out is an exact fit gets it.
 
 **Architecture:** Part 1 wraps `route.py`'s CLI run: the input board's text is translated by a sub-grid offset that aligns its finest pin rows with the grid, routed, and the output translated back. Part 2 adds an exact octilinear stub search to the boxed-pin path in `single_ended_routing.py`, ahead of the existing fallbacks. Both Python only.
@@ -66,4 +68,4 @@ Measured 2026-09-25 on feat/grid-align at 7e5c2a1d (feat/fanout-fixes merged in,
 - [x] Bare QFN, escape lab: 80/80 at 0.2/0.2, 0.15/0.15 and 0.1/0.1, one and two layers, no vias (the fan-order build the same). Cap sweep: 19 and 11 failed pins, as the dev build (fan-order build 21 and 16).
 - [ ] Tracked-board A/B against dev (14 boards, haasoscope left out for time): no new DRC violations; rp2350 5 failed nets against 8, esp_prog 0 against 1, time within 20% (tigard +14%; the small boards gain about 1 s for the alignment step). Not met: tigard leaves /BD4 and GND disconnected in 8 of 8 jitter runs with alignment, 0 of 8 without. U3.43's first route fails in both builds (walled by the +3V3 track along the row); dev reconnects it in the rescue pass at a 0.025 mm grid and 0.0889 mm track, while in the aligned run a /BD2 track also runs there and the rescue finds no room. The same walled-pin class as the sweep's remaining failures.
 - [x] Router tests touching routing, terminals, fallbacks, escapes, alignment and the CLI: 174 of 174 pass on the aligned build.
-- [x] README note for the flag. Spec status unchanged: alignment stays on by default pending the tigard decision.
+- [x] README note for the flag. Decided 2026-09-25: alignment on by default, merged into feat/fanout-fixes; the tigard pin joins the walled-pin failures.
