@@ -294,6 +294,7 @@ See [Rip-Up and Reroute](rip-up-reroute.md) for how failed routes trigger rip-up
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--ordering` / `-o` | mps | Net ordering: `mps`, `inside_out`, or `original` |
+| `--fan-order` / `--no-fan-order` | on | Row fan order (docs/row-fan-order-design.md): after the ordering strategy above picks a base order, re-sequence each fine-pitch pin row's nets outside-in (the outermost pin turns first), so a bare QFN escapes every pin instead of sealing a middle pin in a pocket. Order only, never geometry or rules; `--no-fan-order` restores the base order untouched |
 | `--direction` / `-d` | forward | Direction: `forward` or `backward` |
 | `--layers` / `-l` | all copper layers | Routing layers. For `route.py` the default is all of the board's copper layers; `route_diff.py` and `bga_fanout.py` default to `F.Cu B.Cu` |
 | `--layer-costs` | (see below) | Per-layer cost multipliers (1.0-1000). Default: all 1.0 for 4+ layers; F.Cu=1.0, B.Cu=3.0 for 2 layers |

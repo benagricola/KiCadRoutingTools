@@ -1,8 +1,8 @@
 # Row fan order: a pin row is routed outside-in, as a person fans it out
 
 Date: 2026-09-25
-Status: proposal (revised twice: fan order replaces escape lanes; chip-to-chip nets keep their place)
-Branch: fix/escape-at-min-pitch (local), after the corner move check
+Status: implemented (`py_router/fan_order.py`, wired into `route.py`); measured against the plan's Verification section below. One tracked board (watchy) regresses, root-caused to the order change itself, not a defect; one (haasoscope_pro_max_test) is unresolved -- a single-run A/B cannot judge that board's own run-to-run spread. See docs/row-fan-order-plan.md Task 3 for the full numbers.
+Branch: feat/row-fan-order (local, off fix/escape-at-min-pitch), after the corner move check
 
 ## The problem
 
@@ -101,10 +101,26 @@ dropped.
 
 - The escape case: the bare QFN at 0.2/0.2, 0.15/0.15 and 0.1/0.1, both
   layer setups, default command line: 80/80 each, DRC clean with no margin,
-  no more vias than the order-alone runs above.
+  no more vias than the order-alone runs above. **Met**: 80/80, 0 vias, all
+  six combinations; `check_drc.py --clearance-margin 0` clean on every one.
 - Unit: the fan sequence of a row for targets on either side, ahead, and a
   mix; a net on two rows; rows too coarse to reorder keep their order.
+  **Met**: `tests/test_fan_order.py` (Task 1) and
+  `tests/test_fan_order_route.py` (Task 2, wired into route.py).
 - The A/B on the tracked boards against the corner-move-check build: no new
   DRC violations, connectivity equal or better, failed nets equal or fewer
-  in total, time within 20%.
+  in total, time within 20%. **Partly met.** No new DRC anywhere. 12 of 15
+  boards unchanged, 1 improved (tigard: 2 disconnected nets to 0), 1
+  regressed (watchy: 0 to 2, root-caused to the fan order re-sequencing 22
+  nets on that board and changing later rip-up contention -- reproduced
+  twice each way, not a defect in the row-finding or sequencing). The 15th,
+  haasoscope_pro_max_test, is a single run per side on the corpus's
+  densest board and shows a mixed result (net -8 on `failed_single`, but
+  `multipoint_edges_failed` improved 99 to 83); a single replay pair
+  cannot judge that board's own spread (CLAUDE.md's orangecrab precedent),
+  so this is left open rather than called either way. Time was not
+  measurable under the load this A/B ran at (see the plan). Details:
+  docs/row-fan-order-plan.md Task 3.
 - The router's tests that touch ordering, fan-out, escalation and terminals.
+  **Met**: 0 failures, 127 tests on the new build, 125 on the corner-move-
+  check build (the same set, minus the two new test files).
