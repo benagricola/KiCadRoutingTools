@@ -97,6 +97,14 @@ borders the escape, so such a cell is always among the blocked ones.
 Reverted (08ff696f). The failure pattern in "The problem" stands and needs
 another approach.
 
+A second approach, measured the same way and also not adopted: routing a
+rip victim straight after the net that ripped it (inserted into the main
+loop's work list, instead of waiting for the reroute phase while its
+neighbours take its lane; an uncommitted experiment behind
+KICAD_RIP_REROUTE_NOW). Cap sweep: 20 failed pins on F.Cu and 9 on two
+layers, against 19 and 11; 7 case/setup runs worse, 8 better -- no clear
+effect either way.
+
 ## Not in scope
 
 Reserving lanes for pins that have never been routed (the "escape lanes"
