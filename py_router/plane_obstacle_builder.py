@@ -15,7 +15,7 @@ import numpy as np
 from kicad_parser import PCBData, Pad, Segment
 from routing_config import GridRouteConfig, GridCoord
 from routing_utils import iter_pad_blocked_cells, pad_blocked_cells_array, \
-    segment_blocked_cells_array, segment_blocked_spans, rect_blocked_cells_array
+    segment_blocked_cells_array, segment_blocked_spans, rect_blocked_cells_array, rect_blocked_spans
 from obstacle_map import (point_in_polygon, point_to_polygon_edge_distance,
                           add_user_keepout_obstacles, add_rule_area_keepout_obstacles,
                           block_via_cells_near_drills, block_track_cells_near_drills,
@@ -510,9 +510,15 @@ def build_via_obstacle_map(
         # evictions. Spans are 5.2x denser for identical membership, and Rust
         # expands them. Pure accumulate-then-stamp: no removal twin and no
         # cell iteration, so nothing here has to balance.
-        _va = segment_blocked_spans(seg.start_x, seg.start_y,
-                                    seg.end_x, seg.end_y,
-                                    seg_expansion_mm, coord.grid_step)
+        if getattr(seg, 'area_fill', False):
+            # a filled graphic's interior band: square ends, a rectangle
+            _va = rect_blocked_spans(seg.start_x, seg.start_y, seg.end_x, seg.end_y,
+                                     seg_expansion_mm - seg.width / 2, seg_expansion_mm,
+                                     coord.grid_step)
+        else:
+            _va = segment_blocked_spans(seg.start_x, seg.start_y,
+                                        seg.end_x, seg.end_y,
+                                        seg_expansion_mm, coord.grid_step)
         if len(_va):
             _seg_via_arrs.append(_va)
         seg_count += 1
@@ -1252,9 +1258,15 @@ def build_routing_obstacle_map(
         # accumulate, then one Rust call for the whole (single-layer) set.
         # #815: SPAN form (789,803 calls / 10.4% on glasgow_revC). Same
         # accumulate-then-stamp shape as the via loop above.
-        _ca = segment_blocked_spans(seg.start_x, seg.start_y,
-                                    seg.end_x, seg.end_y,
-                                    seg_expansion_mm, coord.grid_step)
+        if getattr(seg, 'area_fill', False):
+            # a filled graphic's interior band: square ends, a rectangle
+            _ca = rect_blocked_spans(seg.start_x, seg.start_y, seg.end_x, seg.end_y,
+                                     seg_expansion_mm - seg.width / 2, seg_expansion_mm,
+                                     coord.grid_step)
+        else:
+            _ca = segment_blocked_spans(seg.start_x, seg.start_y,
+                                        seg.end_x, seg.end_y,
+                                        seg_expansion_mm, coord.grid_step)
         if len(_ca):
             _seg_cell_arrs.append(_ca)
         seg_count += 1

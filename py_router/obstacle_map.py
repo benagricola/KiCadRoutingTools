@@ -280,9 +280,14 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
                 # copper on a layer OUTSIDE config.layers (a 6/8-layer board
                 # routed with a subset), which is why the signal/plane boards
                 # never tripped it and test_dru_layer_clearance_e2e did.
-                vias_arr = segment_blocked_spans(
-                    seg.start_x, seg.start_y, seg.end_x, seg.end_y,
-                    via_block_mm, coord.grid_step)
+                if getattr(seg, 'area_fill', False):
+                    vias_arr = rect_blocked_spans(
+                        seg.start_x, seg.start_y, seg.end_x, seg.end_y,
+                        via_block_mm - seg_width / 2, via_block_mm, coord.grid_step)
+                else:
+                    vias_arr = segment_blocked_spans(
+                        seg.start_x, seg.start_y, seg.end_x, seg.end_y,
+                        via_block_mm, coord.grid_step)
                 _seg_via_batch.append(vias_arr)
             continue
         # Compute expansion: routing-side reserve half-width (#156: nominal for
