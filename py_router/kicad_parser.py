@@ -5071,8 +5071,10 @@ def extract_segments(content: str, name_to_id: Dict[str, int] = None) -> List[Se
                         pts = [_g(float(x), float(y)) for x, y in
                                re.findall(r'\(xy\s+([-\d.]+)\s+([-\d.]+)\)',
                                           blk)]
-                        _emit_outline(pts, w, layer, nid, uuid,
-                                      filled=_shape_filled(blk, 'poly', w))
+                        _gf = _shape_filled(blk, 'poly', w)
+                        _emit_outline(pts, w, layer, nid, uuid, filled=_gf)
+                        if _gf:
+                            _emit_fill(pts, layer, nid, uuid)
                     elif tag == 'fp_rect':
                         a, b = _xy(blk, 'start'), _xy(blk, 'end')
                         if a and b:
@@ -5081,22 +5083,28 @@ def extract_segments(content: str, name_to_id: Dict[str, int] = None) -> List[Se
                             # pcbnew turns a rect in a footprint at a
                             # non-cardinal angle into a POLY on load, so name
                             # it the way the live path will read it.
-                            _emit_outline([_g(a[0], a[1]), _g(b[0], a[1]),
-                                           _g(b[0], b[1]), _g(a[0], b[1])],
-                                          w, layer, nid, uuid,
+                            pts = [_g(a[0], a[1]), _g(b[0], a[1]),
+                                   _g(b[0], b[1]), _g(a[0], b[1])]
+                            _gf = _shape_filled(blk, 'rect', w)
+                            _emit_outline(pts, w, layer, nid, uuid,
                                           kind='rect' if _frot % 90 == 0 else 'poly',
-                                          filled=_shape_filled(blk, 'rect', w))
+                                          filled=_gf)
+                            if _gf:
+                                _emit_fill(pts, layer, nid, uuid)
                     elif tag == 'fp_circle':
                         c, e = _xy(blk, 'center'), _xy(blk, 'end')
                         if c and e:
                             r = math.hypot(e[0] - c[0], e[1] - c[1])
                             _gc = _g(*c)
-                            _emit_outline(
-                                [_g(c[0] + r * math.cos(k * math.pi / 8),
-                                    c[1] + r * math.sin(k * math.pi / 8))
-                                 for k in range(16)], w, layer, nid, uuid,
-                                kind='circle', circle=(_gc[0], _gc[1], r),
-                                filled=_shape_filled(blk, 'circle', w))
+                            pts = [_g(c[0] + r * math.cos(k * math.pi / 8),
+                                      c[1] + r * math.sin(k * math.pi / 8))
+                                   for k in range(16)]
+                            _gf = _shape_filled(blk, 'circle', w)
+                            _emit_outline(pts, w, layer, nid, uuid,
+                                          kind='circle', circle=(_gc[0], _gc[1], r),
+                                          filled=_gf)
+                            if _gf:
+                                _emit_fill(pts, layer, nid, uuid)
             # Tag afterwards rather than threading an owner through
             # `_emit_outline`, whose signature the board-level pass shares.
             for _s in segments[_mark_from:]:
@@ -6829,7 +6837,7 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                         segments.append(Segment(
                             start_x=_x0, start_y=_yc, end_x=_x1, end_y=_yc,
                             width=_h, layer=_ln, net_id=_nid,
-                            graphic=True, area_fill=True))
+                            graphic=True, area_fill=True, owner_ref=_owner))
 
                 if _shape == getattr(_pcbnew_g, 'SHAPE_T_SEGMENT', 0):
                     if _w <= 0:
