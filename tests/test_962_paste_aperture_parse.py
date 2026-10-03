@@ -292,19 +292,19 @@ def main():
 
     # ---------------- graphic copper fields --------------------------------
     w = parse_kicad_pcb(os.path.join(ROOT_DIR, 'kicad_files', 'watchy.kicad_pcb'))
-    ae1 = [s for s in w.segments if s.graphic and s.owner_ref == 'AE1']
+    ae1 = [s for s in w.segments if s.graphic and s.owner_ref == 'AE1' and not s.area_fill]
     check('8. watchy AE1 copper is drawn at stroke 0 and modelled at TRACK_WIDTH',
           bool(ae1) and all(s.drawn_width == 0.0 and s.width == defaults.TRACK_WIDTH
                             for s in ae1),
           str(sorted({(s.drawn_width, s.width) for s in ae1})))
-    esp_tab = [s for s in esp.segments if s.graphic and s.owner_ref == 'U2']
+    esp_tab = [s for s in esp.segments if s.graphic and s.owner_ref == 'U2' and not s.area_fill]
     check('8. esp_prog U2 tab is drawn at 0.1, kind poly',
           bool(esp_tab) and all(s.drawn_width == 0.1 and s.graphic_kind == 'poly'
                                 for s in esp_tab))
     circ = ('   (fp_circle (center 1 0) (end 2 0) (stroke (width 0.2) (type solid)) '
             '(fill no) (layer "F.Cu") (uuid "cc"))')
     p = _parse_text(_board(_fp(circ + '\n' + _pad('1', layers='"F.Cu"'), at='10 20 90')))
-    cs = [s for s in p.segments if s.graphic and s.graphic_kind == 'circle']
+    cs = [s for s in p.segments if s.graphic and s.graphic_kind == 'circle' and not s.area_fill]
     want_c = local_to_global(10, 20, 90, 1, 0)
     check('8. a copper circle records its TRUE global centre and radius',
           bool(cs) and all(s.graphic_circle is not None
@@ -319,7 +319,7 @@ def main():
               '(fill yes) (layer "F.Cu") (uuid "r45"))')
     p = _parse_text(_board(_fp(rect45 + '\n' + _pad('1', layers='"F.Cu"'), at='10 20 45')))
     check('8. a copper fp_rect in a 45-degree footprint is kind poly (as pcbnew reads it)',
-          {s.graphic_kind for s in p.segments if s.graphic} == {'poly'})
+          {s.graphic_kind for s in p.segments if s.graphic and not s.area_fill} == {'poly'})
 
     # ---------------- 9: the phase-1 verification findings ----------------------
     # B1: QFN windowpanes. Paste-only panes sit INSIDE a copper exposed pad that

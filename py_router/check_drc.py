@@ -384,6 +384,52 @@ def segments_cross(seg1: Segment, seg2: Segment, tolerance: float = 0.001) -> Tu
     return False, None
 
 
+def _band_box(g):
+    """The axis-aligned rectangle of a filled graphic's interior band (`area_fill`:
+    its width is the band's height and its ends are square)."""
+    from shapely.geometry import box
+    hw = g.width / 2.0
+    return box(min(g.start_x, g.end_x), min(g.start_y, g.end_y) - hw,
+               max(g.start_x, g.end_x), max(g.start_y, g.end_y) + hw)
+
+
+def _stroke_or_band_geom(sg):
+    """Shapely copper of a segment: the rectangle for a filled graphic's band,
+    otherwise the stroke's capsule."""
+    from shapely.geometry import LineString
+    if getattr(sg, 'area_fill', False):
+        return _band_box(sg)
+    return LineString([(sg.start_x, sg.start_y), (sg.end_x, sg.end_y)]).buffer(sg.width / 2.0)
+
+
+def _band_gap_points(a, b):
+    """(edge gap, point on a, point on b) between two segments of which at least
+    one is a filled graphic's band."""
+    from shapely.ops import nearest_points
+    ga, gb = _stroke_or_band_geom(a), _stroke_or_band_geom(b)
+    pa, pb = nearest_points(ga, gb)
+    return ga.distance(gb), (pa.x, pa.y), (pb.x, pb.y)
+
+
+def _pad_shape(pd):
+    """Shapely copper of a pad (custom polygons, else its outline)."""
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+    polys = getattr(pd, 'polygons', None)
+    if polys:
+        return unary_union([Polygon(q) for q in polys if len(q) >= 3])
+    from check_pads import _pad_outline_polygon
+    return Polygon(_pad_outline_polygon(pd))
+
+
+def _band_pad_gap_point(band, pd):
+    """(edge gap, point on the band) from a filled graphic's band to a pad."""
+    from shapely.ops import nearest_points
+    box_ = _band_box(band)
+    pa, _pb = nearest_points(box_, _pad_shape(pd))
+    return box_.distance(_pad_shape(pd)), (pa.x, pa.y)
+
+
 def check_segment_overlap(seg1: Segment, seg2: Segment, clearance: float, clearance_margin: float = 0.05):
     """Check if two segments on the same layer violate clearance.
 
@@ -395,6 +441,15 @@ def check_segment_overlap(seg1: Segment, seg2: Segment, clearance: float, cleara
         (has_violation, overlap, closest_pt1, closest_pt2)
     """
     if seg1.layer != seg2.layer:
+        return False, 0.0, None, None
+
+    if getattr(seg1, 'area_fill', False) or getattr(seg2, 'area_fill', False):
+        # A filled graphic's interior band is a rectangle: measured as one, not
+        # as a capsule whose round ends reach half its height past the shape.
+        gap, pt1, pt2 = _band_gap_points(seg1, seg2)
+        overlap = clearance - gap
+        if overlap > _grade_tol(clearance, clearance_margin):
+            return True, overlap, pt1, pt2
         return False, 0.0, None, None
 
     # Required distance is half-widths plus clearance
@@ -418,6 +473,13 @@ def check_via_segment_overlap(via: Via, seg: Segment, clearance: float, clearanc
     # Standard through-hole vias go through ALL copper layers, not just the ones listed
     # Only skip non-copper layers
     if not seg.layer.endswith('.Cu'):
+        return False, 0.0
+
+    if getattr(seg, 'area_fill', False):
+        from shapely.geometry import Point
+        overlap = clearance - (_band_box(seg).distance(Point(via.x, via.y)) - via.size / 2)
+        if overlap > _grade_tol(clearance, clearance_margin):
+            return True, overlap
         return False, 0.0
 
     required_dist = via.size / 2 + seg.width / 2 + clearance
@@ -730,9 +792,13 @@ def graphic_effective_nets(pcb_data, include_mutable=True):
     if not graphics:
         return out
 
+    _geom = _stroke_or_band_geom
+
     def seg_seg_touch(a, b):
         if a.layer != b.layer:
             return False
+        if getattr(a, 'area_fill', False) or getattr(b, 'area_fill', False):
+            return _geom(a).distance(_geom(b)) <= 1e-6
         lim = a.width / 2.0 + b.width / 2.0 + 1e-6
         return _seg_seg_distance(a, b) <= lim
 
@@ -789,11 +855,18 @@ def graphic_effective_nets(pcb_data, include_mutable=True):
                 for sg in pcb_data.segments:
                     if getattr(sg, 'graphic', False) or sg.layer != g.layer:
                         continue
-                    if _seg_seg_distance(g, sg) <= hw + sg.width / 2.0 + 1e-6:
+                    if getattr(g, 'area_fill', False):
+                        if _geom(g).distance(_geom(sg)) <= 1e-6:
+                            eff.add(sg.net_id)
+                    elif _seg_seg_distance(g, sg) <= hw + sg.width / 2.0 + 1e-6:
                         eff.add(sg.net_id)
                 # touching vias (barrel spans all layers)
                 for v in pcb_data.vias:
-                    if _pt_seg_d(v.x, v.y, g) <= hw + (v.size or 0.5) / 2.0 + 1e-6:
+                    if getattr(g, 'area_fill', False):
+                        from shapely.geometry import Point
+                        if _band_box(g).distance(Point(v.x, v.y)) <= (v.size or 0.5) / 2.0 + 1e-6:
+                            eff.add(v.net_id)
+                    elif _pt_seg_d(v.x, v.y, g) <= hw + (v.size or 0.5) / 2.0 + 1e-6:
                         eff.add(v.net_id)
             # touching pads (on the graphic's layer)
             for pads in pcb_data.pads_by_net.values():
@@ -801,14 +874,22 @@ def graphic_effective_nets(pcb_data, include_mutable=True):
                     lys = pd.layers or []
                     if g.layer not in lys and '*.Cu' not in lys:
                         continue
-                    mid_d = min(point_to_pad_distance(g.start_x, g.start_y, pd),
-                                point_to_pad_distance(g.end_x, g.end_y, pd))
-                    if mid_d <= hw + 1e-6:
+                    if _graphic_pad_gap(g, pd) <= 1e-6:
                         eff.add(pd.net_id)
         eff = frozenset(eff)
         for g in members:
             out[id(g)] = eff
     return out
+
+
+def _graphic_pad_gap(g, pd):
+    """Edge gap from a graphic segment to a pad (<= 0 touches). A stroke is
+    judged at its endpoints against its half-width, as the lifts always did; a
+    filled graphic's interior band is a rectangle, judged as the whole of it."""
+    if getattr(g, 'area_fill', False):
+        return _band_pad_gap_point(g, pd)[0]
+    return min(point_to_pad_distance(g.start_x, g.start_y, pd),
+               point_to_pad_distance(g.end_x, g.end_y, pd)) - g.width / 2.0
 
 
 def graphic_own_pad_nets(pcb_data):
@@ -858,8 +939,7 @@ def graphic_own_pad_nets(pcb_data):
             lys = pd.layers or []
             if g.layer not in lys and '*.Cu' not in lys:
                 continue
-            if min(point_to_pad_distance(g.start_x, g.start_y, pd),
-                   point_to_pad_distance(g.end_x, g.end_y, pd)) <= hw + 1e-6:
+            if _graphic_pad_gap(g, pd) <= 1e-6:
                 nets.add(pd.net_id)
         # A segment bridging pads of TWO DIFFERENT nets is lifted for BOTH
         # unless a declared tie says the short is intended -- and then each net
@@ -979,8 +1059,7 @@ def footprint_own_copper_nets(pcb_data):
             # expanded against [layer]: `*.Cu` and `F&B.Cu` both count (#1046)
             if not pd.net_id or g.layer not in expand_pad_layers(pd.layers or [], [g.layer]):
                 continue
-            if min(point_to_pad_distance(g.start_x, g.start_y, pd),
-                   point_to_pad_distance(g.end_x, g.end_y, pd)) <= hw + 1e-6:
+            if _graphic_pad_gap(g, pd) <= 1e-6:
                 nets.add(pd.net_id)
     return {k: frozenset(v) for k, v in out.items()}
 
@@ -1403,6 +1482,14 @@ def check_pad_segment_overlap(pad: Pad, seg: Segment, clearance: float,
     if seg.layer not in expanded_layers:
         return False, 0.0, None
 
+    if getattr(seg, 'area_fill', False):
+        # a filled graphic's interior band: a rectangle against the pad's copper
+        gap, closest_pt = _band_pad_gap_point(seg, pad)
+        overlap = clearance - gap
+        if overlap > _grade_tol(clearance, clearance_margin):
+            return True, overlap, closest_pt
+        return False, 0.0, None
+
     # Custom comb/finger pads: measure against the real copper polygon(s), not the
     # bounding box, so a track legitimately threading a finger channel is not
     # flagged (issue #188).
@@ -1796,6 +1883,8 @@ def graphic_copper_shapes(pcb_data):
         return (len(chain) >= 2 and abs(chain[-1].end_x - chain[0].start_x) <= 1e-9
                 and abs(chain[-1].end_y - chain[0].start_y) <= 1e-9)
     for sg in getattr(pcb_data, 'segments', None) or []:
+        if getattr(sg, 'area_fill', False):
+            continue    # a filled shape's interior band is not part of its outline
         if not getattr(sg, 'graphic', False):
             if cur:
                 out.append(cur)
@@ -4028,6 +4117,11 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
         for seg in pcb_data.segments:
             seg_matches = matching_seg_net_set is None or seg.net_id in matching_seg_net_set
             if matching_seg_net_set is not None and not seg_matches:
+                continue
+            if getattr(seg, 'area_fill', False):
+                # A filled shape's interior band: its outline segments already
+                # reach the extreme, and its width is the band's height, not a
+                # stroke (a capsule would over-reach half that past each end).
                 continue
             # The pad-covered EXEMPTION is a geometric fact (a track running into
             # an edge-exempt pad adds no new edge copper), independent of the
