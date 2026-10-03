@@ -75,8 +75,10 @@ def _poly(layer='F.Cu', pts='(xy 0 0) (xy 1 0) (xy 1 1) (xy 0 1)',
 
 
 def _graphics(content):
+    # the OUTLINE segments; a filled shape's interior bands (area_fill) are
+    # pinned in test_footprint_filled_copper.py
     return [s for s in extract_segments(content, NAME_TO_ID)
-            if getattr(s, 'graphic', False)]
+            if getattr(s, 'graphic', False) and not getattr(s, 'area_fill', False)]
 
 
 def main():
@@ -182,7 +184,8 @@ def main():
             check(f'{board}: corpus board present', False, path)
             continue
         pcb = parse_kicad_pcb(path)
-        got = [s for s in pcb.segments if getattr(s, 'graphic', False)]
+        got = [s for s in pcb.segments
+               if getattr(s, 'graphic', False) and not getattr(s, 'area_fill', False)]
         seen += 1
         check(f'{board}: {want_n} graphic segments', len(got) == want_n,
               f'got {len(got)}')

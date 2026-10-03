@@ -91,9 +91,10 @@ def main():
 
     # --- 0: the fixture is what this file says it is (anti-vacuity) --------
     pcb = parse_kicad_pcb(FIXTURE)
-    graphics = [s for s in pcb.segments if getattr(s, 'graphic', False)]
+    graphics = [s for s in pcb.segments if getattr(s, 'graphic', False)
+                and not getattr(s, 'area_fill', False)]      # the tab's outline; its fill bands are not strokes
     check('esp_prog carries exactly 8 segments, all graphic (U2 tab outline)',
-          len(pcb.segments) == 8 and len(graphics) == 8,
+          len([s for s in pcb.segments if not getattr(s, 'area_fill', False)]) == 8 and len(graphics) == 8,
           f'{len(pcb.segments)} segments, {len(graphics)} graphic')
     check('every one is the 0.1 mm stroke of U2',
           all(abs(s.width - STROKE) < 1e-9 for s in graphics)
@@ -120,7 +121,8 @@ def main():
         control = fh.name
     try:
         cpcb = parse_kicad_pcb(control)
-        cg = [s for s in cpcb.segments if getattr(s, 'graphic', False)]
+        cg = [s for s in cpcb.segments if getattr(s, 'graphic', False)
+              and not getattr(s, 'area_fill', False)]
         real = [s for s in cpcb.segments if not getattr(s, 'graphic', False)]
         check('the control parses as 4 graphic segments plus 1 real track',
               len(cg) == 4 and len(real) == 1 and abs(real[0].width - STROKE) < 1e-9,
