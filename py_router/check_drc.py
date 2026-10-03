@@ -1078,6 +1078,10 @@ def _footprint_own_copper_owner(seg_a, seg_b, net_a, net_b) -> str:
         if (g is None or not getattr(g, 'graphic', False) or g.net_id
                 or not other_net or getattr(other, 'graphic', False)):
             continue
+        if getattr(g, 'area_fill', False):
+            # a filled shape's interior band is the same polygon KiCad names
+            # once; its outline segments publish the contact
+            continue
         owner = getattr(g, 'owner_ref', '')
         if owner and _FOOTPRINT_OWN_COPPER_NETS.get(owner) == frozenset((other_net,)):
             return owner

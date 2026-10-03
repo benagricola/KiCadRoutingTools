@@ -205,10 +205,8 @@ def main():
             hits[tag] = [(round(v.x, 3), round(v.y, 3), ap.label())
                          for v, ap, _pen in fab_notes.via_paste_sites(q.vias, q)
                          if ap.source != 'pad']
-        # The opening this reproduced the P5 case in is U2's filled tab. Its
-        # interior is copper now, so no via lands there with or without the flag.
-        check('5. without the flag no via lands in U2\'s opening either (the tab is copper)',
-              not any('U2 F.Paste (graphic)' in h[2] for h in hits['off']), str(hits['off']))
+        check('5. positive control: without the flag a via lands in a graphic/pane opening',
+              any('U2 F.Paste (graphic)' in h[2] for h in hits['off']), str(hits['off']))
         check('5. --same-net-pad-clearance 0.4: NO via in a graphic/pane opening',
               not hits['on'], str(hits['on']))
     finally:
