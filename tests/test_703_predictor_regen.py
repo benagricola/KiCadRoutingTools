@@ -307,7 +307,9 @@ EXPECTED = {
                # 2026-09-14 (#958 phase 2): segs 286 -> 254; vias/copper unmoved
                # 2026-09-15 (#908 Phase 3 lift): 34/344.06/254 -> 34/336.58/250
                # 2026-09-16 (#958 fine-pitch tie guard): segs 250 -> 260
-               'quality': {'vias': 32, 'copper_mm': 319.38, 'segments': 189}},
+               # 2026-10-03 (upstream migration: filled footprint copper, corner
+               # guards, exact-clearance stamping): 32/319.38/189 -> 34/352.18/237
+               'quality': {'vias': 34, 'copper_mm': 352.18, 'segments': 237}},
         predictors={
             'crossings': 53, 'hpwl': 253.98092000000003,
             'halo': 127.48707486477095, 'overlap_area': 1.1400451712000104,
@@ -325,7 +327,8 @@ EXPECTED = {
                # 2026-09-14 (#958 phase 2): segs 311 -> 292; vias/copper unmoved
                # 2026-09-15 (#908 Phase 3 lift): 37/363.0/292 -> 38/361.26/296
                # 2026-09-16 (#958 fine-pitch tie guard): segs 296 -> 302
-               'quality': {'vias': 38, 'copper_mm': 348.89, 'segments': 235}},
+               # 2026-10-03 (upstream migration, as above): 38/348.89/235 -> 29/315.0/191
+               'quality': {'vias': 29, 'copper_mm': 315.0, 'segments': 191}},
         predictors={
             'crossings': 50, 'hpwl': 252.34828000000005,
             'halo': 130.46454030971682, 'overlap_area': 1.1400451712000104,
@@ -376,14 +379,17 @@ EXPECTED = {
         # headline 3 -> 0 (2026-09-03) -> 1 (2026-09-10). The 1 is `drc`, NOT
         # `unrouted`/`broken`: this candidate lands U2's SOT89 tab on Q1's
         # pads, and #908 is what makes that visible. See the header note.
-        truth={'headline': 1,
+        # headline 1 -> 0 (2026-10-03, upstream migration): the drc finding is
+        # gone with the filled footprint copper and exact-clearance stamping.
+        truth={'headline': 0,
                # 2026-09-03 (auto/fab defaults): 32/347.03/270 -> 31/341.99/263
                # 2026-09-10 (#908 footprint copper): 31/341.99/263 -> 30/350.67/304
                # 2026-09-14 (#958 phase 2): segs 304 -> 269; vias/copper unmoved
                # 2026-09-15 (#908 Phase 3 lift): 30/350.67/269 -> 35/362.75/282
                # 2026-09-16 (#958 fine-pitch tie guard): 35/362.75/282 ->
                #   35/362.65/293 (the only row whose copper moved, -0.10mm)
-               'quality': {'vias': 33, 'copper_mm': 347.97, 'segments': 225}},
+               # 2026-10-03 (upstream migration, as above): 33/347.97/225 -> 24/331.11/191
+               'quality': {'vias': 24, 'copper_mm': 331.11, 'segments': 191}},
         predictors={
             'crossings': 23, 'hpwl': 260.0687799999999,
             'halo': 101.01900525631262, 'overlap_area': 1.0,
@@ -408,8 +414,9 @@ EXPECTED = {
                # 168/2913.82/1155 -> 168/2913.88/1154. Attributed by a
                # single-file revert; the fanout and plane-fill roundings of
                # the same change leave this row alone.
-               'quality': {'vias': 168, 'copper_mm': 2835.82,
-                           'segments': 827}},
+               # 2026-10-03 (upstream migration, as above): 168/2835.82/827 -> 171/2778.18/841
+               'quality': {'vias': 171, 'copper_mm': 2778.18,
+                           'segments': 841}},
         predictors={
             'crossings': 300, 'hpwl': 2504.4400000000014,
             'halo': 297.4273114820511, 'overlap_area': 1.7621459846850488e-13,
