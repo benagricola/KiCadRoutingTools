@@ -150,6 +150,10 @@ def main():
         x += 0.0005
     for snpc, want_moved in ((0.4, False), (-1.0, True)):
         pp = parse_kicad_pcb(FIX)
+        # U2's tab is a filled polygon, so its interior is copper and the nudge
+        # may not move a via over it. This case isolates the paste-opening
+        # keep-out, so the tab's interior bands are left out of the model.
+        pp.segments = [sg for sg in pp.segments if not getattr(sg, 'area_fill', False)]
         v = Via(x=x, y=yc, size=2 * r, drill=0.15, layers=['F.Cu', 'B.Cu'], net_id=c1)
         pp.vias.append(v)
         tx = x + r + 0.1 + 0.1 - 0.01          # 0.2 mm track grazing by 0.01 mm
@@ -201,8 +205,10 @@ def main():
             hits[tag] = [(round(v.x, 3), round(v.y, 3), ap.label())
                          for v, ap, _pen in fab_notes.via_paste_sites(q.vias, q)
                          if ap.source != 'pad']
-        check('5. positive control: without the flag a via lands in a graphic/pane opening',
-              any('U2 F.Paste (graphic)' in h[2] for h in hits['off']), str(hits['off']))
+        # The opening this reproduced the P5 case in is U2's filled tab. Its
+        # interior is copper now, so no via lands there with or without the flag.
+        check('5. without the flag no via lands in U2\'s opening either (the tab is copper)',
+              not any('U2 F.Paste (graphic)' in h[2] for h in hits['off']), str(hits['off']))
         check('5. --same-net-pad-clearance 0.4: NO via in a graphic/pane opening',
               not hits['on'], str(hits['on']))
     finally:
