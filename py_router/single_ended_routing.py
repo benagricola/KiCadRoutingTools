@@ -5125,10 +5125,13 @@ def _route_multipoint_taps_impl(
                 # pooling buried it under the forward flood. The cascade
                 # picks the tighter side per edge; 'extra' carries the
                 # synthetic via-conflict cells either way.
+                # 'tgt_cells': the edge's target cells, for the rip ladder's
+                # pocket flood (FORK DIVERGENCE, pocket_walls.py).
                 failed_edge_blocking[edge_key] = (
                     blocked_cells, (tgt_x, tgt_y),
                     {'fwd': list(forward_blocked), 'bwd': list(backward_blocked),
-                     'extra': list(_via_conflict_extra)})
+                     'extra': list(_via_conflict_extra),
+                     'tgt_cells': list(targets)})
             continue
 
         print(f"      Routed in {tap_iterations} iterations ({tap_elapsed:.2f}s)")
@@ -5198,7 +5201,8 @@ def _route_multipoint_taps_impl(
                     blocked_cells, (tgt_x, tgt_y),
                     {'fwd': list(forward_blocked),
                      'bwd': list(backward_blocked),
-                     'extra': list(_via_conflict_extra)})
+                     'extra': list(_via_conflict_extra),
+                     'tgt_cells': list(targets)})
             continue
         # Any fab-floor via dropped INSIDE the boxed target pad to unblock this
         # edge (issue #189) -- it connects the inner-layer path end to the pad by
