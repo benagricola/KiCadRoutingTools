@@ -22,6 +22,10 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, 'py_router'))  # #522
 sys.path.insert(0, os.path.join(REPO, 'py_tools'))  # #522
+import item_uuid  # noqa: E402
+# FORK DIVERGENCE: the writer stamps uuids from the seed of a board read (item_uuid.py);
+# this test writes items with no board, so it seeds one itself.
+item_uuid.seed_from_board('')
 
 from kicad_writer import generate_segment_sexpr, generate_via_sexpr
 

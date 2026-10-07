@@ -13,8 +13,11 @@ Cases:
   * two processes, at PYTHONHASHSEED 1 and 2, that parse the same board and
     write the same items mint the same uuids;
   * within one process, two items of the same text get different uuids;
-  * the seed ignores the board's own uuids and block order, and changes with
-    its content;
+  * the seed ignores the board's own uuids and block order, a group's member
+    ids and legacy 8-hex tstamps, and changes with its content;
+  * a board read through pcbnew seeds it too, the same each time (needs
+    pcbnew in the interpreter: python3 tests/test_item_uuid_determinism.py);
+  * stamping before any board is read raises;
   * a board with no placeholders left: every writer stamps its uuid.
 
     python3 tests/test_item_uuid_determinism.py
@@ -96,6 +99,45 @@ def main():
         check(item_uuid.current_seed() == s0, "the seed ignores the order of the board's blocks")
     item_uuid.seed_from_board(content.replace('(width ', '(width 0', 1))
     check(item_uuid.current_seed() != s0, "the seed changes with the board's content")
+
+    # A group's member list and legacy tstamps: every id remapped consistently, the same seed.
+    def grouped(ids):
+        a, b, c = ids
+        return ('(kicad_pcb\n\t(group ""\n\t\t(uuid "%s")\n\t\t(members "%s" "%s")\n\t)\n'
+                '\t(segment (start 0 0) (end 1 0) (width 0.2) (layer "F.Cu") (net 1)\n\t\t(uuid "%s")\n\t)\n'
+                '\t(via (at 1 0) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net 1)\n\t\t(uuid "%s")\n\t)\n'
+                '\t(gr_line (start 0 0) (end 1 1) (layer "Edge.Cuts") (width 0.1) (tstamp 5E3A1B2C))\n)\n'
+                % (a, b, c, b, c))
+    ids1 = [str(uuid.uuid4()) for _ in range(3)]
+    ids2 = [str(uuid.uuid4()) for _ in range(3)]
+    item_uuid.seed_from_board(grouped(ids1))
+    g1 = item_uuid.current_seed()
+    item_uuid.seed_from_board(grouped(ids2).replace('5E3A1B2C', '0F00BA12'))
+    check(item_uuid.current_seed() == g1, "the seed ignores a group's member ids and legacy tstamps")
+
+    try:
+        import pcbnew
+    except ImportError:
+        pcbnew = None
+    if pcbnew is None:
+        print('  SKIP: the pcbnew path (no pcbnew in this interpreter)')
+    else:
+        from kicad_parser import build_pcb_data_from_board
+        item_uuid._seed = None
+        build_pcb_data_from_board(pcbnew.LoadBoard(BOARD))
+        p1 = item_uuid.current_seed()
+        item_uuid._seed = None
+        build_pcb_data_from_board(pcbnew.LoadBoard(BOARD))
+        check(p1 is not None and item_uuid.current_seed() == p1,
+              'a board read through pcbnew seeds the writer, the same seed each time')
+
+    item_uuid._seed = None
+    try:
+        item_uuid.stamp('(segment (uuid "%s"))' % item_uuid.PLACEHOLDER)
+        raised = False
+    except RuntimeError:
+        raised = True
+    check(raised, 'stamping before any board is read raises')
 
     print()
     if failures:

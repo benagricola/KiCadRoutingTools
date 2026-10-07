@@ -991,6 +991,7 @@ def add_tracks_to_pcb(input_path: str, output_path: str, tracks: List[Dict],
     """
     with open(input_path, 'r', encoding='utf-8') as f:
         content = f.read()
+    item_uuid.seed_from_board(content)  # FORK DIVERGENCE: new items' uuids from the board written into (item_uuid.py)
 
     # Match the input board's net-token format (see add_tracks_and_vias_to_pcb):
     # name-only refs only for name-net boards, numeric (net <id>) for KiCad 9.
@@ -1084,6 +1085,7 @@ def add_tracks_and_vias_to_pcb(input_path: str, output_path: str,
     seed_project_for_output(output_path, input_path)
     with open(input_path, 'r', encoding='utf-8') as f:
         content = f.read()
+    item_uuid.seed_from_board(content)  # FORK DIVERGENCE: new items' uuids from the board written into (item_uuid.py)
 
     # Keep the output's net-token format consistent with the input board. Only
     # emit name-only (net "name") refs when the board actually uses them; for a
