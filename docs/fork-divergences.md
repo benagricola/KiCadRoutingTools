@@ -65,7 +65,9 @@ clearance is the maximum of that envelope and the original declared floor;
 stricter original per-net classes still apply. Nondefault factory tiers or
 overrides, explicit via-size requests, custom rule files and local pad
 clearance overrides currently withhold adoption because their combined
-manufacturing proof is incomplete. Explicit clearance overrides/maps/ceilings,
+manufacturing proof is incomplete. Original declared track, via, drill or
+annular minima below the frozen factory envelope also withhold adoption; the
+checker otherwise lets such declarations replace its size fallback. Explicit clearance overrides/maps/ceilings,
 unsupported rules, and length/time obligations currently withhold adoption
 until their independent constraint proof is implemented. Task endpoint joins and track path widths are remeasured.
 A narrower path might be a permitted neck, and a poured join has no track-path
