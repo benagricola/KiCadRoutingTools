@@ -62,3 +62,18 @@ Deliberate differences between this fork and upstream. Each is marked in the cod
   still say "we mint a fresh uuid4"; left as upstream wrote them.
 - Why: placemat's reference set compares one run with another; the router's output must be the same in every run.
 - Test: tests/test_item_uuid_determinism.py.
+
+## Dogbone guard measures foreign pads by their copper
+
+- Upstream: the rescue's dogbone rung (net_rescue.py `rescue_failed_nets`, "bare-ball escape ... dogbone") keeps its
+  via and segments with no check. `_via_site_clear`, used by upstream's #666 fanout-rescue escape, models a foreign
+  pad by its size_x/size_y box centred on the anchor.
+- Fork: the fork commit "immutable copper art is not rippable, and not escapable-through" guards the dogbone rung
+  with `_leg_clear` / `_via_site_clear`. `_via_site_clear` takes `exact_pads` (default off, upstream callers
+  unchanged); the dogbone guard passes it, and pads are then measured with `check_drc.point_to_pad_distance`
+  (custom polygons, rounded shapes, rotation).
+- Why: a custom pad's box can be much wider than its copper. On pic_programmer the box declined a DRC-legal dogbone
+  beside JP1's chevron (0.943 mm by box, 1.112 mm by copper, 1.05 mm required). The gap route left without it is
+  refused by upstream's terminal graze check (#1136 pair clearance), so /pic_sockets/VCC_PIC stayed open.
+- Test: tests/test_rescue_escape_would_short_guard.py (`test_dogbone_via_judged_by_real_pad_copper`,
+  `test_dogbone_rung_uses_exact_pads`).
