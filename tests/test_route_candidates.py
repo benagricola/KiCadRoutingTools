@@ -296,6 +296,12 @@ def test_grade_preserves_original_rule_floors_without_promoting_nominal_width():
             assert candidates.grade_request(request)['widths_unknown']
             request['clearance_unproved'] = True
             assert not candidates.grade_request(request)['known']
+            request['clearance_unproved'] = False
+            original.with_suffix('.kicad_dru').write_text('(version 1)')
+            assert 'custom_clearance_rules_unproved' in candidates.grade_request(request)['unproved']
+            original.with_suffix('.kicad_dru').unlink()
+            board.footprints = {'U1': SimpleNamespace(pads=[SimpleNamespace(local_clearance=0.1)])}
+            assert 'local_clearance_overrides_unproved' in candidates.grade_request(request)['unproved']
 
 
 def test_no_project_grading_uses_frozen_default_not_candidate_writeback():
