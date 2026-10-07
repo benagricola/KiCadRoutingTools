@@ -2662,7 +2662,7 @@ def write_debug_lines(pcb_file: str, violations: List[dict], clearance: float, l
 
     Adds gr_line elements connecting closest points of violating segments.
     """
-    import uuid
+    import item_uuid  # FORK DIVERGENCE: uuids the same in every run (item_uuid.py)
 
     # Read the PCB file
     with open(pcb_file, 'r', encoding='utf-8') as f:
@@ -2691,9 +2691,9 @@ def write_debug_lines(pcb_file: str, violations: List[dict], clearance: float, l
 \t\t\t(type solid)
 \t\t)
 \t\t(layer "{layer}")
-\t\t(uuid "{uuid.uuid4()}")
+\t\t(uuid "{item_uuid.PLACEHOLDER}")
 \t)'''
-            debug_lines.append(line)
+            debug_lines.append(item_uuid.stamp(line))
 
     if not debug_lines:
         print(f"No debug lines to write")

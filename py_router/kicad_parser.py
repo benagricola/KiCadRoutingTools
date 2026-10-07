@@ -13,6 +13,7 @@ import re
 import math
 import json
 import sys
+import item_uuid  # FORK DIVERGENCE: seeded from each board read (item_uuid.py)
 import routing_defaults as defaults  # fab-floor outline width for 0-stroke copper polys (#337/M2)
 from swig_compat import patch_swig_iterators as _patch_swig_iterators
 # #962: the paste-stencil model. A leaf module (it imports check_drc/this module
@@ -5411,6 +5412,9 @@ def parse_kicad_pcb(filepath: str, guide_layer: str = "User.1",
     """
     with open(filepath, 'r', encoding='utf-8') as f:
         content = f.read()
+    # FORK DIVERGENCE: the uuids the writer stamps on new items are seeded
+    # from the board read, so a run gives the same uuids every time (item_uuid.py).
+    item_uuid.seed_from_board(content)
 
     kicad_version = detect_kicad_version(content)
 
