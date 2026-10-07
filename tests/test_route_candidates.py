@@ -14,6 +14,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'py_router'))
 import route_candidates as candidates
 
 
+def test_factory_resolution_uses_frozen_override_without_mutating_args():
+    with tempfile.TemporaryDirectory() as tmp:
+        original = Path(tmp) / 'mutable.json'
+        frozen = Path(tmp) / 'frozen.json'
+        frozen.write_text('{"clearance": 0.4}')
+        original.write_text('{}')
+        args = SimpleNamespace(fab_overrides=str(original), fab_tier='auto')
+        resolved = candidates.frozen_factory_args(args, {'fab_overrides': frozen})
+        assert resolved is not args
+        assert json.loads(Path(resolved.fab_overrides).read_text()) == {'clearance': 0.4}
+        assert args.fab_overrides == str(original)
+        assert resolved.fab_tier == args.fab_tier
+        assert candidates.frozen_factory_args(args, {}).fab_overrides == str(original)
+
+
 def parser_for_tests():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output')
