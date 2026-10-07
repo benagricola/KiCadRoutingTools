@@ -3,6 +3,8 @@
 import json
 import argparse
 import os
+import signal
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -12,6 +14,115 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'py_router'))
 import route_candidates as candidates
+
+
+def test_supervisor_signals_reap_only_its_owned_child_and_restore_handlers():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        sentinel = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+        try:
+            for signum in (signal.SIGTERM, signal.SIGINT):
+                pidfile = root / ('child-' + str(signum))
+                restored = root / ('restored-' + str(signum))
+                child_code = ('import os,time; from pathlib import Path; '
+                              'Path(%r).write_text(str(os.getpid())); time.sleep(30)' % str(pidfile))
+                supervisor_code = (
+                    'import os,signal,sys,time; from pathlib import Path; '
+                    'sys.path.insert(0,%r); import route_candidates as c\n'
+                    'before={s:signal.getsignal(s) for s in (signal.SIGTERM,signal.SIGINT)}\n'
+                    'try:\n c.run_child(%r,%r,dict(os.environ),time.monotonic()+20)\n'
+                    'finally:\n assert all(signal.getsignal(s)==h for s,h in before.items()); '
+                    'Path(%r).write_text("restored")\n' %
+                    (str(Path(candidates.__file__).parent), [sys.executable, '-c', child_code],
+                     str(root / 'child.log'), str(restored)))
+                supervisor = subprocess.Popen([sys.executable, '-c', supervisor_code], start_new_session=True)
+                try:
+                    until = time.monotonic() + 5
+                    while not pidfile.exists() and time.monotonic() < until:
+                        time.sleep(0.01)
+                    assert pidfile.exists(), 'owned child did not become ready'
+                    child_pid = int(pidfile.read_text())
+                    supervisor.send_signal(signum)
+                    assert supervisor.wait(timeout=5) == 128 + signum
+                    assert restored.read_text() == 'restored'
+                    try:
+                        os.kill(child_pid, 0)
+                    except ProcessLookupError:
+                        pass
+                    else:
+                        raise AssertionError('owned child survived supervisor interruption')
+                    assert sentinel.poll() is None, 'unrelated process was terminated'
+                finally:
+                    if pidfile.exists():
+                        try:
+                            os.killpg(int(pidfile.read_text()), signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    if supervisor.poll() is None:
+                        supervisor.kill()
+                    supervisor.wait()
+        finally:
+            sentinel.kill()
+            sentinel.wait()
+
+
+def test_supervisor_exception_reaps_owned_child_and_interrupt_never_publishes():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        owned = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], start_new_session=True)
+        wait = owned.wait
+        calls = []
+        def failing_wait(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError('supervisor error')
+            return wait(*args, **kwargs)
+        before = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
+        try:
+            with patch.object(candidates.subprocess, 'Popen', return_value=owned), \
+                 patch.object(owned, 'wait', failing_wait):
+                try:
+                    candidates.run_child(['owned'], root / 'log', dict(os.environ), time.monotonic() + 20)
+                except RuntimeError as error:
+                    assert str(error) == 'supervisor error'
+                else:
+                    raise AssertionError('supervisor error was suppressed')
+            assert owned.returncode == -signal.SIGKILL
+            assert all(signal.getsignal(s) == h for s, h in before.items())
+        finally:
+            if owned.poll() is None:
+                os.killpg(owned.pid, signal.SIGKILL)
+            owned.wait()
+        args = args_for(root)
+        Path(args.output_file).write_text('previous board')
+        with patch.object(candidates, 'run_child', side_effect=SystemExit(143)):
+            try:
+                candidates.maybe_run_candidates(args, [args.input_file], 'route.py', parser_for_tests(), ['N'])
+            except SystemExit as error:
+                assert error.code == 143
+            else:
+                raise AssertionError('interruption was suppressed')
+        assert Path(args.output_file).read_text() == 'previous board'
+
+
+def test_real_owned_child_deadline_restores_handlers_and_reaps():
+    with tempfile.TemporaryDirectory() as tmp:
+        owned = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], start_new_session=True)
+        before = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
+        try:
+            with patch.object(candidates.subprocess, 'Popen', return_value=owned):
+                try:
+                    candidates.run_child(['owned'], Path(tmp) / 'log', dict(os.environ), time.monotonic() + 0.03)
+                except TimeoutError:
+                    pass
+                else:
+                    raise AssertionError('owned child outlived the shared deadline')
+            assert owned.returncode == -signal.SIGKILL
+            assert all(signal.getsignal(s) == h for s, h in before.items())
+        finally:
+            if owned.poll() is None:
+                os.killpg(owned.pid, signal.SIGKILL)
+            owned.wait()
 
 
 def test_factory_resolution_uses_frozen_override_without_mutating_args():
