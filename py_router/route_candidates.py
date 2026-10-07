@@ -145,7 +145,10 @@ def run_child(command, log, env, deadline):
         try:
             return proc.wait(timeout=remaining)
         except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             proc.wait()
             raise TimeoutError('shared candidate deadline expired') from None
 
@@ -238,7 +241,7 @@ def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
         print(str(error), file=sys.stderr)
         return 2
     env = dict(os.environ, KRT_INTERNAL_ROUTE_CANDIDATE='1',
-               KRT_INTERNAL_POCKET_WALLS='0')
+               KRT_INTERNAL_POCKET_WALLS='0', KRT_NO_BANNER='1')
     env.pop('REDO_MANIFEST', None)  # Parent records the original invocation once.
     provenance = {'policy': 'legacy_then_one_pocket', 'budget_s': budget,
                   'max_candidates': 2, 'attempts': 0, 'selected': 'legacy',
@@ -288,7 +291,8 @@ def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
             except TimeoutError as error:
                 provenance['stopped'] = str(error)
                 if not candidates:
-                    print(log.read_text(encoding='utf-8', errors='replace'), end='')
+                    if log.exists():
+                        print(log.read_text(encoding='utf-8', errors='replace'), end='')
                     print('ROUTE_CANDIDATES: ' + json.dumps(provenance))
                     return 124
                 break
@@ -300,6 +304,10 @@ def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
                     print(log.read_text(encoding='utf-8', errors='replace'), end='')
                     return rc or 1
                 provenance['stopped'] = 'pocket output unavailable'
+                break
+            if name == 'pocket' and rc:
+                provenance['stopped'] = 'pocket_process_failed'
+                provenance['pocket_returncode'] = rc
                 break
             candidates.append(candidate)
             if name == 'legacy':
@@ -324,6 +332,8 @@ def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
                     'power_nets': getattr(args, 'power_nets', None),
                     'power_nets_widths': getattr(args, 'power_nets_widths', None),
                     'impedance': getattr(args, 'impedance', None),
+                    'clearance_unproved': bool({'clearance', 'clearance_ceiling', 'net_clearances'} & supplied),
+                    'electrical_unproved': bool(getattr(args, 'length_match_groups', None) or getattr(args, 'time_matching', False)),
                     'via_size': args.via_size if 'via_size' in supplied else None,
                     'via_drill': args.via_drill if 'via_drill' in supplied else None}), encoding='utf-8')
                 try:
@@ -351,14 +361,22 @@ def grade_request(request):
     import board_score
     from kicad_parser import parse_kicad_pcb
     from improvement_gate import grade_nets, copper_signature
-    from route_summary import named_nets
     board = parse_kicad_pcb(request['board'])
     before = parse_kicad_pcb(request['input'])
     sizes = {'--min-track-width': request['explicit_width'],
              '--min-via-diameter': request.get('via_size'),
              '--min-via-drill': request.get('via_drill')}
-    drc, undersized, _ = board_score.score_drc(str(root), request['board'],
-                                             sizes=sizes)
+    # The shipped project may lower its declared floors during writeback.
+    # Grade final copper against frozen ORIGINAL project/rules, not that weaker
+    # copy. Unknown explicit clearance maps/ceilings withhold adoption below.
+    with tempfile.TemporaryDirectory(prefix='krt_original_rules_') as tmp:
+        checked = Path(tmp) / Path(request['board']).name
+        shutil.copy2(request['board'], checked)
+        for suffix in ARTIFACT_SUFFIXES[1:]:
+            original = Path(request['input']).with_suffix(suffix)
+            if original.is_file():
+                shutil.copy2(original, checked.with_suffix(suffix))
+        drc, undersized, _ = board_score.score_drc(str(root), str(checked), sizes=sizes)
     summary = request['summary']
     if not isinstance(summary, dict):
         return {'known': False, 'reason': 'summary_missing'}
@@ -393,15 +411,11 @@ def grade_request(request):
             return {'known': False, 'reason': 'scope_net_missing'}
         grades = grade_nets(board, ids)
         opened = sum(max(1, len(g['failed_pads'])) for g in grades.values() if g['broken'])
-    # Required routing widths differ from manufacturing floors. Recheck every
-    # selected net's declared class and explicit power assignment on shipped
-    # copper. A legal neck may be below this envelope: without a proof of its
-    # allowance mark unknown, never certify width from fabrication floors.
-    from list_nets import net_track_width_map_by_id
+    # Explicit electrical widths differ from nominal class draw settings.
+    # Netclass widths are preferences; actual rule minima were checked above
+    # against the original project, including original Default-class rules.
     import fnmatch
-    widths = net_track_width_map_by_id(request['input'],
-                                      {i: n.name for i, n in before.nets.items()})
-    required = {before.nets[i].name: w for i, w in widths.items()}
+    required = {}
     if request.get('explicit_width') is not None:
         required.update({name: request['explicit_width'] for name in scope})
     power = request.get('power_nets') or []
@@ -436,8 +450,17 @@ def grade_request(request):
         prior = grade_nets(before, [before_ids[net.name]])[before_ids[net.name]]
         opened += max(0, len(now['failed_pads']) - len(prior['failed_pads']))
     quality = board_score.quality(request['board'])
-    known = drc.get('ran') and undersized.get('ran') and 'error' not in quality
-    return {'known': bool(known), 'drc': drc.get('count'),
+    from design_rules import DesignRules
+    original_rules = DesignRules.from_project(before, request['input'])
+    unproved = []
+    if original_rules.unsupported() or original_rules.notes:
+        unproved.append('original_rules_unsupported')
+    if request.get('clearance_unproved'):
+        unproved.append('explicit_clearance_unproved')
+    if request.get('electrical_unproved'):
+        unproved.append('length_or_time_obligation_unproved')
+    known = drc.get('ran') and undersized.get('ran') and 'error' not in quality and not unproved
+    return {'known': bool(known), 'unproved': unproved, 'drc': drc.get('count'),
             'undersized': undersized.get('count'), 'widths_unknown': widths_unknown,
             'open': opened, 'quality': [quality.get(k) for k in ('vias', 'copper_mm', 'segments')]}
 
