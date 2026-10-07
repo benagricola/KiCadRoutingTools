@@ -160,7 +160,7 @@ def _leg_clear(pcb_data: "PCBData", pts: List[Tuple[float, float]],
 
 
 def _via_site_clear(pcb_data: "PCBData", x: float, y: float, config,
-                    net_id: int) -> bool:
+                    net_id: int, exact_pads: bool = False) -> bool:
     """Exact via-landing check for a planned dive pocket: the via's
     copper pad must clear foreign copper on BOTH outer layers, and its
     drill must keep hole-to-hole distance from every foreign drill
@@ -169,12 +169,22 @@ def _via_site_clear(pcb_data: "PCBData", x: float, y: float, config,
     at the clearance check_drc grades the pair at (#1136): the stack
     against a via, the track's layer against a track, the copper the two
     share against a pad; `config.clearance` on a board that declares no
-    class and no .kicad_dru rule."""
+    class and no .kicad_dru rule.
+
+    FORK DIVERGENCE (placemat fork, not upstream): `exact_pads` measures a
+    foreign pad by its copper (check_drc.point_to_pad_distance: custom
+    polygons, rounded shapes, rotation) instead of its size_x/size_y box.
+    Only the fork's dogbone guard passes it; upstream's callers keep the
+    box. A custom pad's box is centred on its anchor, so a chevron solder
+    jumper reads up to 0.4 mm wider than its copper and the dogbone via
+    beside it was declined where KiCad's DRC passes it."""
     vr = (getattr(config, 'via_size', 0.6) or 0.6) / 2.0
     vd = (getattr(config, 'via_drill', 0.3) or 0.3) / 2.0
     h2h = getattr(config, 'hole_to_hole_clearance', 0.2) or 0.2
     clr = config.clearance
     _inert = config.pair_clearance_inert()
+    if exact_pads:
+        from check_drc import point_to_pad_distance
     for v in pcb_data.vias:
         d = math.hypot(x - v.x, y - v.y)
         if v.net_id != net_id:
@@ -203,9 +213,13 @@ def _via_site_clear(pcb_data: "PCBData", x: float, y: float, config,
                 continue
             if p.pad_type == 'np_thru_hole':
                 continue
-            dx = max(abs(x - p.global_x) - p.size_x / 2.0, 0.0)
-            dy = max(abs(y - p.global_y) - p.size_y / 2.0, 0.0)
-            if math.hypot(dx, dy) < vr + (
+            if exact_pads:
+                gap = point_to_pad_distance(x, y, p)
+            else:
+                dx = max(abs(x - p.global_x) - p.size_x / 2.0, 0.0)
+                dy = max(abs(y - p.global_y) - p.size_y / 2.0, 0.0)
+                gap = math.hypot(dx, dy)
+            if gap < vr + (
                     clr if _inert else
                     config.pad_pair_clearance_before_override(p, net_id)):
                 return False
@@ -1317,10 +1331,17 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                                       config=config):
                         _short_tap = 'seg'
                         break
+                # FORK DIVERGENCE: foreign pads measured by their copper
+                # (exact_pads), not their box. The box declined a DRC-legal
+                # dogbone beside a chevron solder jumper, and on upstream
+                # 364b4572 the gap route left without it is refused as a
+                # terminal graze (#1136 pair clearance), so the net stayed
+                # open where upstream, which has no guard here, closes it.
                 if _short_tap is None:
                     for _v7 in _tvias:
                         if not _via_site_clear(pcb_data, _v7.x, _v7.y,
-                                               config, net_id):
+                                               config, net_id,
+                                               exact_pads=True):
                             _short_tap = 'via'
                             break
                 if _short_tap is not None:
