@@ -313,9 +313,11 @@ def test_no_project_grading_uses_frozen_default_not_candidate_writeback():
         board = SimpleNamespace(nets={1: SimpleNamespace(name='N')}, segments=[],
             vias=[], footprints={}, board_info=SimpleNamespace(copper_layers=['F.Cu', 'B.Cu']))
         def check(root, final_file, **kwargs):
-            assert kwargs['clearance'] == 0.15
+            assert kwargs['clearance'] == expected[0]
+            assert kwargs['sizes'] == {}
             assert not Path(final_file).with_suffix('.kicad_pro').exists()
             return {'ran': True, 'count': 0}, {'ran': True, 'count': 0}, {}
+        expected = [0.15]
         request = {'board': str(output), 'input': str(original), 'explicit_width': None,
                    'summary': {'routed_single': ['N']}, 'scope': ['N'], 'connections': None,
                    'manufacturing_defaults': {'clearance': 0.15}}
@@ -324,6 +326,11 @@ def test_no_project_grading_uses_frozen_default_not_candidate_writeback():
              patch.object(board_score, 'score_drc', check), \
              patch.object(board_score, 'quality', return_value={'vias': 0, 'copper_mm': 0, 'segments': 0}):
             assert candidates.grade_request(request)['known']
+            original.write_text('(kicad_pcb\n(net_class \"Default\" \"\"\n(clearance 0.35)\n(trace_width 0.4)\n)\n)')
+            expected[0] = 0.35
+            assert candidates.grade_request(request)['known']
+            request['manufacturing_defaults']['tier'] = 'standard'
+            assert not candidates.grade_request(request)['known']
 
 
 if __name__ == '__main__':

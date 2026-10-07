@@ -344,7 +344,7 @@ def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
                     'power_nets': getattr(args, 'power_nets', None),
                     'power_nets_widths': getattr(args, 'power_nets_widths', None),
                     'impedance': getattr(args, 'impedance', None),
-                    'clearance_unproved': bool({'clearance', 'clearance_ceiling', 'net_clearances'} & supplied),
+                    'clearance_unproved': bool({'clearance', 'clearance_ceiling', 'net_clearances', 'hole_to_hole_clearance', 'board_edge_clearance', 'same_net_pad_clearance'} & supplied),
                     'electrical_unproved': bool(getattr(args, 'length_match_groups', None) or getattr(args, 'time_matching', False)),
                     'via_size': args.via_size if 'via_size' in supplied else None,
                     'via_drill': args.via_drill if 'via_drill' in supplied else None}), encoding='utf-8')
@@ -375,9 +375,9 @@ def grade_request(request):
     from improvement_gate import grade_nets, copper_signature
     board = parse_kicad_pcb(request['board'])
     before = parse_kicad_pcb(request['input'])
-    sizes = {'--min-track-width': request['explicit_width'],
-             '--min-via-diameter': request.get('via_size'),
-             '--min-via-drill': request.get('via_drill')}
+    # Manual size flags replace per-net rule floors in check_drc. Preserve
+    # those original floors here; explicit width obligations are checked below.
+    sizes = {}
     # The shipped project may lower its declared floors during writeback.
     # Grade final copper against frozen ORIGINAL project/rules, not that weaker
     # copy. Unknown explicit clearance maps/ceilings withhold adoption below.
@@ -395,9 +395,13 @@ def grade_request(request):
         # manufacturing envelope. Every original declared floor still wins.
         declared = project_copper_clearance(original_project)
         fallback = request.get('manufacturing_defaults') or {}
-        clearance = fallback.get('clearance') if declared is None else None
-        if declared is None and clearance is None:
+        from list_nets import board_default_netclass_clearance
+        embedded_default = board_default_netclass_clearance(request['input'])
+        bounds = [v for v in (declared, embedded_default, fallback.get('clearance'))
+                  if v is not None]
+        if not bounds:
             return {'known': False, 'reason': 'manufacturing_defaults_missing'}
+        clearance = max(bounds)
         drc, undersized, _ = board_score.score_drc(str(root), str(checked),
                                                  clearance=clearance, sizes=sizes)
     summary = request['summary']
@@ -452,6 +456,8 @@ def grade_request(request):
             for name in scope:
                 if any(fnmatch.fnmatchcase(name, p) for p in patterns.split(',')):
                     required[name] = width
+    if request.get('via_size') is not None or request.get('via_drill') is not None:
+        widths_unknown = True  # Explicit via/neck proof is not implemented.
     if request.get('impedance') is not None:
         widths_unknown = True  # No impedance/neck allowance proof in this worker.
     if not request['connections']:
@@ -478,6 +484,9 @@ def grade_request(request):
     unproved = []
     if original_rules.unsupported() or original_rules.notes:
         unproved.append('original_rules_unsupported')
+    defaults = request.get('manufacturing_defaults') or {}
+    if defaults.get('tier', 'auto') != 'auto' or defaults.get('overrides'):
+        unproved.append('nondefault_factory_settings_unproved')
     if request.get('clearance_unproved'):
         unproved.append('explicit_clearance_unproved')
     if request.get('electrical_unproved'):
