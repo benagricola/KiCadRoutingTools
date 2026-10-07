@@ -55,7 +55,12 @@ existing unrelated manufacturing faults may withhold an otherwise helpful
 proposal. Nominal netclass track widths are draw preferences, not minimum requirements.
 Explicit track, power and task widths are enforced separately. Final copper is
 checked against frozen original project and rule files so output floor writeback
-cannot weaken hard input minima. Explicit clearance overrides/maps/ceilings,
+cannot weaken hard input minima. Missing project clearance uses a manufacturing
+envelope frozen from the original invocation's `fab_floor_min` (tier and
+overrides), never the candidate's project. The `off` escalation policy freezes
+the original resolved clearance instead. This avoids the checker inventing
+its unrelated 0.2 mm no-project default. Default source and values are recorded
+in `manufacturing_defaults` before either candidate starts. Explicit clearance overrides/maps/ceilings,
 unsupported rules, and length/time obligations currently withhold adoption
 until their independent constraint proof is implemented. Task endpoint joins and track path widths are remeasured.
 A narrower path might be a permitted neck, and a poured join has no track-path
