@@ -168,6 +168,32 @@ def t_refuses_nets(tmp):
     check('--connections with --nets is refused', rc == 2 and '--connections' in log, (rc, log[-400:]))
 
 
+def t_refused_lays_nothing(tmp):
+    """A net whose every task is refused, or which is not on the board, is left alone and still reported."""
+    src = os.path.join(tmp, 'f_in.kicad_pcb')
+    _board(src, wall=False)
+    cases = [('width_under_board_minimum', "PWR", ("U1", "1"), ("U2", "1"), {"F.Cu": 0.05, "B.Cu": 0.05}),
+             ('unknown_pad', "PWR", ("U1", "9"), ("U2", "1"), WIDTHS),
+             ('pad_not_on_net', "PWR", ("U1", "1"), ("J9", "1"), WIDTHS),
+             ('layer_width_missing', "PWR", ("U1", "1"), ("U2", "1"), {"F.Cu": 0.5}),
+             ('pad_not_on_net', "NOPE", ("U1", "1"), ("U2", "1"), WIDTHS)]
+    with open(src, encoding='utf-8') as f:
+        txt = f.read()
+    with open(src, 'w', encoding='utf-8') as f:     # J9.1 on another net, for pad_not_on_net
+        f.write(txt.rstrip().rstrip(')') + _fp('J9', 20, 16, 2, 'SIG') + ')\n')
+    for i, (reason, net, a, b, widths) in enumerate(cases):
+        conn, out, js = (os.path.join(tmp, f'f{i}.{e}') for e in ('json', 'kicad_pcb', 's.json'))
+        with open(conn, 'w', encoding='utf-8') as f:
+            json.dump([{"net": net, "from": {"ref": a[0], "pad": a[1]}, "to": {"ref": b[0], "pad": b[1]},
+                        "widths": widths}], f)
+        rc, log = _route(src, out, conn, js)
+        recs = json.load(open(js, encoding='utf-8')).get('connections') if os.path.isfile(js) else None
+        check(f'{reason} on {net}: rc 0 and one refused record',
+              rc == 0 and recs and recs[0]['status'] == 'refused' and recs[0]['reason'] == reason,
+              (rc, recs, log[-600:] if rc else ''))
+        check(f'{reason} on {net}: no new copper', os.path.isfile(out) and not _new(src, out))
+
+
 def t_in_process(tmp):
     from route import batch_route
     src, out, js = (os.path.join(tmp, n) for n in ('p_in.kicad_pcb', 'p_out.kicad_pcb', 'p.json'))
@@ -186,6 +212,7 @@ if __name__ == '__main__':
         t_routed_then_joined(tmp)
         t_joined_narrow(tmp)
         t_refuses_nets(tmp)
+        t_refused_lays_nothing(tmp)
         t_in_process(tmp)
     if fails:
         print(f'{len(fails)} FAILURE(S): {fails}')

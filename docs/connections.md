@@ -15,13 +15,13 @@ A JSON list of tasks:
 ```
 
 - An end is every pad of that footprint with that number on the net (a number may repeat in a footprint).
-- `widths` should name every layer the call routes on (`--layers`); a routed layer it leaves out falls back to the
-  net's class width.
+- `widths` names every layer the call routes on (`--layers`) and no other; a task that misses one or adds one is
+  refused.
 - A file that is not a list, or a task with a missing or wrongly typed field, is refused before the board is read
   (exit 2, naming the task index).
 - `--connections` sets the call's nets to the task nets. It refuses `--nets`, positional net patterns, `--component`,
-  `--group`, `--undo`, `--power-nets` and `--power-nets-widths` alongside (exit 2). A call whose nets are all absent
-  from the board exits 2, as `--nets` does.
+  `--group`, `--undo`, `--power-nets` and `--power-nets-widths` alongside (exit 2). A task on a net absent from the
+  board is refused `pad_not_on_net`; a call whose nets are all absent still exits 0 and writes its records.
 
 ## What a call does
 
@@ -33,13 +33,15 @@ A JSON list of tasks:
    joined to them. Its other pads and copper move to a private net (`__connections_private_<id>`) that is an
    obstacle at the net's class clearance and is never ripped (protected_nets.py `protection_map`, as locked copper).
    Same-net pads of an end's footprint that are not ends are obstacles too (D4). A named net with nothing to route
-   moves whole, so the call does not touch it. The writer copies the input text and appends only new copper, so the
+   moves whole, so the call does not touch it; that includes a net whose every task is refused. The writer copies the input text and appends only new copper, so the
    private net never reaches the output board or project.
 4. The routed net's copper is laid at the group's widths, per layer (`config.net_layer_widths`). Neck-down rules
    still apply (`--no-power-tap-neckdown` turns them off), so a routed task can ship narrower than asked; its record
    says so in `min_width_mm`.
 5. Reconcile sub-runs re-enter with the same file. One that re-reads the written board repeats steps 1-3 on it; one
-   handed this run's board in memory keeps its split.
+   handed this run's board in memory (the GUI front) keeps its split and the widths recorded on it.
+6. Known gap: the plane-finalize oracle's forced links (off by default) are chosen per whole net in a reconcile
+   sub-run, so with the oracle on, a call could lay copper on a net whose only open task reads `deferred`.
 
 ## Records
 
@@ -64,8 +66,9 @@ has no track path: `joined` is true, `length_mm` null and `min_width_mm` empty.
 | `deferred` | another group of the same net was routed in this call; route it again in another call |
 | `refused` | not routed; `reason` says why |
 
-`reason` is null except for `refused`: `unknown_ref`, `unknown_pad`, `pad_not_on_net`, `layer_not_routed` (a
-`widths` layer the call does not route), `width_under_board_minimum` (a width under the board's `min_track_width`).
+`reason` is null except for `refused`: `unknown_ref`, `unknown_pad`, `pad_not_on_net` (also a net absent from the
+board), `layer_not_routed` (a `widths` layer the call does not route), `layer_width_missing` (a layer the call routes
+that `widths` leaves out), `width_under_board_minimum` (a width under the board's `min_track_width`).
 
 `path` is null except for `joined_narrow`, where it is the joining path's segments:
 `[{"layer": "F.Cu", "start": [x, y], "end": [x, y], "width": mm}, ...]`, in the board's mm.

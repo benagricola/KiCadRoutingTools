@@ -1211,8 +1211,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # FORK DIVERGENCE (docs/connections.md): --connections restricts each named
     # net, for this call, to the pads of its tasks and the copper joined to
     # them; the rest of the net moves to a protected private obstacle net. An
-    # in-process reconcile sub-run gets this run's pcb_data, already split.
+    # in-process reconcile sub-run gets this run's pcb_data, already split, and
+    # routes at the widths the outer run recorded on it.
     _conn_tasks, _conn_chosen, _conn_private = None, {}, {}
+    _conn_widths = dict(getattr(pcb_data, 'connections_widths', None) or {})
     if connections is not None and not getattr(pcb_data, 'connections_private_names', None):
         import connections as _conn
         from list_nets import board_constraint as _bc_conn
@@ -1226,7 +1228,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         _conn_chosen = _conn.choose_groups(_conn_tasks)
         _conn_private = _conn.split_nets(
             pcb_data, _conn_chosen,
-            also={t.net_id for t in _conn_tasks if t.status != 'refused'})
+            also={t.net_id for t in _conn_tasks if t.net_id is not None})
+        _conn_widths = {_cn: dict(_cg[0].widths) for _cn, _cg in _conn_chosen.items()}
+        pcb_data.connections_widths = dict(_conn_widths)
         print(f"--connections: {len(_conn_tasks)} task(s); routing "
               f"{sum(len(g) for g in _conn_chosen.values())} on "
               f"{len(_conn_chosen)} net(s); statuses so far: "
@@ -1693,8 +1697,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 net_layer_widths_map[_nid] = dict(_bl)
     # FORK DIVERGENCE (docs/connections.md): each routed net's task widths, per
     # layer, over its class and rule widths.
-    for _cn, _cg in _conn_chosen.items():
-        net_layer_widths_map[_cn] = dict(_cg[0].widths)
+    for _cn, _cw in _conn_widths.items():
+        net_layer_widths_map[_cn] = dict(_cw)
     if net_layer_widths_map:
         config_kwargs['net_layer_widths'] = net_layer_widths_map
     # #530 decision 4: per-net via geometry -> config.net_via_sizes (the
@@ -1831,7 +1835,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                     print(f"  {width}mm: {len(names)} nets ({', '.join(names[:3])}...)")
     # FORK DIVERGENCE (docs/connections.md): a power width would outrank the
     # task widths (routing_config.py get_net_track_width).
-    for _cn in _conn_chosen:
+    for _cn in _conn_widths:
         (getattr(config, 'power_net_widths', None) or {}).pop(_cn, None)
 
     # Find net IDs and filter already-routed nets
@@ -1866,7 +1870,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         # trailing \r) looked exactly like "nothing left to do". Raise, so the
         # CLI exits non-zero and the GUI surfaces a real error, instead of both
         # of them reporting success over an untouched board.
-        if net_names:
+        # FORK DIVERGENCE (docs/connections.md): a --connections call whose
+        # nets are all absent writes its refused records instead.
+        if net_names and _conn_tasks is None:
             from routing_exceptions import NetNotFoundError
             raise NetNotFoundError(
                 list(net_names),
@@ -7996,7 +8002,9 @@ For differential pair routing, use route_diff.py:
     # lost a lap to it: a CRLF net list gave all 88 names a trailing '\r'.
     # batch_route now raises for the GUI's benefit; the CLI refuses here so the
     # exit code is a clean 2 rather than a traceback.
-    if not resolve_net_ids(pcb_data, net_names):
+    # FORK DIVERGENCE (docs/connections.md): a --connections call reports an
+    # absent net in its records (pad_not_on_net) instead of exiting here.
+    if _connections_raw is None and not resolve_net_ids(pcb_data, net_names):
         print(f"route.py: error: none of the {len(net_names)} requested net "
               f"name(s) exist on this board -- nothing would be routed. Check "
               f"for stray whitespace or a stale net list. First few: "

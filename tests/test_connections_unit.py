@@ -47,6 +47,8 @@ def t_refusals():
     check('a pad on another net is refused', got[2].reason == 'pad_not_on_net', got[2])
     check('a width layer the call does not route is refused', got[3].reason == 'layer_not_routed', got[3])
     check('a width under the board minimum is refused', got[4].reason == 'width_under_board_minimum', got[4])
+    miss = resolve([task(('J1', '1'), ('U1', '1'), {"F.Cu": 0.5})], pcb, layers, min_track=0.1)
+    check('a routed layer without a width is refused', miss[0].reason == 'layer_width_missing', miss[0])
 
 
 def t_joined():
