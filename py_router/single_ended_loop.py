@@ -59,7 +59,7 @@ def _sample_path(path: List[Tuple[int, int, int]], step: int = 1) -> List[Tuple[
     return sampled
 
 from routing_state import RoutingState, record_net_event, record_rip_ancestry, rip_exclude_set
-from bus_detection import detect_bus_groups, get_bus_routing_order, get_attraction_neighbor, bus_attraction_context, bus_stick_config, BusGroup
+from bus_detection import detect_bus_groups, stated_bus_groups, get_bus_routing_order, get_attraction_neighbor, bus_attraction_context, bus_stick_config, BusGroup
 from memory_debug import get_process_memory_mb, estimate_track_proximity_cache_mb
 from obstacle_map import (
     add_net_stubs_as_obstacles, add_net_vias_as_obstacles, add_net_pads_as_obstacles,
@@ -534,7 +534,14 @@ def route_single_ended_nets(
     _bus_ordering = (config.bus_enabled or
                      getattr(config, 'ordering_strategy', '') == 'bus')
     if _bus_ordering:
-        net_ids_to_check = [net_id for _, net_id in single_ended_nets]
+        # FORK DIVERGENCE (docs/connections.md): --bus-nets groups are taken as
+        # stated. They skip detection and the geometric filter, and their nets
+        # are left out of both; corridor planning and demotion still apply.
+        stated_groups = stated_bus_groups(
+            pcb_data, config, present={net_id for _, net_id in single_ended_nets})
+        stated_ids = {nid for g in stated_groups for nid in g.net_ids}
+        net_ids_to_check = [net_id for _, net_id in single_ended_nets
+                            if net_id not in stated_ids]
         bus_groups = detect_bus_groups(
             pcb_data, net_ids_to_check,
             detection_radius=config.bus_detection_radius,
@@ -550,6 +557,10 @@ def route_single_ended_nets(
         if _raw_n != len(bus_groups):
             print(f"  Bus filter: {_raw_n} raw clique group(s) -> "
                   f"{len(bus_groups)} geometric bus(es)")
+        bus_group_origin = {g.name: 'stated' for g in stated_groups}
+        bus_group_origin.update({g.name: 'detected' for g in bus_groups})
+        bus_groups = stated_groups + bus_groups
+        _bus_group_all = list(bus_groups)
 
         if bus_groups:
             print(f"\n=== Bus Detection: Found {len(bus_groups)} bus group(s) ===")
@@ -596,6 +607,7 @@ def route_single_ended_nets(
             # so the corridor is chosen with room for the whole group instead
             # of being whatever the guide's solo path happened to be. Soft:
             # groups with no routable rung keep neighbor attraction.
+            _demoted = []
             if config.bus_enabled:
                 from bus_corridor import plan_bus_corridors
                 bus_corridors, _demoted = plan_bus_corridors(
@@ -610,6 +622,14 @@ def route_single_ended_nets(
                         for _nid in bus.net_ids:
                             bus_net_to_group.pop(_nid, None)
                     bus_groups = [b for b in bus_groups if b.name not in _dset]
+
+            _demoted_names = set(_demoted)
+            state.bus_group_records = [
+                {'name': b.name,
+                 'nets': [pcb_data.nets[nid].name for nid in b.net_ids],
+                 'origin': bus_group_origin[b.name],
+                 'demoted': b.name in _demoted_names}
+                for b in _bus_group_all]
 
             # Reorder nets: bus nets in routing order first, then non-bus nets
             bus_net_ids_set = {nid for bus in bus_groups for nid in bus.net_ids}

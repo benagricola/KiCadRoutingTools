@@ -97,3 +97,25 @@ places; keeping it on the net makes the ends read as already joined (routing_com
 The existing summary keys still describe whole nets. The final re-grade reads the written board, where the net's other
 pads are untouched by design, so a connections call reports its net under `failed_multipoint` or `open_single` even
 when every task routed. A reader of a connections call takes `connections`.
+
+# --bus-nets: a stated bus
+
+`route.py ... --bus-nets NET [NET ...]` routes the named nets as one bus group, as given. The flag repeats, one
+group per use, and implies `--bus`.
+
+- Each name is an include pattern read the way `--nets` reads it (net_queries.py `expand_net_patterns`): `\!NAME` is
+  the active-low net `!NAME`, `[[]` is a literal `[`, `*` and `?` are wildcards. A name that matches no net is
+  dropped.
+- A stated group skips detection and the geometric filter (bus_detection.py `stated_bus_groups`). Its members are
+  ordered by position and it is named `stated_<n>`, `n` being the index of its use of the flag. A group with fewer
+  than two routable nets in the call is dropped. The nets of a stated group are left out of detection.
+- Corridor planning and demotion (bus_corridor.py `plan_bus_corridors`) apply to stated groups as to detected ones.
+
+`--json-out` gains `bus_groups` on any `--bus` run, in route order:
+
+```json
+[{"name": "stated_0", "nets": ["SDA", "SCL"], "origin": "stated", "demoted": false}]
+```
+
+`origin` is `stated` or `detected`; `demoted` is true for a group that lost bus treatment because its corridor needed
+too many layer changes. `nets` is in the group's physical order.
