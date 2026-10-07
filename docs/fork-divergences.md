@@ -52,9 +52,13 @@ Deliberate differences between this fork and upstream. Each is marked in the cod
   order pcbnew hands them out, kept or merged a +3V3 via pair by that order, and clean closure read 61.2% or 84.3%.
 - Fork: py_router/item_uuid.py. A writer emits `item_uuid.PLACEHOLDER` and passes its text to `item_uuid.stamp`,
   which puts in uuid5 of a seed, the item's text and how many items of that text the process has stamped before.
-  `parse_kicad_pcb` seeds it from each board it reads: the board's lines with their uuids taken out, sorted, so the
-  input's own uuids and block order do not move it, and a later run on a board that already holds an item of the
-  same text stamps a different uuid. Upstream's docstrings at `zone_overlap_priorities` and `generate_zone_sexpr`
+  `parse_kicad_pcb` seeds it from each board it reads: the board's lines with every uuid-shaped token (item uuids, a
+  group's member list, legacy 8-hex tstamps) taken out, sorted, so the input's own ids and block order do not move
+  it, and a later run on a board that already holds an item of the same text stamps a different uuid.
+  `add_tracks_to_pcb` and `add_tracks_and_vias_to_pcb` seed from the board they write into, and
+  `build_pcb_data_from_board` from the live board's tracks, vias and footprints. `stamp` before any seed raises.
+  Five upstream tests that write items with no board (test_489_via_tenting, test_748_via_dialect_protection,
+  test_net_name_escaping, test_soft_joint, test_zone_priority_determinism) seed one themselves. Upstream's docstrings at `zone_overlap_priorities` and `generate_zone_sexpr`
   still say "we mint a fresh uuid4"; left as upstream wrote them.
 - Why: placemat's reference set compares one run with another; the router's output must be the same in every run.
 - Test: tests/test_item_uuid_determinism.py.
