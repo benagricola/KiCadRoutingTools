@@ -2191,12 +2191,17 @@ def _finalize_plane_copper(all_new_segments, all_new_vias, pcb_data, clearance,
                               hole_to_hole_clearance)
 
     # 1. neck grazing taps (mutates all_new_segments in place)
+    # FORK DIVERGENCE (docs/fork-divergences.md): the neck floors at the board's min_track_width, not only the
+    # literal 0.1 mm upstream uses.
+    from pcb_modification import plane_track_floor
+    _board_tw = plane_track_floor(pcb_data)
     _neck_plane_segments(all_new_segments, pcb_data, clearance, all_layers,
-                         net_clearances=net_clearances)
+                         min_width=max(0.1, _board_tw), net_clearances=net_clearances)
 
     # 2. graze prune / nudge / dead-end sweep (returns a NEW list)
     if all_new_segments:
         from pcb_modification import cleanup_plane_taps_grazing
+        from single_ended_routing import _fab_track_floor
         scope = {s['net_id'] for s in all_new_segments}
         (all_new_segments, gz_rm, gz_nudge, gz_swept,
          gz_input_strips) = cleanup_plane_taps_grazing(
@@ -2205,7 +2210,8 @@ def _finalize_plane_copper(all_new_segments, all_new_vias, pcb_data, clearance,
             hole_to_hole=hole_to_hole_clearance,
             same_net_pad_clearance=(same_net_pad_clearance
                                     if same_net_pad_clearance is not None
-                                    else -1.0))  # #581
+                                    else -1.0),  # #581
+            floor_of=(lambda nid, layer: max(_fab_track_floor(pcb_data), _board_tw)))
         if gz_rm:
             print(f"  Graze prune: removed {gz_rm} grazing tap segment(s)")
         if gz_nudge:

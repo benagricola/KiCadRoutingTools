@@ -2917,6 +2917,7 @@ def repair_planes(
         if progress_callback:
             progress_callback(0, 0, "Cleaning up repair copper (graze prune/nudge)...")
         from pcb_modification import cleanup_plane_taps_grazing
+        from single_ended_routing import _fab_track_floor
         _scope = {s['net_id'] for s in all_new_segments}
         (all_new_segments, _gz_rm, _gz_nudge, _gz_swept,
          _gz_input_strips) = cleanup_plane_taps_grazing(
@@ -2925,7 +2926,10 @@ def repair_planes(
             hole_to_hole=config.hole_to_hole_clearance,
             protected_pads=_tapped_pads,
             same_net_pad_clearance=getattr(config, 'same_net_pad_clearance',
-                                           -1.0))  # #581
+                                           -1.0),  # #581
+            # FORK DIVERGENCE (docs/fork-divergences.md): graze necks floor at the net's track floor.
+            floor_of=(lambda nid, layer: config.track_floor(
+                nid, layer, _fab_track_floor(pcb_data))))
         if _gz_rm:
             print(f"  Graze prune: removed {_gz_rm} grazing repair segment(s)")
         if _gz_nudge:
