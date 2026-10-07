@@ -41,3 +41,20 @@ Deliberate differences between this fork and upstream. Each is marked in the cod
   protection in protected_nets.py `protection_map`. Described in docs/connections.md.
 - Why: placemat's routing phases route chosen connections of a net at their own widths.
 - Test: tests/test_connections_unit.py, tests/test_connections_route.py.
+
+## Item uuids the same in every run
+
+- Upstream: kicad_writer.py mints `uuid.uuid4()` for every segment, via, zone, keepout, graphic line and text it
+  writes (check_drc.py's debug lines too). KiCad orders and tie-breaks on KIIDs: the order a loaded board hands out
+  its tracks, which item a DRC marker names, overlapping zones' fill (upstream's own note at
+  kicad_writer.py `zone_overlap_priorities`). So the same routed copper graded differently between runs. Seen on
+  watchy (test (a), class widths): identical router copper, but placemat's close-via merge walks the vias in the
+  order pcbnew hands them out, kept or merged a +3V3 via pair by that order, and clean closure read 61.2% or 84.3%.
+- Fork: py_router/item_uuid.py. A writer emits `item_uuid.PLACEHOLDER` and passes its text to `item_uuid.stamp`,
+  which puts in uuid5 of a seed, the item's text and how many items of that text the process has stamped before.
+  `parse_kicad_pcb` seeds it from each board it reads: the board's lines with their uuids taken out, sorted, so the
+  input's own uuids and block order do not move it, and a later run on a board that already holds an item of the
+  same text stamps a different uuid. Upstream's docstrings at `zone_overlap_priorities` and `generate_zone_sexpr`
+  still say "we mint a fresh uuid4"; left as upstream wrote them.
+- Why: placemat's reference set compares one run with another; the router's output must be the same in every run.
+- Test: tests/test_item_uuid_determinism.py.
