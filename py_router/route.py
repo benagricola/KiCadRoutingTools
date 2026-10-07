@@ -7685,6 +7685,12 @@ For differential pair routing, use route_diff.py:
             args.output_file = base + '_routed' + ext
             print(f"Output file: {args.output_file}")
 
+    # FORK DIVERGENCE: file-isolated, bounded pocket repair candidate.
+    from route_candidates import maybe_run_candidates
+    _candidate_rc = maybe_run_candidates(args, sys.argv[1:], __file__, parser)
+    if _candidate_rc is not None:
+        sys.exit(_candidate_rc)
+
     # Load PCB to expand wildcards
     print(f"Loading {args.input_file} to expand net patterns...")
     pcb_data = parse_kicad_pcb(args.input_file)

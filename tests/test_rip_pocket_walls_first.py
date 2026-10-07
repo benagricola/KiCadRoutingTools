@@ -121,7 +121,17 @@ def test_flood_preserves_terminal_exemptions_and_does_not_mutate_map():
     assert not obstacles.is_terminal_cell(0, 0, 0)
 
 
-def test_ladder_rips_the_small_pockets_wall_first():
+def test_closed_region_with_a_search_source_is_not_a_trapped_target():
+    from pocket_walls import flood_pocket
+    obstacles = _map(_board(), _config())
+    target = _cell(5.0, 5.0)
+    assert flood_pocket(obstacles, [target], 0, 5000,
+                        sources=[_cell(5.5, 5.0)]) is None
+    assert flood_pocket(obstacles, [target], 0, 5000,
+                        sources=[_cell(12.0, 15.0)]) is not None
+
+
+def _ladder_rips(pocket_enabled):
     pcb, cfg = _board(), _config()
     obstacles = _map(pcb, cfg)
     src = _cell(12.0, 15.0)
@@ -131,9 +141,9 @@ def test_ladder_rips_the_small_pockets_wall_first():
     # Z's edge first, as a run that met Q first would record it.
     failed = {
         (0, 2): (bwd_q, (20.0, 5.0), {'fwd': [], 'bwd': bwd_q, 'extra': [],
-                                     'tgt_cells': [tq]}),
+                                     'tgt_cells': [tq], 'src_cells': [src]}),
         (0, 1): (bwd_p, (5.0, 5.0), {'fwd': [], 'bwd': bwd_p, 'extra': [],
-                                    'tgt_cells': [tp]}),
+                                    'tgt_cells': [tp], 'src_cells': [src]}),
     }
     ripped = []
 
@@ -148,14 +158,23 @@ def test_ladder_rips_the_small_pockets_wall_first():
     completed = {'tap_edges_failed': 2, 'new_segments': [], 'new_vias': [],
                  'mst_edges': [(2, 0, 1.0), (2, 1, 1.0)]}
     with patch.object(phase3_routing, "rip_up_net", _record), \
-            patch.object(phase3_routing, "LEG_RIP_ENABLED", False):
+            patch.object(phase3_routing, "LEG_RIP_ENABLED", False), \
+            patch.object(phase3_routing.env_knobs, "POCKET_WALLS", pocket_enabled):
         out = phase3_routing.try_phase3_ripup(
             OURS, completed, failed, [], [], pcb, cfg, state,
             [W, Z], [], [], {W: [], Z: []}, {W: {}, Z: {}}, {}, [], {},
             {'F.Cu': 0, 'B.Cu': 1}, None, None, [],
             obstacle_cache={}, tap_obstacles=obstacles)
     assert out is None
-    assert ripped == [W], f"ripped {ripped}, want W ({W}) first"
+    return ripped
+
+
+def test_ladder_rips_the_small_pockets_wall_first():
+    assert _ladder_rips(True) == [W]
+
+
+def test_direct_ladder_default_preserves_legacy_frontier_order():
+    assert _ladder_rips(False) == [Z]
 
 
 def main():
