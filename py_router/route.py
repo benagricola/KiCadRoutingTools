@@ -7150,7 +7150,6 @@ if __name__ == "__main__":
     record_invocation()  # stress-test redo manifest (#132); no-op unless REDO_MANIFEST set
 
     parser = argparse.ArgumentParser(
-        allow_abbrev=False,  # FORK DIVERGENCE: exact replayable candidate arguments
         description="Batch PCB Router - Routes single-ended nets using Rust-accelerated A*. For differential pairs, use route_diff.py.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""

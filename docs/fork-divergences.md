@@ -36,7 +36,10 @@ Only an incomplete measured result permits one pocket-prioritized proposal
 from the same original input, with identical routing flags and a frozen task file.
 Both grades use the same requested net set plus the union of both summaries'
 owned nets; the sorted scope and task identity are recorded with a SHA-256.
-CLI option abbreviations are refused; attached short-option values remain supported.
+CLI option handling follows argparse, including unambiguous abbreviations and
+attached short-option values. File-valued clearance overrides are frozen along
+with connection tasks; their digests are recorded. Only the parent records the
+original redo invocation; children never record ephemeral trial paths.
 
 Both runs and independent final-file grading share a wall-clock deadline:
 `KRT_ROUTE_BUDGET_S` defaults to 3600 seconds, and a caller's earlier absolute

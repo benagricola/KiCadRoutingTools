@@ -15,13 +15,17 @@ import route_candidates as candidates
 
 
 def parser_for_tests():
-    parser = argparse.ArgumentParser(allow_abbrev=False)
+    parser = argparse.ArgumentParser()
     parser.add_argument('--output')
     parser.add_argument('--json-out')
     parser.add_argument('--overwrite', action='store_true')
     parser.add_argument('--connections')
     parser.add_argument('--bus-nets', nargs='+')
     parser.add_argument('--capture')
+    parser.add_argument('--net-clearances')
+    parser.add_argument('--track-width', type=float)
+    parser.add_argument('--via-size', type=float)
+    parser.add_argument('--via-drill', type=float)
     parser.add_argument('--nets', '-n', nargs='+')
     return parser
 
@@ -208,12 +212,28 @@ def test_short_attached_net_values_are_preserved():
     result = candidates.child_argv(['in.pcb', 'out.pcb', '-nNET', 'NEXT'], args,
                                    '/copy/in.pcb', '/trial/out.pcb', 's.json', parser)
     assert result[:4] == ['/copy/in.pcb', '/trial/out.pcb', '-nNET', 'NEXT']
-    try:
-        parser.parse_args(['--out', 'out.pcb'])
-    except SystemExit as error:
-        assert error.code == 2
-    else:
-        raise AssertionError('abbreviated options must be refused consistently')
+    result = candidates.child_argv(['in.pcb', '--out=out.pcb'], args,
+                                   '/copy/in.pcb', '/trial/out.pcb', 's.json', parser)
+    assert result == ['/copy/in.pcb', '--output', '/trial/out.pcb', '--json-out', 's.json']
+    assert candidates.explicit_fields(['--track-w=0.5', '--via-s=0.6'], parser) == {'track_width', 'via_size'}
+
+
+def test_constraint_files_are_frozen_and_child_redo_manifest_is_disabled():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        args, calls = args_for(root), []
+        constraints = root / 'clearances.json'
+        constraints.write_text('{"N":0.2}')
+        args.net_clearances = str(constraints)
+        original_fake = fake_run({'legacy': 0}, calls)
+        def run(command, log, env, deadline):
+            assert 'REDO_MANIFEST' not in env
+            frozen = Path(command[command.index('--net-clearances') + 1])
+            assert frozen != constraints and frozen.read_text() == constraints.read_text()
+            return original_fake(command, log, env, deadline)
+        with patch.dict(os.environ, {'REDO_MANIFEST': 'original-record'}, clear=True), patch.object(candidates, 'run_child', run):
+            candidates.maybe_run_candidates(args, [args.input_file, '--net-clearances', str(constraints)], 'route.py', parser_for_tests(), ['N'])
+            assert os.environ['REDO_MANIFEST'] == 'original-record'
 
 
 if __name__ == '__main__':
