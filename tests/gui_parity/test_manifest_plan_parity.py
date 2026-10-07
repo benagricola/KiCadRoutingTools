@@ -743,6 +743,8 @@ ROUTE_CLI_ONLY = {
                      "converter refuses",
     '--capabilities': "prints the capability document and exits; routes "
                       "nothing",
+    # FORK DIVERGENCE (docs/connections.md).
+    '--connections': "placemat's per-connection routing; the GUI has no connection list",
     # Files and bookkeeping: the GUI routes the LIVE board and keeps its
     # results in memory, so there is no file for these to name.
     '--output': "the output FILE path (it feeds chain pruning); the GUI "

@@ -29,3 +29,12 @@ Deliberate differences between this fork and upstream. Each is marked in the cod
   `max(0.1, floor)` and is passed as `floor_of` to `cleanup_plane_taps_grazing`.
 - Why: a neck under `min_track_width` is a DRC error on the board KiCad grades.
 - Test: tests/test_fork_floors.py (`t_pair_neck_floor`, `t_plane_neck_floor`, `t_floor_of_threaded`).
+
+## --connections: routing given pad pairs of a net
+
+- Upstream: routes whole nets; no flag selects pad pairs or sets a width per layer per call.
+- Fork: `--connections FILE` (py_router/connections.py, hooks in route.py marked `FORK DIVERGENCE
+  (docs/connections.md)`), `pin_pair_path_length(..., return_path=True)` in net_queries.py, and the private nets'
+  protection in protected_nets.py `protection_map`. Described in docs/connections.md.
+- Why: placemat's routing phases route chosen connections of a net at their own widths.
+- Test: tests/test_connections_unit.py, tests/test_connections_route.py.

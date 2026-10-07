@@ -260,7 +260,7 @@ def _pad_holds_point(pad: Pad, x: float, y: float, tol: float = 0.02) -> bool:
 
 def pin_pair_path_length(pcb_data: PCBData, net_id: int,
                          pad_a: Pad, pad_b: Pad,
-                         tolerance: float = 0.02) -> Optional[float]:
+                         tolerance: float = 0.02, return_path: bool = False):
     """Shortest copper path length between TWO PADS of one net, in mm (#489 §7).
 
     The pin-pair ("from-to") measurement length matching actually needs, and
@@ -278,10 +278,15 @@ def pin_pair_path_length(pcb_data: PCBData, net_id: int,
     broken net) -- distinguish that from 0.0, which means pad-to-pad direct
     contact. Zone/pour connections are NOT traversed: a net that reaches its
     pads only through a plane has no track path and returns None.
+
+    FORK DIVERGENCE (docs/connections.md): with ``return_path=True`` the result is ``(length, [the
+    segments on that shortest path, pad_a to pad_b])``, or ``(None, [])`` when
+    the pads are not joined by track.
     """
+    _none = (None, []) if return_path else None
     segments = [s for s in pcb_data.segments if s.net_id == net_id]
     if not segments:
-        return None
+        return _none
 
     # Point interning: endpoints within `tolerance` are ONE node (the same
     # coincidence rule check_connected unions at). Bucketing on round(x/tol)
@@ -304,12 +309,15 @@ def pin_pair_path_length(pcb_data: PCBData, net_id: int,
         return nid
 
     adjacency: Dict[int, List[Tuple[int, float]]] = {}
+    edge_seg: Dict[Tuple[int, int], object] = {}   # FORK DIVERGENCE: return_path
 
-    def add_edge(n1, n2, w: float):
+    def add_edge(n1, n2, w: float, seg=None):
         if n1 == n2:
             return
         adjacency.setdefault(n1, []).append((n2, w))
         adjacency.setdefault(n2, []).append((n1, w))
+        if seg is not None:
+            edge_seg[(n1, n2)] = edge_seg[(n2, n1)] = seg
 
     copper_layers = list(getattr(pcb_data.board_info, 'copper_layers', None) or [])
     from kicad_parser import pad_is_plated_through
@@ -381,7 +389,7 @@ def pin_pair_path_length(pcb_data: PCBData, net_id: int,
                 continue
             n1 = key(s.start_x + ux * t1, s.start_y + uy * t1, s.layer)
             n2 = key(s.start_x + ux * t2, s.start_y + uy * t2, s.layer)
-            add_edge(n1, n2, t2 - t1)
+            add_edge(n1, n2, t2 - t1, s)
 
     # Attach each disc: one synthetic node per layer it spans, joined at no cost
     # to every segment node inside its copper on that layer. A via's barrel then
@@ -434,10 +442,11 @@ def pin_pair_path_length(pcb_data: PCBData, net_id: int,
     starts = pad_nodes.get(id(pad_a)) or []
     goals = set(pad_nodes.get(id(pad_b)) or [])
     if not starts or not goals:
-        return None
+        return _none
 
     import heapq
     dist = {n: 0.0 for n in starts}
+    prev: Dict[int, int] = {}
     heap = [(0.0, i, n) for i, n in enumerate(starts)]
     heapq.heapify(heap)
     counter = len(starts)
@@ -446,14 +455,25 @@ def pin_pair_path_length(pcb_data: PCBData, net_id: int,
         if d > dist.get(node, float('inf')) + 1e-12:
             continue
         if node in goals:
-            return d
+            if not return_path:
+                return d
+            path, seen = [], set()
+            while node in prev:
+                seg = edge_seg.get((prev[node], node))
+                if seg is not None and id(seg) not in seen:
+                    seen.add(id(seg))
+                    path.append(seg)
+                node = prev[node]
+            path.reverse()
+            return d, path
         for nxt, w in adjacency.get(node, ()):
             nd = d + w
             if nd < dist.get(nxt, float('inf')) - 1e-12:
                 dist[nxt] = nd
+                prev[nxt] = node
                 heapq.heappush(heap, (nd, counter, nxt))
                 counter += 1
-    return None
+    return _none
 
 
 def routable_pad_count(pcb_data: PCBData, net_id: int, off_board=None) -> int:

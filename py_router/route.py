@@ -540,6 +540,16 @@ class _BoardCopper:
         return getattr(self._base, name)
 
 
+def _summary_min_extra(extra: Optional[dict], connections: Optional[list]) -> Optional[dict]:
+    """`extra` for _write_summary_min_file with the --connections records added.
+
+    FORK DIVERGENCE (docs/connections.md): the per-task records of a
+    --connections call ride in the summary of a run that did nothing too."""
+    if connections is None:
+        return extra
+    return dict(extra or {}, connections=connections)
+
+
 def _write_summary_min_file(json_out: Optional[str], status: str,
                             extra: Optional[dict] = None) -> None:
     """Write the --json-out file for a run that legitimately did nothing.
@@ -849,6 +859,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 neckdown_length: float = 2.5,
                 neckdown_taper_length: float = 0.5,
                 json_out: Optional[str] = None,
+                # FORK DIVERGENCE (docs/connections.md): the parsed --connections
+                # file; forwarded to the reconcile sub-runs with the rest.
+                connections: Optional[list] = None,
                 clearance: float = defaults.CLEARANCE,
                 via_size: float = defaults.VIA_SIZE,
                 via_drill: float = defaults.VIA_DRILL,
@@ -1195,6 +1208,49 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     from kicad_parser import canonicalize_pcb_data_order
     canonicalize_pcb_data_order(pcb_data)
 
+    # FORK DIVERGENCE (docs/connections.md): --connections restricts each named
+    # net, for this call, to the pads of its tasks and the copper joined to
+    # them; the rest of the net moves to a protected private obstacle net. An
+    # in-process reconcile sub-run gets this run's pcb_data, already split.
+    _conn_tasks, _conn_chosen, _conn_private = None, {}, {}
+    if connections is not None and not getattr(pcb_data, 'connections_private_names', None):
+        import connections as _conn
+        from list_nets import board_constraint as _bc_conn
+        _conn_layers = list(layers or DEFAULT_4_LAYER_STACK)
+        if layer_costs:
+            _conn_layers = [l for l, c in zip(_conn_layers, layer_costs) if c >= 0]
+        _conn_board = input_file or getattr(pcb_data, 'source_path', '') or ''
+        _conn_min = (_bc_conn(_conn_board, 'min_track_width') if _conn_board else None) or 0.0
+        _conn_tasks = _conn.resolve(connections, pcb_data, _conn_layers, _conn_min)
+        _conn.judge_joined(pcb_data, _conn_tasks)
+        _conn_chosen = _conn.choose_groups(_conn_tasks)
+        _conn_private = _conn.split_nets(
+            pcb_data, _conn_chosen,
+            also={t.net_id for t in _conn_tasks if t.status != 'refused'})
+        print(f"--connections: {len(_conn_tasks)} task(s); routing "
+              f"{sum(len(g) for g in _conn_chosen.values())} on "
+              f"{len(_conn_chosen)} net(s); statuses so far: "
+              + ', '.join(f"{k}={v}" for k, v in sorted(
+                  {st: sum(1 for t in _conn_tasks if (t.status or 'open') == st)
+                   for st in {(t.status or 'open') for t in _conn_tasks}}.items())))
+
+    def _conn_records(pcb_after=None, routed=True):
+        """The `connections` summary records, measured on pcb_after (the board
+        the call ships), or None outside a --connections call."""
+        if _conn_tasks is None:
+            return None
+        import connections as _conn
+        try:
+            _conn.finish(pcb_after if pcb_after is not None else pcb_data,
+                         _conn_tasks, _conn_chosen, routed)
+        except Exception as _ce:                                 # noqa: BLE001
+            print(f"  WARNING: --connections measurement failed "
+                  f"({type(_ce).__name__}: {_ce}); unmeasured tasks read failed")
+            for _t in _conn_tasks:
+                if _t.status is None:
+                    _t.status = 'failed'
+        return _conn.records(_conn_tasks)
+
     # Cross-class clearance: when no map was passed (net_clearances is None -- e.g.
     # the plane routers reroute ripped nets by calling batch_route directly), AUTO-
     # READ the board's non-Default netclasses from the sibling .kicad_pro. #439:
@@ -1220,6 +1276,13 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             print(f"Warning: could not auto-read netclass clearances ({_e}); "
                   f"routing at the uniform clearance.")
             net_clearances = None
+    # FORK DIVERGENCE (docs/connections.md): each private net is its net's
+    # obstacle, at that net's class clearance.
+    if _conn_private and net_clearances is not None:
+        net_clearances = dict(net_clearances)
+        for _cn, _cp in _conn_private.items():
+            if _cn in net_clearances:
+                net_clearances[_cp] = net_clearances[_cn]
 
     # #435 companion: when --track-width was OMITTED, route each net at its OWN
     # netclass track width (a controlled-impedance signal class or a power class,
@@ -1628,6 +1691,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         for _nid, _bl in (_per_layer or {}).items():
             if _nid not in net_layer_widths_map:
                 net_layer_widths_map[_nid] = dict(_bl)
+    # FORK DIVERGENCE (docs/connections.md): each routed net's task widths, per
+    # layer, over its class and rule widths.
+    for _cn, _cg in _conn_chosen.items():
+        net_layer_widths_map[_cn] = dict(_cg[0].widths)
     if net_layer_widths_map:
         config_kwargs['net_layer_widths'] = net_layer_widths_map
     # #530 decision 4: per-net via geometry -> config.net_via_sizes (the
@@ -1762,6 +1829,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                     print(f"  {width}mm: {', '.join(names)}")
                 else:
                     print(f"  {width}mm: {len(names)} nets ({', '.join(names[:3])}...)")
+    # FORK DIVERGENCE (docs/connections.md): a power width would outrank the
+    # task widths (routing_config.py get_net_track_width).
+    for _cn in _conn_chosen:
+        (getattr(config, 'power_net_widths', None) or {}).pop(_cn, None)
 
     # Find net IDs and filter already-routed nets
     net_ids = resolve_net_ids(pcb_data, net_names)
@@ -1807,7 +1878,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         print("No valid nets to route!")
         if final_reconcile:
             _emit_summary_min(status='no_valid_nets')
-        _write_summary_min_file(json_out, 'no_valid_nets')
+        _write_summary_min_file(json_out, 'no_valid_nets',
+                                _summary_min_extra(
+                                    None, _conn_records(routed=False) if json_out else None))
         if return_results:
             return 0, 0, 0.0, _empty_results_data()
         _write_passthrough_output(input_file, output_file)
@@ -1952,7 +2025,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         if final_reconcile:
             _emit_summary_min(status='already_connected')
         _write_summary_min_file(json_out, 'already_connected',
-                                {'keep_away': _ka_done} if _ka_done else None)
+                                _summary_min_extra(
+                                    {'keep_away': _ka_done} if _ka_done else None,
+                                    _conn_records(routed=False) if json_out else None))
         # The sweep runs HERE too (#659). The fragment gate diverts a net whose
         # extra fragments are all pad-less to this sweep instead of the router,
         # so a step whose WHOLE scope is diverted lands on this early return --
@@ -6879,6 +6954,20 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             # #1146: likewise the keep-away reading of the shipped board.
             if _merged is not None and _ka_shipped is not None:
                 _merged['keep_away'] = _ka_shipped
+            # FORK DIVERGENCE (docs/connections.md): per-task records, measured
+            # on the board this call wrote. The whole-net keys above still
+            # describe whole nets.
+            if _conn_tasks is not None:
+                _conn_after = None
+                if output_file and os.path.isfile(output_file):
+                    try:
+                        _conn_after = parse_kicad_pcb(output_file)
+                    except Exception as _cpe:                    # noqa: BLE001
+                        print(f"  WARNING: --connections could not re-read "
+                              f"{output_file} ({_cpe}); measuring in memory")
+                if _merged is None:
+                    _merged = {}
+                _merged['connections'] = _conn_records(_conn_after, routed=True)
             # ALL-OR-NOTHING (#830). This was `open(json_out,'w')` +
             # `json.dump`, which truncates the destination before the first
             # chunk is encoded and then STREAMS into it -- so a failure partway
@@ -7347,6 +7436,8 @@ For differential pair routing, use route_diff.py:
                         help=f"Penalty for direction changes, encourages straighter paths (default: {defaults.TURN_COST})")
     parser.add_argument("--direction-preference-cost", type=int, default=defaults.DIRECTION_PREFERENCE_COST,
                         help=f"Penalty for non-preferred layer direction, 0=disabled (default: {defaults.DIRECTION_PREFERENCE_COST})")
+    parser.add_argument("--connections", metavar="FILE",
+                        help="route only these pad pairs, each at its width per layer (placemat fork, docs/connections.md)")
     parser.add_argument("--bus", action="store_true",
                         help="Enable auto-detection and routing of bus groups (nets with clustered endpoints)")
     parser.add_argument("--bus-detection-radius", type=float, default=defaults.BUS_DETECTION_RADIUS,
@@ -7690,6 +7781,21 @@ For differential pair routing, use route_diff.py:
             args.output_file = base + '_routed' + ext
             print(f"Output file: {args.output_file}")
 
+    # FORK DIVERGENCE (docs/connections.md): --connections names its own nets.
+    _connections_raw = None
+    if args.connections:
+        if args.nets or args.net_patterns or args.component or args.group or args.undo:
+            parser.error("--connections names its own nets; it cannot be "
+                         "combined with --nets, net patterns, --component, --group or --undo")
+        if args.power_nets or args.power_nets_widths:
+            parser.error("--connections sets each task's width; it cannot be "
+                         "combined with --power-nets or --power-nets-widths")
+        import connections as _conn_main
+        try:
+            _connections_raw = _conn_main.read_file(args.connections)
+        except (OSError, ValueError) as _ce:
+            parser.error(f"--connections {args.connections}: {_ce}")
+
     # Load PCB to expand wildcards
     print(f"Loading {args.input_file} to expand net patterns...")
     pcb_data = parse_kicad_pcb(args.input_file)
@@ -7774,12 +7880,16 @@ For differential pair routing, use route_diff.py:
 
     # Default to "*" (all nets) if no patterns and no component specified
     _scope_defaulted = False
-    if not all_patterns and not component_patterns and not args.group:
+    if (not all_patterns and not component_patterns and not args.group
+            and _connections_raw is None):
         all_patterns = ["*"]
         _scope_defaulted = True   # nobody asked for "everything"; --undo checks this
 
     # Get nets from patterns and/or component
-    if all_patterns:
+    if _connections_raw is not None:
+        # FORK DIVERGENCE: the distinct task nets, as literal names.
+        net_names = list(dict.fromkeys(t['net'] for t in _connections_raw))
+    elif all_patterns:
         net_names = expand_net_patterns(pcb_data, all_patterns)
     else:
         net_names = []  # Will be populated by component filter below
@@ -8118,6 +8228,7 @@ For differential pair routing, use route_diff.py:
                 schematic_dir=args.schematic_dir,
                 layer_costs=args.layer_costs,
                 add_teardrops=args.add_teardrops,
+                connections=_connections_raw,
                 collect_stats=args.stats)
 
     if args.preview:
