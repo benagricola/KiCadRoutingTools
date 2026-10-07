@@ -270,7 +270,8 @@ def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
         # must never come from a candidate's rewritten project or ledger.
         tier, overrides = fab_tier_from_args(args)
         floors = fab_floor_min(count_copper_layers_in_file(str(original)), tier, overrides)
-        fallback = {'clearance': floors['clearance'], 'tier': tier,
+        fallback = {'clearance': floors['clearance'], 'size_floors': {
+                    k: floors[k] for k in ('track_width', 'via_diameter', 'via_drill', 'annular')}, 'tier': tier,
                     'overrides': overrides, 'source': 'original_invocation_fab_floor_min'}
         if getattr(args, 'escalation', None) == 'off':
             fallback['clearance'] = max(fallback['clearance'], args.clearance)
@@ -490,6 +491,19 @@ def grade_request(request):
     if original_rules.unsupported() or original_rules.notes:
         unproved.append('original_rules_unsupported')
     defaults = request.get('manufacturing_defaults') or {}
+    size_floors = defaults.get('size_floors') or {}
+    for kind, key, item_type in (('track_width', 'track_width', 'track'),
+                                ('via_diameter', 'via_diameter', 'via'),
+                                ('hole_size', 'via_drill', 'via'),
+                                ('annular_width', 'annular', 'via')):
+        permitted = size_floors.get(key)
+        if permitted is None:
+            continue
+        if any(value is not None and value < permitted - 1e-9
+               for nid in before.nets
+               for layer in before.board_info.copper_layers
+               for value in [original_rules.floor(kind, nid, layer, type=item_type)]):
+            unproved.append('original_size_floor_below_factory_' + key)
     if defaults.get('tier', 'auto') != 'auto' or defaults.get('overrides'):
         unproved.append('nondefault_factory_settings_unproved')
     if request.get('clearance_unproved'):

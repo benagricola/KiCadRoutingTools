@@ -292,6 +292,9 @@ def test_grade_preserves_original_rule_floors_without_promoting_nominal_width():
              patch.object(board_score, 'quality', return_value={'vias': 0, 'copper_mm': 1, 'segments': 1}):
             result = candidates.grade_request(request)
             assert result['known'] and not result['widths_unknown'], result
+            request['manufacturing_defaults']['size_floors'] = {'track_width': 0.15}
+            assert 'original_size_floor_below_factory_track_width' in candidates.grade_request(request)['unproved']
+            request['manufacturing_defaults'].pop('size_floors')
             request['explicit_width'] = 0.3
             assert candidates.grade_request(request)['widths_unknown']
             request['clearance_unproved'] = True
