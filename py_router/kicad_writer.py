@@ -4,9 +4,9 @@ KiCad PCB Writer - Writes routing results to .kicad_pcb files.
 from __future__ import annotations
 
 import re
-import uuid
 from typing import List, Dict, Tuple, Optional
 
+import item_uuid  # FORK DIVERGENCE: uuids the same in every run (item_uuid.py)
 from kicad_parser import Pad, is_kicad_10, _unescape_kicad_string
 from routing_utils import pos_key, POSITION_DECIMALS
 
@@ -329,20 +329,20 @@ def generate_segment_sexpr(start: Tuple[float, float], end: Tuple[float, float],
         net_name: If provided, output KiCad 10 format (net "name") instead of (net id).
     """
     net_str = f'(net "{_escape_net_name(net_name)}")' if net_name is not None else f'(net {net_id})'
-    return f'''	(segment
+    return item_uuid.stamp(f'''	(segment
 		(start {start[0]:.6f} {start[1]:.6f})
 		(end {end[0]:.6f} {end[1]:.6f})
 		(width {width})
 		(layer "{layer}")
 		{net_str}
-		(uuid "{uuid.uuid4()}")
-	)'''
+		(uuid "{item_uuid.PLACEHOLDER}")
+	)''')
 
 
 def generate_gr_line_sexpr(start: Tuple[float, float], end: Tuple[float, float],
                            width: float, layer: str) -> str:
     """Generate KiCad S-expression for a graphic line (for non-copper layers)."""
-    return f'''	(gr_line
+    return item_uuid.stamp(f'''	(gr_line
 		(start {start[0]:.6f} {start[1]:.6f})
 		(end {end[0]:.6f} {end[1]:.6f})
 		(stroke
@@ -350,8 +350,8 @@ def generate_gr_line_sexpr(start: Tuple[float, float], end: Tuple[float, float],
 			(type solid)
 		)
 		(layer "{layer}")
-		(uuid "{uuid.uuid4()}")
-	)'''
+		(uuid "{item_uuid.PLACEHOLDER}")
+	)''')
 
 
 DEFAULT_VIA_TENTING = {'tenting': '(front yes) (back yes)'}
@@ -572,30 +572,30 @@ def generate_via_sexpr(x: float, y: float, size: float, drill: float,
     # KiCad 10 adds structured tenting/covering/plugging fields after layers
     tenting_str = via_protection_sexpr(tenting_attrs, net_name,
                                       inherit_when_unspecified)
-    return f'''	(via
+    return item_uuid.stamp(f'''	(via
 		(at {x:.6f} {y:.6f})
 		(size {size})
 		(drill {drill})
 		(layers "{layers_str}"){tenting_str}{free_str}
 		{net_str}
-		(uuid "{uuid.uuid4()}")
-	)'''
+		(uuid "{item_uuid.PLACEHOLDER}")
+	)''')
 
 
 def generate_gr_text_sexpr(text: str, x: float, y: float, layer: str,
                            size: float = 0.5, angle: float = 0) -> str:
     """Generate KiCad S-expression for a graphic text label."""
-    return f'''	(gr_text "{text}"
+    return item_uuid.stamp(f'''	(gr_text "{text}"
 		(at {x:.6f} {y:.6f} {angle})
 		(layer "{layer}")
-		(uuid "{uuid.uuid4()}")
+		(uuid "{item_uuid.PLACEHOLDER}")
 		(effects
 			(font
 				(size {size} {size})
 				(thickness 0.1)
 			)
 		)
-	)'''
+	)''')
 
 
 def _polygon_area(poly) -> float:
@@ -875,10 +875,10 @@ def generate_zone_sexpr(
 
     priority_str = f'\n\t\t(priority {int(priority)})' if priority else ''
 
-    return f'''	(zone
+    return item_uuid.stamp(f'''	(zone
 		{net_lines}
 		(layer "{layer}")
-		(uuid "{uuid.uuid4()}")
+		(uuid "{item_uuid.PLACEHOLDER}")
 		(hatch edge 0.5){priority_str}
 		{connect_pads_str}
 		(min_thickness {min_thickness}){extra_zone_props}
@@ -888,7 +888,7 @@ def generate_zone_sexpr(
 				{pts_str}
 			)
 		)
-	)'''
+	)''')
 
 
 def npth_slot_keepout_polygons(pcb_data, dilate: float,
@@ -946,10 +946,10 @@ def generate_keepout_zone_sexpr(layers: List[str],
     pts_str = " ".join(f"(xy {x:.6f} {y:.6f})" for x, y in polygon_points)
     layers_str = " ".join(f'"{l}"' for l in layers)
     net_lines = '(net "")' if use_net_name else '(net 0)\n\t\t(net_name "")'
-    return f'''	(zone
+    return item_uuid.stamp(f'''	(zone
 		{net_lines}
 		(layers {layers_str})
-		(uuid "{uuid.uuid4()}")
+		(uuid "{item_uuid.PLACEHOLDER}")
 		(name "{name}")
 		(hatch edge 0.5)
 		(connect_pads
@@ -972,7 +972,7 @@ def generate_keepout_zone_sexpr(layers: List[str],
 				{pts_str}
 			)
 		)
-	)'''
+	)''')
 
 
 def add_tracks_to_pcb(input_path: str, output_path: str, tracks: List[Dict],
