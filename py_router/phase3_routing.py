@@ -694,7 +694,8 @@ def run_phase3_tap_routing(
                     diff_pair_by_net_id, results, track_proximity_cache, layer_map,
                     base_obstacles, gnd_net_id, phase3_ripped_nets,
                     global_tap_offset, total_tap_edges, global_tap_failed,
-                    obstacle_cache=obstacle_cache
+                    obstacle_cache=obstacle_cache,
+                    tap_obstacles=obstacles  # FORK DIVERGENCE: pocket walls first
                 )
                 if retry_result is not None:
                     completed_result = retry_result
@@ -838,7 +839,8 @@ def try_phase3_ripup(
     obstacle_cache=None,
     reroute_depth: int = 0,
     ancestor_net_ids: frozenset = frozenset(),
-    rip_sinks: tuple = ()
+    rip_sinks: tuple = (),
+    tap_obstacles=None
 ):
     """
     Try progressive rip-up and retry for failed Phase 3 tap routes.
@@ -850,6 +852,10 @@ def try_phase3_ripup(
     rip_sinks (#354): tuple of set()s owned by ANCESTOR rip-up frames. Every
     net id ripped in this frame or below is added to all of them, so each
     frame knows its full nested rip TREE (not just its direct victims).
+
+    tap_obstacles: the obstacle map the failed tap edges were routed on; with
+    it, the nets walling a boxed-in target are tried first (pocket_walls.py,
+    FORK DIVERGENCE).
     """
     net_name = pcb_data.nets[net_id].name if net_id in pcb_data.nets else f"net_{net_id}"
 
@@ -943,7 +949,25 @@ def try_phase3_ripup(
                   config=config, pcb_data=pcb_data)
     record_frontier_blocking(state, net_id, blockers, "phase3")
 
-    if not blockers:
+    # FORK DIVERGENCE (placemat fork, docs/fork-divergences.md "Rip ladder:
+    # pocket walls first"): a failed edge whose target is boxed in names the
+    # nets whose copper bounds its pocket (a flood from the target on the tap
+    # map at the net's track margins); they go ahead of the ranking below,
+    # smallest pocket first, each pocket's nets by wall cells owned. The
+    # merged ranking let a larger failure region's walls outrank a small
+    # pocket's, and the ladder spent its rips without opening the pad.
+    _pockets = []
+    if tap_obstacles is not None:
+        from pocket_walls import pocket_wall_blockers
+        _pockets = pocket_wall_blockers(
+            failed_edge_blocking, tap_obstacles, pcb_data, config, net_id,
+            routed_net_paths, exclude_ids, obstacle_cache=obstacle_cache)
+        for _p in _pockets:
+            print(f"    Pocket at ({_p.target_xy[0]:.2f}, {_p.target_xy[1]:.2f}): "
+                  f"{_p.flood.cells} cells, walled by "
+                  f"{[b.net_name for b in _p.walls]}")
+
+    if not blockers and not _pockets:
         return None
 
     # Filter to rippable blockers
@@ -952,7 +976,7 @@ def try_phase3_ripup(
         pcb_data=pcb_data, context="phase3 tap cascade"
     )
 
-    if not rippable_blockers:
+    if not rippable_blockers and not _pockets:
         return None
 
     # mincut probe in the cascade (advisory, like the SE ladder): NET-level
@@ -978,6 +1002,29 @@ def try_phase3_ripup(
         elif not _mc_feasible:
             print(f"    MINCUT probe (net-level): no path with rippable "
                   f"copper soft-costed -- keeping per-edge ranking")
+
+    # FORK DIVERGENCE (see the pocket flood above): pocket walls first.
+    if _pockets:
+        _pocket_list = [b for _p in _pockets for b in _p.walls]
+        _pocket_rippable, _ = filter_rippable_blockers(
+            _pocket_list, routed_results, diff_pair_by_net_id,
+            get_canonical_net_id, pcb_data=pcb_data,
+            context="phase3 tap cascade")
+        _front, _front_ids = [], set()
+        for b in _pocket_rippable:
+            _c = get_canonical_net_id(b.net_id, diff_pair_by_net_id)
+            if _c not in _front_ids:
+                _front_ids.add(_c)
+                _front.append(b)
+        if _front:
+            rippable_blockers = _front + [
+                b for b in rippable_blockers
+                if get_canonical_net_id(b.net_id, diff_pair_by_net_id)
+                not in _front_ids]
+            seen_canonical_ids |= _front_ids
+            print(f"    Pocket walls first: {[b.net_name for b in _front]}")
+    if not rippable_blockers:
+        return None
 
     # Progressive rip-up: try N=1, then N=2, etc up to max_rip_up_count
     ripped_items = []  # Track nets ripped in this attempt
@@ -1783,7 +1830,8 @@ def _reroute_phase3_ripped_nets(
                                 base_obstacles, gnd_net_id, [],  # unused parameter
                                 reroute_depth=reroute_depth + 1,
                                 ancestor_net_ids=ancestor_net_ids,
-                                rip_sinks=rip_sinks
+                                rip_sinks=rip_sinks,
+                                tap_obstacles=tap_obstacles  # FORK DIVERGENCE: pocket walls first
                             )
 
                             if retry_result is not None:
