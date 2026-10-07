@@ -35,6 +35,7 @@ for _p in (_ROOT, os.path.join(_ROOT, 'py_router')):
 from net_rescue import _leg_clear, _via_site_clear
 from protected_nets import graphic_net_names, protection_map
 from kicad_parser import Segment
+from routing_config import GridRouteConfig
 
 FAILURES = []
 
@@ -45,8 +46,9 @@ def check(cond, label):
         FAILURES.append(label)
 
 
-CONFIG = SimpleNamespace(clearance=0.2, via_size=0.6, via_drill=0.3,
-                         hole_to_hole_clearance=0.2)
+CONFIG = GridRouteConfig(clearance=0.2, track_width=0.2, via_size=0.6,
+                         via_drill=0.3, layers=['F.Cu', 'B.Cu'], grid_step=0.05)
+CONFIG.hole_to_hole_clearance = 0.2
 
 
 def _board(net_id):

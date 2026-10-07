@@ -1313,7 +1313,8 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                                       [(_sg7.start_x, _sg7.start_y),
                                        (_sg7.end_x, _sg7.end_y)],
                                       _sg7.layer, _sg7.width,
-                                      config.clearance, net_id):
+                                      config.clearance, net_id,
+                                      config=config):
                         _short_tap = 'seg'
                         break
                 if _short_tap is None:
