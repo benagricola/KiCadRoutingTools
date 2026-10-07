@@ -75,7 +75,7 @@ def freeze_scope(requested_scope, candidates, tasks=None):
     return scope, identity
 
 
-def child_argv(argv, args, input_file, output_file, summary_file, parser, task_file=None):
+def child_argv(argv, args, input_file, output_file, summary_file, parser, frozen_files=None):
     """Rewrite by argparse argument positions, never by matching token values."""
     out, positional = [], 0
     i = 0
@@ -100,8 +100,8 @@ def child_argv(argv, args, input_file, output_file, summary_file, parser, task_f
                 while j < len(argv) and parser._parse_optional(argv[j]) is None:
                     j += 1
                 count = j - i - 1
-            if action.dest == 'connections' and task_file is not None:
-                out.extend([flag, str(task_file)])
+            if action.dest in (frozen_files or {}):
+                out.extend([flag, str(frozen_files[action.dest])])
             elif flag not in ('--output', '--json-out'):
                 out.extend(argv[i:i + count + 1])
             i += count + 1
@@ -121,6 +121,17 @@ def child_argv(argv, args, input_file, output_file, summary_file, parser, task_f
         i += 1
     out.extend(['--output', str(output_file), '--json-out', str(summary_file)])
     return out
+
+
+def explicit_fields(argv, parser):
+    fields = set()
+    for token in argv:
+        if token == '--':
+            break
+        parsed = parser._parse_optional(token)
+        if parsed is not None and parsed[0] is not None:
+            fields.add(parsed[0].dest)
+    return fields
 
 
 def run_child(command, log, env, deadline):
@@ -228,6 +239,7 @@ def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
         return 2
     env = dict(os.environ, KRT_INTERNAL_ROUTE_CANDIDATE='1',
                KRT_INTERNAL_POCKET_WALLS='0')
+    env.pop('REDO_MANIFEST', None)  # Parent records the original invocation once.
     provenance = {'policy': 'legacy_then_one_pocket', 'budget_s': budget,
                   'max_candidates': 2, 'attempts': 0, 'selected': 'legacy',
                   'grades': {}}
@@ -240,10 +252,16 @@ def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
             source = Path(args.input_file).with_suffix(suffix)
             if source.is_file():
                 shutil.copy2(source, original.with_suffix(suffix))
-        task_file = None
-        if getattr(args, 'connections', None):
-            task_file = original.parent / 'connections.json'
-            shutil.copy2(args.connections, task_file)
+        frozen_files = {}
+        provenance['constraint_files'] = {}
+        for field in ('connections', 'net_clearances'):
+            source = getattr(args, field, None)
+            if source:
+                frozen = original.parent / (field + Path(source).suffix)
+                shutil.copy2(source, frozen)
+                frozen_files[field] = frozen
+                provenance['constraint_files'][field] = hashlib.sha256(frozen.read_bytes()).hexdigest()
+        task_file = frozen_files.get('connections')
         output_seed = root / 'output_seed'
         output_seed.mkdir()
         for suffix in ARTIFACT_SUFFIXES[1:]:
@@ -263,7 +281,7 @@ def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
             if name == 'pocket':
                 env['KRT_INTERNAL_POCKET_WALLS'] = '1'
             command = [sys.executable, str(route_file)] + child_argv(
-                argv, args, original, board, summary_file, parser, task_file)
+                argv, args, original, board, summary_file, parser, frozen_files)
             provenance['attempts'] += 1
             try:
                 rc = run_child(command, log, env, deadline)
@@ -291,6 +309,7 @@ def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
                                               else 'legacy_unmeasured_or_failed')
                     break
         selected = candidates[0]
+        supplied = explicit_fields(argv, parser)
         if len(candidates) == 2:
             frozen_scope, scope_identity = freeze_scope(requested_scope, candidates,
                 load_json(task_file) if task_file else None)
@@ -300,14 +319,13 @@ def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
                 request = candidate['board'].parent / 'request.json'
                 request.write_text(json.dumps({'board': str(candidate['board']),
                     'input': str(original), 'summary': candidate['summary'], 'scope': frozen_scope,
-                    'explicit_width': args.track_width if '--track-width' in argv
-                        or any(t.startswith('--track-width=') for t in argv) else None,
+                    'explicit_width': args.track_width if 'track_width' in supplied else None,
                     'connections': str(task_file) if task_file else None,
                     'power_nets': getattr(args, 'power_nets', None),
                     'power_nets_widths': getattr(args, 'power_nets_widths', None),
                     'impedance': getattr(args, 'impedance', None),
-                    'via_size': args.via_size if '--via-size' in argv or any(t.startswith('--via-size=') for t in argv) else None,
-                    'via_drill': args.via_drill if '--via-drill' in argv or any(t.startswith('--via-drill=') for t in argv) else None}), encoding='utf-8')
+                    'via_size': args.via_size if 'via_size' in supplied else None,
+                    'via_drill': args.via_drill if 'via_drill' in supplied else None}), encoding='utf-8')
                 try:
                     rc = run_child([sys.executable, __file__, '--grade', str(request),
                                     str(grade_file)], grade_file.with_suffix('.log'),
