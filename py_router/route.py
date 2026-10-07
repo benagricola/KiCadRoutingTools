@@ -1225,95 +1225,16 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # each with a different width), not the single Default-class width. Explicit
     # --track-width is honored verbatim for all nets (this stays empty). Floored at
     # the fab track minimum; a manual --power-nets-widths override still wins.
-    net_track_widths = {}
-    netclass_width_floors = {}
-    if input_file and os.path.isfile(input_file):
-        try:
-            from list_nets import net_track_width_map_by_id, fab_floors
-            from fab_tiers import fab_floors as _tier_floors, \
-                warn_fab_escalation as _wfe435
-            _ncl = len(getattr(pcb_data.board_info, 'copper_layers', None)
-                       or []) or 4
-            _twfloor = fab_floors(_ncl).get('track_width', 0.0)
-            # Clamp at the ADVANCED-tier floor, not the standard one
-            # (2026-08-06): a netclass width is DESIGNER INTENT and may
-            # legitimately sit between the two tiers (ecp5 /PF37- at
-            # 0.0762 vs standard 0.0889 -- the GUI honored it and routed;
-            # the old standard-floor clamp silently widened it CLI-side, a
-            # cross-front divergence AND the reason no in-run ladder could
-            # reach the width that closes the net). Escalation floor rule:
-            # min(nominal, fab_track, netclass width), never below the
-            # advanced tier; dipping below standard prints the same fab
-            # warning the via rungs use.
-            # The DEEPEST rung of the ACTIVE tier: advanced under --fab-tier
-            # auto, the tier's own floor when it is hard (#857).
-            from fab_tiers import fab_floor_min as _tier_min
-            _adv_tw = _tier_min(_ncl).get('track_width', _twfloor)
-            net_track_widths = {}
-            # #530: the per-net DRAW width is the resolver's `opt` -- the
-            # aggregate net class's track_width, overridden by any .kicad_dru
-            # (constraint track_width (opt ...)) that matches the net, clamped
-            # into the rule's min/max -- exactly what KiCad's own router draws
-            # under "use netclass values". Nets whose width equals the Default
-            # class's carry no entry (they route at config.track_width, as
-            # before); a rule with layer-scoped opts fills net_layer_widths.
-            _per_net, _per_layer, _per_net_via = {}, {}, {}
-            try:
-                from design_rules import DesignRules as _DR
-                _dr = _DR.from_project(
-                    pcb_data, input_file,
-                    fab_floor=fab_floors(_ncl),
-                    copper_layers=list(getattr(pcb_data.board_info, 'copper_layers', None)
-                                       or (layers or [])))
-                _dflt_w = _dr.classes.get('Default', {}).get('track_width')
-                _cu = [l for l in (getattr(pcb_data.board_info, 'copper_layers', None)
-                                   or (layers or [])) if str(l).endswith('.Cu')]
-                for nid in pcb_data.nets:
-                    if nid == 0:
-                        continue
-                    w_all = _dr.draw_size('track_width', nid)
-                    by_layer = {l: _dr.draw_size('track_width', nid, l) for l in _cu}
-                    by_layer = {l: w for l, w in by_layer.items() if w is not None}
-                    if by_layer and len(set(by_layer.values())) > 1:
-                        _per_layer[nid] = by_layer
-                    if w_all is not None and (_dflt_w is None or abs(w_all - _dflt_w) > 1e-9
-                                              or nid in _per_layer):
-                        _per_net[nid] = w_all
-                    # #530 decision 4: the net's own VIA draw size (class
-                    # via_diameter/via_drill, a rule's via_diameter/hole_size
-                    # opt, clamped into the rule's min/max), only when the
-                    # operator gave no --via-size/--via-drill.
-                    if via_from_class:
-                        _vd = _dr.draw_size('via_diameter', nid, default=None)
-                        _vh = _dr.draw_size('hole_size', nid, default=None)
-                        if _vd and _vh and _vh < _vd and (
-                                abs(_vd - via_size) > 1e-9 or abs(_vh - via_drill) > 1e-9):
-                            _per_net_via[nid] = (round(_vd, 4), round(_vh, 4))
-            except Exception as _dre:                          # noqa: BLE001
-                print(f"Warning: design-rule widths unavailable ({_dre}); "
-                      f"falling back to the net-class map.")
-                _per_net = dict(net_track_width_map_by_id(
-                    input_file, {nid: n.name for nid, n in pcb_data.nets.items()}))
-            for nid, w in _per_net.items():
-                w2 = max(w, _adv_tw)
-                if w2 < _twfloor - 1e-9:
-                    _wfe435(f"netclass width net_{nid}")
-                netclass_width_floors[nid] = w2
-            # Nominal per-net widths only when no explicit --track-width
-            # (the operator's flag wins for ROUTING); the floors above are
-            # for the escalation ladders regardless. --impedance derives
-            # width per layer, so netclass widths must not override it
-            # (#610: this guard lives HERE now, so track_width_from_class
-            # itself purely means "--track-width omitted" and can drive the
-            # impedance width floor below).
-            if track_width_from_class and impedance is None:
-                net_track_widths = dict(netclass_width_floors)
-            if net_track_widths:
-                print(f"Auto-read netclass track widths for {len(net_track_widths)} "
-                      f"non-Default net(s) (#435 single-ended companion).")
-        except Exception as _e:
-            print(f"Warning: could not auto-read netclass track widths ({_e}).")
-            net_track_widths = {}
+    # Shared nominal-policy resolver; read-only consumers use this exact
+    # class/rule/fabrication resolution rather than reconstructing it.
+    from nominal_width_policy import class_width_inputs
+    _width_inputs = class_width_inputs(
+        pcb_data, input_file, layers, track_width_from_class=track_width_from_class,
+        impedance=impedance, via_from_class=via_from_class, via_size=via_size, via_drill=via_drill)
+    net_track_widths = _width_inputs['net_track_widths']
+    netclass_width_floors = _width_inputs['netclass_width_floors']
+    _per_layer = _width_inputs['net_layer_widths']
+    _per_net_via = _width_inputs['net_via_sizes']
 
     # #600: cleared at the START of every run so a previous call's verdict can
     # never leak into this one (this is a function attribute, and the GUI calls
