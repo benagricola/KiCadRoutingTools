@@ -18,3 +18,8 @@
 - Why: bounded rip attempts should open a trapped endpoint before spending
   their budget on unrelated copper.
 - Test: tests/test_rip_pocket_walls_first.py.
+
+The boundary attribution is advisory and incomplete: a corner-clipping refusal
+records its destination cell rather than every neighbouring guard cell, and
+blocked via rungs are not attributed to copper owners. Either can miss wall
+nets. Open or unattributed regions use the existing frontier-ranked ladder.

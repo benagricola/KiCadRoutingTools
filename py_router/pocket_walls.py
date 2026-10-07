@@ -35,7 +35,9 @@ DIRECTIONS = ((1, 0), (-1, 0), (0, 1), (0, -1),
 class PocketFlood:
     """A closed region reachable from a target: `cells` grid states (gx, gy,
     layer) in it, and `wall` the blocked cells round it (each blocked cell
-    within a refused step's track margin, sorted)."""
+    within a refused step's track margin, sorted). Corner-clipping steps
+    record the destination as an attribution hint; via vetoes add no wall
+    cells, so the set is not a complete list of obstacle owners."""
     cells: int
     wall: Tuple[Cell, ...]
 
