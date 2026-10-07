@@ -94,6 +94,35 @@ def t_summary(tmp):
           [g['name'] for g in g3] == ['stated_0'] and sorted(g3[0]['nets']) == ['SCL', 'SDA'], g3)
 
 
+def t_connection_bundle(tmp):
+    """Per-layer connection widths retain the stated bus call boundary."""
+    from kicad_parser import parse_kicad_pcb
+    src, out, js, tasks = [os.path.join(tmp, 'bundle' + suffix) for suffix in
+                           ('.kicad_pcb', '_out.kicad_pcb', '.json', '_tasks.json')]
+    _board(src)
+    widths = {'F.Cu': 0.25, 'B.Cu': 0.3}
+    with open(tasks, 'w', encoding='utf-8') as stream:
+        json.dump([{'net': name, 'from': {'ref': 'U%d' % i, 'pad': '1'},
+                    'to': {'ref': 'V%d' % i, 'pad': '1'}, 'widths': widths}
+                   for i, name in enumerate(('SDA', 'SCL'))], stream)
+    rc, log = _route(src, out, js, '--connections', tasks, '--bus-nets', 'SDA', 'SCL')
+    check('connection bus invocation ran', rc == 0 and 'Traceback' not in log, log[-1000:] if rc else '')
+    if rc:
+        return
+    with open(js, encoding='utf-8') as stream:
+        summary = json.load(stream)
+    groups = summary.get('bus_groups') or []
+    check('connection tasks remain one stated bus', len(groups) == 1 and
+          groups[0]['origin'] == 'stated' and sorted(groups[0]['nets']) == ['SCL', 'SDA'], groups)
+    records = summary.get('connections') or []
+    check('both bus pad obligations are joined', len(records) == 2 and
+          all(r.get('joined') and r.get('status') == 'routed' for r in records), records)
+    board = parse_kicad_pcb(out)
+    routed = [segment for segment in board.segments if board.nets[segment.net_id].name in ('SDA', 'SCL')]
+    check('bundle copper uses its per-layer task widths', bool(routed) and
+          all(abs(segment.width - widths[segment.layer]) < 1e-6 for segment in routed))
+
+
 def t_memory(tmp):
     from kicad_parser import parse_kicad_pcb
     from routing_config import GridRouteConfig
@@ -140,6 +169,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         t_memory(tmp)
         t_summary(tmp)
+        t_connection_bundle(tmp)
     print(f"\n{len(fails)} failure(s)" if fails else "\nall passed")
     return 1 if fails else 0
 
