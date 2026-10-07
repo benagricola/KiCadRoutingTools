@@ -69,7 +69,9 @@ def t_summary(tmp):
     for tag, extra in (('stated', ['--nets', 'SDA', 'SCL', '--bus-nets', 'SDA', 'SCL']),
                        ('plain', ['--nets', 'SDA', 'SCL', '--bus']),
                        ('two', ['--nets', 'SDA', 'SCL', 'D0', 'D[[]0]', '--bus-nets', 'SDA', 'SCL',
-                                '--bus-nets', 'D0', 'D[[]0]'])):
+                                '--bus-nets', 'D0', 'D[[]0]']),
+                       ('dup', ['--nets', 'SDA', 'SCL', 'D0', '--bus-nets', 'SDA', 'SCL',
+                                '--bus-nets', 'SCL', 'D0'])):
         out, js = os.path.join(tmp, tag + '.kicad_pcb'), os.path.join(tmp, tag + '.json')
         rc, log = _route(src, out, js, *extra)
         if rc != 0 or 'Traceback' in log:
@@ -87,6 +89,9 @@ def t_summary(tmp):
     g2 = docs['two'].get('bus_groups') or []
     check('--bus-nets repeats, one group per use',
           sorted(sorted(g['nets']) for g in g2) == [['D0', 'D[0]'], ['SCL', 'SDA']], g2)
+    g3 = docs['dup'].get('bus_groups') or []
+    check('a net named in two uses is in the first group only',
+          [g['name'] for g in g3] == ['stated_0'] and sorted(g3[0]['nets']) == ['SCL', 'SDA'], g3)
 
 
 def t_memory(tmp):
@@ -112,6 +117,14 @@ def t_memory(tmp):
     check('a net absent from the call is left out',
           [sorted(g.net_ids) for g in stated_bus_groups(pcb, config, present={ids['SDA'], ids['SCL']})]
           == [sorted([ids['SDA'], ids['SCL']])])
+    config.stated_buses = [[ids['SCL'], ids['SDA']]]
+    config.stated_buses = [[ids['SDA'], ids['SCL']], [ids['SCL'], ids['D0'], ids['D[0]']]]
+    g = stated_bus_groups(pcb, config)
+    check('a net named twice stays in the first group',
+          [sorted(x.net_ids) for x in g] == [sorted([ids['SDA'], ids['SCL']]), sorted([ids['D0'], ids['D[0]']])]
+          and [x.name for x in g] == ['stated_0', 'stated_1'], [(x.name, x.net_ids) for x in g])
+    config.stated_buses = [[ids['SDA'], ids['SCL']], [ids['SCL'], ids['D0']]]
+    check('a later group left with one net is dropped', [x.name for x in stated_bus_groups(pcb, config)] == ['stated_0'])
     config.stated_buses = [[ids['SCL'], ids['SDA']]]
     # names are include patterns
     r = resolve_stated_buses(pcb, [['\\!RST'], ['RST'], ['D[[]0]'], ['D0'], ['D[0]'], ['NOPE', 'SDA']])

@@ -265,19 +265,22 @@ def stated_bus_groups(pcb_data: PCBData, config, present=None) -> List[BusGroup]
     """One BusGroup per list in config.stated_buses, as given (no detection, no geometric filter).
 
     FORK DIVERGENCE (docs/connections.md). `present` limits the members to the nets this call routes; a group left
-    with under two routable members is dropped. Members are ordered by _order_nets_by_position and named
+    with under two routable members is dropped. A net named by several
+    groups stays in the first. Members are ordered by _order_nets_by_position and named
     stated_<index of the stated list>."""
     groups = []
+    claimed = set()      # a net belongs to the first stated group that names it
     for idx, ids in enumerate(getattr(config, 'stated_buses', None) or []):
         endpoints = {}
         for nid in ids:
-            if present is not None and nid not in present:
+            if (present is not None and nid not in present) or nid in claimed:
                 continue
             ep = get_net_routing_endpoints(pcb_data, nid)
             if len(ep) >= 2:
                 endpoints[nid] = (ep[0], ep[1])
         if len(endpoints) < 2:
             continue
+        claimed.update(endpoints)
         ordered = _order_nets_by_position(list(endpoints), endpoints)
         groups.append(BusGroup(
             name=f"stated_{idx}", net_ids=ordered,
