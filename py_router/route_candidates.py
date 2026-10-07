@@ -482,6 +482,11 @@ def grade_request(request):
     from design_rules import DesignRules
     original_rules = DesignRules.from_project(before, request['input'])
     unproved = []
+    if Path(request['input']).with_suffix('.kicad_dru').is_file():
+        unproved.append('custom_clearance_rules_unproved')
+    if any(getattr(pad, 'local_clearance', 0) for fp in before.footprints.values()
+           for pad in fp.pads):
+        unproved.append('local_clearance_overrides_unproved')
     if original_rules.unsupported() or original_rules.notes:
         unproved.append('original_rules_unsupported')
     defaults = request.get('manufacturing_defaults') or {}
