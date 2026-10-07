@@ -35,6 +35,10 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.join(os.path.dirname(__file__), '..'), 'py_router'))  # #522
 sys.path.insert(0, os.path.join(os.path.join(os.path.dirname(__file__), '..'), 'py_tools'))  # #522
+import item_uuid  # noqa: E402
+# FORK DIVERGENCE: the writer stamps uuids from the seed of a board read (item_uuid.py);
+# this test writes items with no board, so it seeds one itself.
+item_uuid.seed_from_board('')
 
 from kicad_writer import (  # noqa: E402
     zone_overlap_priorities, generate_zone_sexpr, _polygons_overlap)

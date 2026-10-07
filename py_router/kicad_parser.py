@@ -7130,6 +7130,13 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
         footprints, board_info,
         _pcbnew_paste_graphics(board, _live_fps, _live_keys, get_layer_name, to_mm))
     _unmeasured_cu = _pcbnew_unmodelled_copper(_live_fps, _live_keys, get_layer_name)
+    # FORK DIVERGENCE: seed the writer's item uuids from the live board, as
+    # parse_kicad_pcb does from the file (item_uuid.py).
+    item_uuid.seed_from_items(
+        ['s %r %r %r %r %r %s %d' % (s.start_x, s.start_y, s.end_x, s.end_y, s.width, s.layer, s.net_id)
+         for s in segments]
+        + ['v %r %r %r %r %s %d' % (v.x, v.y, v.size, v.drill, ' '.join(v.layers), v.net_id) for v in vias]
+        + ['f %s %r %r %r %s' % (f.reference, f.x, f.y, f.rotation, f.layer) for f in footprints.values()])
 
     return PCBData(
         board_info=board_info,
