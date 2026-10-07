@@ -1268,7 +1268,12 @@ def _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data):
     """
     from single_ended_routing import _fab_track_floor
     from pcb_modification import _seg_seg_min_dist
-    floor = _fab_track_floor(pcb_data)
+    fab = _fab_track_floor(pcb_data)
+    # FORK DIVERGENCE (docs/fork-divergences.md): the neck floors at the net's own track floor, the board's
+    # min_track_width included, as the single-ended terminal neck does (single_ended_routing.py:960-962). Upstream
+    # floors at the bare fab tier (0.0889 mm on 4+ layers), below the board's minimum that KiCad grades.
+    def floor_of(seg):
+        return config.track_floor(seg.net_id, seg.layer, fab) if hasattr(config, 'track_floor') else fab
     necked = 0
 
     # P and N are DIFFERENT NETS, so KiCad grades them at the pair's own
@@ -1304,7 +1309,7 @@ def _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data):
                 allowed_half = (d - o.width / 2.0
                                 - _pair_clearance(s.net_id, o.net_id, s.layer) - 2e-4)
                 if allowed_half < s.width / 2.0 - 1e-9:
-                    new_w = max(floor, 2.0 * allowed_half)
+                    new_w = max(floor_of(s), 2.0 * allowed_half)
                     if new_w < s.width - 1e-9:
                         s.width = round(new_w, 4)
                         necked += 1

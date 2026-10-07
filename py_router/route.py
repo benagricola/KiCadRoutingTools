@@ -48,6 +48,7 @@ from schematic_updater import apply_swaps_to_schematics
 
 # Import from refactored modules
 from routing_config import GridRouteConfig, GridCoord
+from list_nets import resolve_floored_clearances  # fork divergence: min_clearance floor
 from connectivity import (
     get_stub_endpoints, find_stub_free_ends, find_connected_groups,
     is_edge_stub, get_net_endpoints, find_connected_segment_positions
@@ -7641,6 +7642,10 @@ For differential pair routing, use route_diff.py:
             # min(Default class, ceiling) too, so a late chain step saying 0.2
             # on a project an earlier step lowered to 0.09 routed at 0.09.
             args.clearance = min(_dflt_clr, _ceiling)
+    # FORK DIVERGENCE (docs/fork-divergences.md): floor the base clearance at the board's min_clearance, which
+    # KiCad grades by (after any ceiling, which cannot take it under the minimum); upstream routes
+    # at the class clearance even when it sits below that minimum.
+    args.clearance, _ = resolve_floored_clearances(args.input_file, args.clearance, {})
     # Both floors go through the SHARED resolver (list_nets.resolve_cli_floor),
     # so a declared 0 -- KiCad's "not configured" -- reads as UNSET here exactly
     # as it does on the placement half of the loop. Read straight, these two
@@ -7997,6 +8002,9 @@ For differential pair routing, use route_diff.py:
                 _net_clearances_map[_nid] = float(_name_to_clr[_net.name])
         print(f"Loaded per-net clearances for {len(_net_clearances_map)}/{len(pcb_data.nets)} nets "
               f"from {args.net_clearances}")
+        # FORK DIVERGENCE (docs/fork-divergences.md): floored at the board's min_clearance like the class map.
+        _, _net_clearances_map = resolve_floored_clearances(
+            args.input_file, args.clearance, _net_clearances_map)
     else:
         from list_nets import net_clearance_map_by_id
         _net_clearances_map = net_clearance_map_by_id(
@@ -8004,6 +8012,11 @@ For differential pair routing, use route_diff.py:
         if _net_clearances_map and args._clamp_netclasses:
             _net_clearances_map = {nid: min(clr, args._clearance_ceiling)
                                    for nid, clr in _net_clearances_map.items()}
+        # FORK DIVERGENCE (docs/fork-divergences.md): every per-net clearance floored at the board's
+        # min_clearance (upstream routes each class at its own value, even below that minimum).
+        if _net_clearances_map:
+            _, _net_clearances_map = resolve_floored_clearances(
+                args.input_file, args.clearance, _net_clearances_map)
         if _net_clearances_map:
             _classes = sorted({round(v, 4) for v in _net_clearances_map.values()})
             _mode = (f"capped at --clearance-ceiling {args._clearance_ceiling}"

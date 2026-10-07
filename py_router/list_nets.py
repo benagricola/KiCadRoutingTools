@@ -289,6 +289,18 @@ def board_constraint(pcb_path, key, design_rules=None):
         return None
 
 
+def resolve_floored_clearances(input_file, clearance, net_clearances_by_id):
+    """FORK DIVERGENCE (docs/fork-divergences.md): the base clearance and each per-net clearance floored at the
+    board's min_clearance. KiCad grades every clearance as max(rule, min_clearance) (design_rules.py:24); upstream
+    declines min_clearance as an edit floor (list_nets.py:91-94, :729-736), so a board whose Default class sits below
+    it is routed under the minimum KiCad then grades by. placemat writes the project KiCad grades by, so the fork
+    applies the floor. Returns ``(base, {net_id: clearance})``."""
+    floor = board_constraint(input_file, 'min_clearance') or 0.0
+    base = max(clearance, floor)
+    by_id = {nid: max(float(c), floor) for nid, c in (net_clearances_by_id or {}).items()}
+    return base, by_id
+
+
 def board_floor_declaration(pcb_path, design_rules=None):
     """What this board DECLARES about its own DRC floors -- and whether that is
     nothing at all.

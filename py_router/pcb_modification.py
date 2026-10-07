@@ -3970,7 +3970,8 @@ def prune_grazing_segments(results, pcb_data: PCBData, scope_net_ids=None,
                            clearance: float = 0.1,
                            check_foreign_segments: bool = False,
                            keep_input_copper: bool = False,
-                           net_clearances=None) -> Tuple[int, int, List[Segment]]:
+                           net_clearances=None,
+                           floor_of=None) -> Tuple[int, int, List[Segment]]:
     """Drop a segment that grazes a FOREIGN pad/via below clearance when the net
     stays fully connected without it (issue #224).
 
@@ -4197,7 +4198,10 @@ def prune_grazing_segments(results, pcb_data: PCBData, scope_net_ids=None,
                         if dd < d:
                             d = dd
                 allowed = 2.0 * (d - eff - 1e-4)
-                floor = _fab_track_floor(pcb_data)
+                # FORK DIVERGENCE (docs/fork-divergences.md): the neck floors at the net's own track floor
+                # (the board's min_track_width included) when the caller supplies floor_of; upstream floors at
+                # the bare fab tier, below the minimum KiCad grades.
+                floor = floor_of(s.net_id, s.layer) if floor_of else _fab_track_floor(pcb_data)
                 if (allowed >= floor - 1e-9 and allowed < s.width - 1e-9
                         and id(s) in routed_seg_ids):
                     # Necking mutates width in place, which only the writer's
