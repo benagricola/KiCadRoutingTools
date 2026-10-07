@@ -87,6 +87,62 @@ def test_own_net_copper_is_exempt():
           "3b: and so is a leg along it")
 
 
+def _jumper_board():
+    """A solder jumper's two custom pads as the parser reads them (from a
+    real board): pad 1 (net 1) is a chevron whose tip points into pad 2's
+    notch. Its size_x is 2.0, centred on the anchor, so a box model puts
+    copper 0.39 mm right of the chevron's real edge away from the tip."""
+    pad1 = SimpleNamespace(
+        component_ref='JP1', pad_number='1', net_id=1, shape='custom',
+        global_x=147.357, global_y=97.79, size_x=2.0, size_y=1.5,
+        rect_rotation=0.0, roundrect_rratio=0.0, drill=0.0,
+        pad_type='smd', layers=['B.Cu', 'B.Mask'], local_clearance=0.0,
+        hole_x=None, hole_y=None,
+        polygons=[[(148.357, 97.79), (147.857, 97.04), (146.857, 97.04),
+                   (146.857, 98.54), (147.857, 98.54)],
+                  [(147.207, 97.64), (147.507, 97.64), (147.507, 97.94),
+                   (147.207, 97.94)]])
+    pad2 = SimpleNamespace(**{**vars(pad1), 'pad_number': '2', 'net_id': 13,
+                              'global_x': 148.807, 'size_x': 1.3,
+                              'polygons': []})
+    fp = SimpleNamespace(reference='JP1', pads=[pad1, pad2])
+    return SimpleNamespace(segments=[], vias=[], footprints={'JP1': fp},
+                           pads_by_net={}, zones=[])
+
+
+def test_dogbone_via_judged_by_real_pad_copper():
+    """The dogbone guard judges a foreign pad by its copper, not its box.
+
+    Measured on a reference board: the dogbone via of JP1.2 at (149.3, 97.2),
+    1.6 mm, sits 1.112 mm from the centre of JP1.1's chevron, past the 1.05 mm
+    the 0.25 mm clearance asks. Upstream places it and the route is DRC-clean.
+    _via_site_clear's box model (|dx| - size_x/2) read 0.943 mm and declined
+    it, and the net stayed open."""
+    cfg = GridRouteConfig(clearance=0.25, track_width=0.5, via_size=1.6,
+                          via_drill=0.6, layers=['F.Cu', 'B.Cu'],
+                          grid_step=0.1)
+    cfg.hole_to_hole_clearance = 0.25
+    pcb = _jumper_board()
+    check(not _via_site_clear(pcb, 149.3, 97.2, cfg, net_id=13),
+          "7: upstream's box model still refuses the site (unchanged)")
+    check(_via_site_clear(pcb, 149.3, 97.2, cfg, net_id=13, exact_pads=True),
+          "7b: with exact pads the site clears the chevron")
+    check(not _via_site_clear(pcb, 149.1, 97.79, cfg, net_id=13,
+                              exact_pads=True),
+          "7c: with exact pads a via facing the chevron's tip is refused")
+
+
+def test_dogbone_rung_uses_exact_pads():
+    """The fork's dogbone guard asks for exact pads; upstream's #666 escape
+    keeps its own call as it is."""
+    src = open(os.path.join(_ROOT, 'py_router', 'net_rescue.py')).read()
+    i = src.index('dogbone declined')
+    window = src[max(0, i - 2500):i]
+    check(re.search(r'_via_site_clear\([^)]*exact_pads=True', window)
+          is not None,
+          "8: the dogbone rung calls _via_site_clear with exact_pads=True")
+
+
 def test_every_rescue_rung_guards_its_copper():
     """Source invariant: the bug was one rung that appended without asking."""
     src = open(os.path.join(_ROOT, 'py_router', 'net_rescue.py')).read()
@@ -129,6 +185,8 @@ if __name__ == '__main__':
     for fn in (test_via_in_foreign_pour_is_refused,
                test_leg_through_foreign_pour_is_refused,
                test_own_net_copper_is_exempt,
+               test_dogbone_via_judged_by_real_pad_copper,
+               test_dogbone_rung_uses_exact_pads,
                test_every_rescue_rung_guards_its_copper,
                test_a_net_made_of_art_is_not_rippable,
                test_a_net_of_ordinary_copper_stays_rippable):
