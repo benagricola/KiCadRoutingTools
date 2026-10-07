@@ -19,7 +19,8 @@ from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional
 
 STATUSES = ('routed', 'failed', 'joined_before', 'joined_narrow', 'deferred', 'refused')
-REASONS = ('unknown_ref', 'unknown_pad', 'pad_not_on_net', 'layer_not_routed', 'width_under_board_minimum')
+REASONS = ('unknown_ref', 'unknown_pad', 'pad_not_on_net', 'layer_not_routed', 'layer_width_missing',
+           'width_under_board_minimum')
 PRIVATE_PREFIX = '__connections_private_'
 _UNDER = 1e-3            # KRT's own width tolerance (routing_common.py power_width_report)
 
@@ -110,6 +111,8 @@ def resolve(raw: list, pcb_data, routing_layers, min_track: float) -> List[Task]
             continue
         if any(layer not in routing_layers for layer in task.widths):
             task.status, task.reason = 'refused', 'layer_not_routed'
+        elif any(layer not in task.widths for layer in routing_layers):
+            task.status, task.reason = 'refused', 'layer_width_missing'
         elif any(w < (min_track or 0.0) - _UNDER for w in task.widths.values()):
             task.status, task.reason = 'refused', 'width_under_board_minimum'
     return out
