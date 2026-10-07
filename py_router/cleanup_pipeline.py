@@ -316,10 +316,14 @@ def run_post_route_cleanup(results, pcb_data, scope_net_ids, config, *,
 
     if graze:
         _prog("graze prune")
+        from single_ended_routing import _fab_track_floor
+        _fab = _fab_track_floor(pcb_data)
         _gz_segs, _gz_nets, _gz_strip = prune_grazing_segments(
             results, pcb_data, scope_net_ids, clearance=config.clearance,
             check_foreign_segments=True, keep_input_copper=keep_input_copper,
-            net_clearances=_nc)
+            net_clearances=_nc,
+            floor_of=(lambda nid, layer: config.track_floor(nid, layer, _fab))
+            if hasattr(config, 'track_floor') else None)
         counts['graze_pruned'] = _gz_segs
         _trace('graze')
         strip.extend(_gz_strip)
