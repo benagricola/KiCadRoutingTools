@@ -42,6 +42,18 @@ Deliberate differences between this fork and upstream. Each is marked in the cod
 - Why: placemat's routing phases route chosen connections of a net at their own widths.
 - Test: tests/test_connections_unit.py, tests/test_connections_route.py.
 
+## --bus-nets: a stated bus
+
+- Upstream: `--bus` detects bus groups from clustered endpoints, drops groups the geometric filter does not accept
+  (bus_detection.py `filter_bus_groups_geometric`), and reports none in the summary.
+- Fork: `--bus-nets NET [NET ...]` (repeatable, implies `--bus`; route.py, `GridRouteConfig.stated_buses`,
+  bus_detection.py `stated_bus_groups` / `resolve_stated_buses`, single_ended_loop.py, each marked `FORK DIVERGENCE
+  (docs/connections.md)`). A stated group skips detection and the geometric filter; corridor planning and demotion
+  stay. The summary gains `bus_groups`. Described in docs/connections.md.
+- Why: placemat states every bus and interface it routes, so a group is never decided by detection (a two-net bus is
+  dropped by it).
+- Test: tests/test_bus_nets.py.
+
 ## Item uuids the same in every run
 
 - Upstream: kicad_writer.py mints `uuid.uuid4()` for every segment, via, zone, keepout, graphic line and text it

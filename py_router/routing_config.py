@@ -309,6 +309,8 @@ class GridRouteConfig:
     direction_preference_cost: int = 250  # Cost penalty for non-preferred direction (0 = disabled)
     # Bus routing - auto-detection and parallel routing of grouped nets
     bus_enabled: bool = False  # Enable bus detection and routing
+    # FORK DIVERGENCE (docs/connections.md): --bus-nets, one list of net ids per use; these skip detection.
+    stated_buses: List[List[int]] = field(default_factory=list)
     bus_detection_radius: float = 5.0  # mm - max endpoint distance to form bus
     bus_min_nets: int = 2  # Minimum nets to form a bus
     bus_attraction_radius: float = 5.0  # mm - attraction radius from neighbor track

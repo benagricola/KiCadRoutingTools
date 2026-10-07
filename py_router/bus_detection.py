@@ -242,6 +242,51 @@ def _order_nets_by_position(
     return [nid for nid, _ in sources]
 
 
+def resolve_stated_buses(pcb_data: PCBData, name_groups: List[List[str]]) -> List[List[int]]:
+    """Net ids of each --bus-nets use. FORK DIVERGENCE (docs/connections.md).
+
+    A name is an include pattern exactly as --nets reads it (net_queries.expand_net_patterns): `\\!NAME` is the
+    active-low net "!NAME", `[[]` is a literal bracket, `*` and `?` are wildcards. Names that match no net are
+    dropped; an id appears once per group."""
+    from net_queries import expand_net_patterns
+    from routing_common import resolve_net_ids
+    out = []
+    for names in name_groups:
+        ids = []
+        for pat in names:
+            for _, nid in resolve_net_ids(pcb_data, expand_net_patterns(pcb_data, [pat])):
+                if nid not in ids:
+                    ids.append(nid)
+        out.append(ids)
+    return out
+
+
+def stated_bus_groups(pcb_data: PCBData, config, present=None) -> List[BusGroup]:
+    """One BusGroup per list in config.stated_buses, as given (no detection, no geometric filter).
+
+    FORK DIVERGENCE (docs/connections.md). `present` limits the members to the nets this call routes; a group left
+    with under two routable members is dropped. Members are ordered by _order_nets_by_position and named
+    stated_<index of the stated list>."""
+    groups = []
+    for idx, ids in enumerate(getattr(config, 'stated_buses', None) or []):
+        endpoints = {}
+        for nid in ids:
+            if present is not None and nid not in present:
+                continue
+            ep = get_net_routing_endpoints(pcb_data, nid)
+            if len(ep) >= 2:
+                endpoints[nid] = (ep[0], ep[1])
+        if len(endpoints) < 2:
+            continue
+        ordered = _order_nets_by_position(list(endpoints), endpoints)
+        groups.append(BusGroup(
+            name=f"stated_{idx}", net_ids=ordered,
+            source_positions=[endpoints[n][0] for n in ordered],
+            target_positions=[endpoints[n][1] for n in ordered],
+            clique_endpoint="source"))
+    return groups
+
+
 def get_bus_routing_order(bus: BusGroup) -> List[int]:
     """
     Get the order in which bus nets should be routed.

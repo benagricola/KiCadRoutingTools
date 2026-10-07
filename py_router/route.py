@@ -862,6 +862,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 # FORK DIVERGENCE (docs/connections.md): the parsed --connections
                 # file; forwarded to the reconcile sub-runs with the rest.
                 connections: Optional[list] = None,
+                # FORK DIVERGENCE (docs/connections.md): --bus-nets, one list of
+                # net-name include patterns per use; forwarded to the reconcile
+                # sub-runs with the rest.
+                bus_nets: Optional[List[List[str]]] = None,
                 clearance: float = defaults.CLEARANCE,
                 via_size: float = defaults.VIA_SIZE,
                 via_drill: float = defaults.VIA_DRILL,
@@ -1742,6 +1746,12 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         print(f"Same-net pad via clearance {_snpc581:g}mm (from {_snpc_src}, "
               f"#581): vias stay off same-net pads")
     config = GridRouteConfig(**config_kwargs)
+    # FORK DIVERGENCE (docs/connections.md): --bus-nets groups, resolved the way
+    # --nets patterns are (bus_detection.resolve_stated_buses).
+    if bus_nets:
+        from bus_detection import resolve_stated_buses
+        config.bus_enabled = True
+        config.stated_buses = resolve_stated_buses(pcb_data, bus_nets)
     # The in-loop stub-debris trim must treat input copper as read-only in
     # --keep-input-copper runs; the loop only sees config, so carry it there.
     if keep_input_copper:
@@ -6974,6 +6984,12 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 if _merged is None:
                     _merged = {}
                 _merged['connections'] = _conn_records(_conn_after, routed=True)
+            # FORK DIVERGENCE (docs/connections.md): the bus groups this call
+            # routed, stated and detected, in route order.
+            if config.bus_enabled:
+                if _merged is None:
+                    _merged = {}
+                _merged['bus_groups'] = list(getattr(state, 'bus_group_records', None) or [])
             # ALL-OR-NOTHING (#830). This was `open(json_out,'w')` +
             # `json.dump`, which truncates the destination before the first
             # chunk is encoded and then STREAMS into it -- so a failure partway
@@ -7444,6 +7460,10 @@ For differential pair routing, use route_diff.py:
                         help=f"Penalty for non-preferred layer direction, 0=disabled (default: {defaults.DIRECTION_PREFERENCE_COST})")
     parser.add_argument("--connections", metavar="FILE",
                         help="route only these pad pairs, each at its width per layer (placemat fork, docs/connections.md)")
+    parser.add_argument("--bus-nets", nargs="+", action="append", metavar="NET",
+                        help="route these nets as one bus, as given, skipping detection (placemat fork, "
+                             "docs/connections.md); names read like --nets patterns; repeatable, one group "
+                             "per use; implies --bus")
     parser.add_argument("--bus", action="store_true",
                         help="Enable auto-detection and routing of bus groups (nets with clustered endpoints)")
     parser.add_argument("--bus-detection-radius", type=float, default=defaults.BUS_DETECTION_RADIUS,
@@ -8183,7 +8203,8 @@ For differential pair routing, use route_diff.py:
                 heuristic_weight=args.heuristic_weight,
                 turn_cost=args.turn_cost,
                 direction_preference_cost=args.direction_preference_cost,
-                bus_enabled=args.bus,
+                bus_enabled=args.bus or bool(args.bus_nets),
+                bus_nets=args.bus_nets,
                 bus_detection_radius=args.bus_detection_radius,
                 bus_attraction_radius=args.bus_attraction_radius,
                 bus_attraction_bonus=args.bus_attraction_bonus,
