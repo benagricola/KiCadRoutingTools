@@ -161,6 +161,11 @@ def record_frontier_blocking(state, net_id: int, blockers: List[BlockingInfo],
     if len(blockers) > cap:
         entry['more'] = len(blockers) - cap
     state.frontier_blocking[net_id] = entry
+    # FORK DIVERGENCE (docs/connections.md): evidence consumes the current
+    # failure epoch, rather than this last-non-empty report-only cache.
+    if hasattr(state, 'net_history'):
+        from routing_state import record_net_event
+        record_net_event(state, net_id, 'frontier_blocking', entry)
 
 
 def compute_net_obstacle_cells(
