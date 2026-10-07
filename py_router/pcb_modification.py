@@ -6884,13 +6884,31 @@ def merge_close_same_net_vias(all_new_vias, all_new_segments, pcb_data,
     return merged
 
 
+def plane_track_floor(pcb_data) -> float:
+    """FORK DIVERGENCE (docs/fork-divergences.md): the board's min_track_width (mm) for the plane scripts, which
+    carry no GridRouteConfig. 0.0 when the board is unknown (no source_path), declares none, or the escalation
+    policy is ``fab``, as GridRouteConfig.rule_floors does."""
+    path = getattr(pcb_data, 'source_path', '') or ''
+    if not path:
+        return 0.0
+    try:
+        from fab_tiers import get_escalation_policy
+        if get_escalation_policy()[0] == 'fab':
+            return 0.0
+    except Exception:                                          # noqa: BLE001
+        return 0.0
+    from list_nets import board_constraint
+    return board_constraint(path, 'min_track_width') or 0.0
+
+
 def cleanup_plane_taps_grazing(pcb_data: PCBData, all_new_segments: List[Dict],
                                scope_net_ids=None, clearance: float = 0.1,
                                max_shift: float = 0.025,
                                all_new_vias: Optional[List[Dict]] = None,
                                hole_to_hole: float = 0.20,
                                protected_pads=None,
-                               same_net_pad_clearance: float = -1.0):  # #581
+                               same_net_pad_clearance: float = -1.0,  # #581
+                               floor_of=None):
     """Apply prune_grazing_segments + nudge_grazing_octolinear + sweep_dead_ends to a
     PLANE script's write-list (issue #224).
 
@@ -6994,7 +7012,7 @@ def cleanup_plane_taps_grazing(pcb_data: PCBData, all_new_segments: List[Dict],
 
     # Drop redundant grazing taps -- against a foreign pad/via OR a foreign track.
     _, _, removed = prune_grazing_segments([], pcb_data, scope_net_ids, clearance,
-                                           check_foreign_segments=True)
+                                           check_foreign_segments=True, floor_of=floor_of)
     removed = _veto(removed)
     all_new_segments, n_removed = strip(all_new_segments, removed)
 

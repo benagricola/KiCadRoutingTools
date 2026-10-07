@@ -18,8 +18,14 @@ Deliberate differences between this fork and upstream. Each is marked in the cod
 - Upstream: `_neck_pair_partner_grazes` (diff_pair_routing.py) and `prune_grazing_segments` (pcb_modification.py)
   floor a neck at the bare fab tier (`_fab_track_floor`, 0.0889 mm on 4+ layers). The single-ended terminal neck
   already uses `config.track_floor` (single_ended_routing.py:960-962).
-- Fork: both floor at `config.track_floor(net_id, layer, fab)`, which includes the board's `min_track_width`.
-  `prune_grazing_segments` takes a `floor_of(net_id, layer)` argument; `run_post_route_cleanup` passes it. The plane
-  cleanup caller (pcb_modification.py, `cleanup_plane_taps_grazing`) has no config in scope and keeps the fab floor.
+- Fork: both floor at `config.track_floor(net_id, layer, fab)`, which includes the board's `min_track_width` only
+  when board rules are loaded and the escalation policy is not `fab` (`GridRouteConfig.rule_floors`,
+  routing_config.py:370-406; the fab policy is the explicit request to go below the board's minimums, so the fork
+  leaves it). `prune_grazing_segments` takes a `floor_of(net_id, layer)` argument; `run_post_route_cleanup` and
+  repair_planes.py pass `config.track_floor`.
+- Plane scripts: route_planes.py `_finalize_plane_copper` has no config. `plane_track_floor(pcb_data)`
+  (pcb_modification.py) reads the board's `min_track_width` from `pcb_data.source_path`, 0 when there is no path, no
+  rule, or the policy is `fab`. It raises `_neck_plane_segments`' `min_width` (upstream: the literal 0.1 mm) to
+  `max(0.1, floor)` and is passed as `floor_of` to `cleanup_plane_taps_grazing`.
 - Why: a neck under `min_track_width` is a DRC error on the board KiCad grades.
-- Test: tests/test_fork_floors.py (`t_pair_neck_floor`).
+- Test: tests/test_fork_floors.py (`t_pair_neck_floor`, `t_plane_neck_floor`, `t_floor_of_threaded`).

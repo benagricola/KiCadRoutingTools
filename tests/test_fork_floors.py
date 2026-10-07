@@ -74,9 +74,71 @@ def t_pair_neck_floor():
           min(s.width for s in p + n) >= 0.25 - 1e-9, [s.width for s in p + n])
 
 
+def t_plane_neck_floor():
+    """_neck_plane_segments floors at min_width; _finalize_plane_copper raises it to the board's min_track_width."""
+    from types import SimpleNamespace
+    from route_planes import _neck_plane_segments
+    pad = SimpleNamespace(global_x=2.5, global_y=1.0, size_x=1.0, size_y=1.0, shape='rect', rect_rotation=0.0,
+                          layers=['F.Cu'], local_clearance=0.4)
+    brd = SimpleNamespace(pads_by_net={2: [pad]}, vias=[])
+    seg = lambda: {'start': (0.0, 0.0), 'end': (5.0, 0.0), 'width': 0.3, 'layer': 'F.Cu', 'net_id': 1}
+    s0 = [seg()]
+    _neck_plane_segments(s0, brd, 0.2, ['F.Cu'], min_width=0.1)
+    s1 = [seg()]
+    _neck_plane_segments(s1, brd, 0.2, ['F.Cu'], min_width=0.25)
+    check('a plane neck goes to its natural width above the floor', s0[0]['width'] < 0.21, s0[0]['width'])
+    check('a plane neck stops at the board track floor', abs(s1[0]['width'] - 0.25) < 1e-9, s1[0]['width'])
+
+    import pcb_modification
+    with tempfile.TemporaryDirectory() as tmp:
+        pcb = os.path.join(tmp, 'b.kicad_pcb')
+        open(pcb, 'w').write('(kicad_pcb (version 20241229) (generator "t"))\n')
+        _project(os.path.join(tmp, 'b.kicad_pro'), 0.125, 0.15, 0.2)
+        import fab_tiers
+        prev = fab_tiers.get_escalation_policy()
+        try:
+            fab_tiers.set_escalation_policy('board')
+            got = pcb_modification.plane_track_floor(SimpleNamespace(source_path=pcb))
+            check('plane_track_floor reads the board min_track_width', abs(got - 0.2) < 1e-9, got)
+            fab_tiers.set_escalation_policy('fab')
+            check('plane_track_floor is 0 under --escalation fab', pcb_modification.plane_track_floor(
+                SimpleNamespace(source_path=pcb)) == 0.0)
+        finally:
+            fab_tiers.set_escalation_policy(*prev)
+        check('plane_track_floor is 0 with no board path', pcb_modification.plane_track_floor(
+            SimpleNamespace(source_path='')) == 0.0)
+
+
+def t_floor_of_threaded():
+    """cleanup_plane_taps_grazing hands floor_of to prune_grazing_segments."""
+    import pcb_modification as pm
+    seen = {}
+    real = pm.prune_grazing_segments
+
+    def spy(*a, **kw):
+        seen['floor_of'] = kw.get('floor_of')
+        return 0, 0, []
+    pm.prune_grazing_segments = spy
+    try:
+        from synth import make_pcb
+        f = lambda nid, layer: 0.25
+        seg = {'start': (0.0, 0.0), 'end': (5.0, 0.0), 'width': 0.3, 'layer': 'F.Cu', 'net_id': 1}
+        try:
+            pm.cleanup_plane_taps_grazing(make_pcb(), [seg], {1}, floor_of=f)
+        except Exception as e:                       # later passes may reject the bare board; the spy ran first
+            print('note: later pass raised', type(e).__name__)
+    finally:
+        pm.prune_grazing_segments = real
+    check('floor_of reaches prune_grazing_segments', seen.get('floor_of') is f, seen)
+    import inspect
+    check('prune_grazing_segments takes floor_of', 'floor_of' in inspect.signature(real).parameters)
+
+
 if __name__ == '__main__':
     t_floored_clearance()
     t_pair_neck_floor()
+    t_plane_neck_floor()
+    t_floor_of_threaded()
     if fails:
         print(f'{len(fails)} FAILURE(S): {fails}')
         sys.exit(1)
