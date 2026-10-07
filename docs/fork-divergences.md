@@ -1,5 +1,8 @@
 # Fork divergences
 
+Base: upstream `origin/main` 364b4572 (2026-10-06), branch `placemat/upstream-2026-10b`; the fork's commits on it are
+`git log 364b4572..placemat/upstream-2026-10b`.
+
 Deliberate differences between this fork and upstream. Each is marked in the code with a `FORK DIVERGENCE` comment.
 
 ## Clearance floored at the board's min_clearance
