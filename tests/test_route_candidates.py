@@ -236,6 +236,67 @@ def test_constraint_files_are_frozen_and_child_redo_manifest_is_disabled():
             assert os.environ['REDO_MANIFEST'] == 'original-record'
 
 
+def test_expired_caller_deadline_never_starts_a_child_or_overwrites_output():
+    with tempfile.TemporaryDirectory() as tmp:
+        args = args_for(Path(tmp))
+        Path(args.output_file).write_text('previous board')
+        with patch.dict(os.environ, {'KRT_ROUTE_DEADLINE_UTC': str(time.time() - 1)}, clear=True):
+            assert candidates.maybe_run_candidates(args, [args.input_file], 'route.py', parser_for_tests(), ['N']) == 124
+        assert Path(args.output_file).read_text() == 'previous board'
+
+
+def test_failed_pocket_process_is_never_adopted():
+    with tempfile.TemporaryDirectory() as tmp:
+        args, calls = args_for(Path(tmp)), []
+        original_fake = fake_run({'legacy': 1, 'pocket': 0}, calls)
+        def run(command, log, env, deadline):
+            original_fake(command, log, env, deadline)
+            return 3 if env['KRT_INTERNAL_POCKET_WALLS'] == '1' else 0
+        with patch.dict(os.environ, {}, clear=True), patch.object(candidates, 'run_child', run):
+            assert candidates.maybe_run_candidates(args, [args.input_file], 'route.py', parser_for_tests(), ['N']) == 0
+        assert Path(args.output_file).read_text() == 'legacy'
+        assert len(calls) == 2
+
+
+def test_grade_preserves_original_rule_floors_without_promoting_nominal_width():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'py_tools'))
+    import board_score
+    import kicad_parser
+    import improvement_gate
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        original, output = root / 'input.kicad_pcb', root / 'output.kicad_pcb'
+        original.write_text('original board')
+        output.write_text('final copper')
+        original.with_suffix('.kicad_pro').write_text(json.dumps({
+            'net_settings': {'classes': [{'name': 'Default', 'track_width': 0.4}]},
+            'board': {'design_settings': {'rules': {'min_track_width': 0.1}}}}))
+        output.with_suffix('.kicad_pro').write_text(json.dumps({
+            'board': {'design_settings': {'rules': {'min_track_width': 0.01}}}}))
+        segment = SimpleNamespace(net_id=1, layer='F.Cu', width=0.2,
+            start_x=0, start_y=0, end_x=1, end_y=0, graphic=False)
+        board = SimpleNamespace(nets={1: SimpleNamespace(name='N')}, segments=[segment],
+            vias=[], footprints={}, board_info=SimpleNamespace(copper_layers=['F.Cu', 'B.Cu']))
+        def check(root, final_file, **kwargs):
+            assert Path(final_file).read_text() == 'final copper'
+            project = json.loads(Path(final_file).with_suffix('.kicad_pro').read_text())
+            assert project['board']['design_settings']['rules']['min_track_width'] == 0.1
+            assert project['net_settings']['classes'][0]['track_width'] == 0.4
+            return {'ran': True, 'count': 0}, {'ran': True, 'count': 0}, {}
+        request = {'board': str(output), 'input': str(original), 'explicit_width': None,
+                   'summary': {'routed_single': ['N']}, 'scope': ['N'], 'connections': None}
+        with patch.object(kicad_parser, 'parse_kicad_pcb', return_value=board), \
+             patch.object(improvement_gate, 'grade_nets', return_value={1: {'broken': False, 'failed_pads': []}}), \
+             patch.object(board_score, 'score_drc', check), \
+             patch.object(board_score, 'quality', return_value={'vias': 0, 'copper_mm': 1, 'segments': 1}):
+            result = candidates.grade_request(request)
+            assert result['known'] and not result['widths_unknown'], result
+            request['explicit_width'] = 0.3
+            assert candidates.grade_request(request)['widths_unknown']
+            request['clearance_unproved'] = True
+            assert not candidates.grade_request(request)['known']
+
+
 if __name__ == '__main__':
     failures = 0
     for name, fn in sorted(list(globals().items())):

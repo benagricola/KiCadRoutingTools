@@ -52,8 +52,12 @@ Adoption requires known final-file connectivity in the actual selected net or
 pad-task scope, no physical DRC violations, and no requested-size violations.
 This first policy requires zero physical violations, including inherited ones;
 existing unrelated manufacturing faults may withhold an otherwise helpful
-proposal. Required netclass, explicit track and power widths are separate from
-fabrication floors. Task endpoint joins and track path widths are remeasured.
+proposal. Nominal netclass track widths are draw preferences, not minimum requirements.
+Explicit track, power and task widths are enforced separately. Final copper is
+checked against frozen original project and rule files so output floor writeback
+cannot weaken hard input minima. Explicit clearance overrides/maps/ceilings,
+unsupported rules, and length/time obligations currently withhold adoption
+until their independent constraint proof is implemented. Task endpoint joins and track path widths are remeasured.
 A narrower path might be a permitted neck, and a poured join has no track-path
 width proof: either makes width compliance unknown and withholds adoption.
 Impedance obligations likewise withhold adoption until independently proved.
