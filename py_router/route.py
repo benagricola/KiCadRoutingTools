@@ -7150,6 +7150,7 @@ if __name__ == "__main__":
     record_invocation()  # stress-test redo manifest (#132); no-op unless REDO_MANIFEST set
 
     parser = argparse.ArgumentParser(
+        allow_abbrev=False,  # FORK DIVERGENCE: exact replayable candidate arguments
         description="Batch PCB Router - Routes single-ended nets using Rust-accelerated A*. For differential pairs, use route_diff.py.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
@@ -7685,12 +7686,6 @@ For differential pair routing, use route_diff.py:
             args.output_file = base + '_routed' + ext
             print(f"Output file: {args.output_file}")
 
-    # FORK DIVERGENCE: file-isolated, bounded pocket repair candidate.
-    from route_candidates import maybe_run_candidates
-    _candidate_rc = maybe_run_candidates(args, sys.argv[1:], __file__, parser)
-    if _candidate_rc is not None:
-        sys.exit(_candidate_rc)
-
     # Load PCB to expand wildcards
     print(f"Loading {args.input_file} to expand net patterns...")
     pcb_data = parse_kicad_pcb(args.input_file)
@@ -8017,6 +8012,12 @@ For differential pair routing, use route_diff.py:
                      else "honored in full (--clearance omitted)")
             print(f"Netclass clearances for {len(_net_clearances_map)} net(s), {_mode} "
                   f"(mm: {_classes}); cross-class max(A,B) respected.")
+
+    # FORK DIVERGENCE: file-isolated, bounded pocket repair candidate.
+    from route_candidates import maybe_run_candidates
+    _candidate_rc = maybe_run_candidates(args, sys.argv[1:], __file__, parser, net_names)
+    if _candidate_rc is not None:
+        sys.exit(_candidate_rc)
 
     # --preview: the engine already supports this -- return_results=True with
     # an empty output_file routes fully, mutates only the in-memory PCBData
