@@ -60,7 +60,12 @@ envelope frozen from the original invocation's `fab_floor_min` (tier and
 overrides), never the candidate's project. The `off` escalation policy freezes
 the original resolved clearance instead. This avoids the checker inventing
 its unrelated 0.2 mm no-project default. Default source and values are recorded
-in `manufacturing_defaults` before either candidate starts. Explicit clearance overrides/maps/ceilings,
+in `manufacturing_defaults` before either candidate starts. The effective global
+clearance is the maximum of that envelope and the original declared floor;
+stricter original per-net classes still apply. Nondefault factory tiers or
+overrides, explicit via-size requests, custom rule files and local pad
+clearance overrides currently withhold adoption because their combined
+manufacturing proof is incomplete. Explicit clearance overrides/maps/ceilings,
 unsupported rules, and length/time obligations currently withhold adoption
 until their independent constraint proof is implemented. Task endpoint joins and track path widths are remeasured.
 A narrower path might be a permitted neck, and a poured join has no track-path
