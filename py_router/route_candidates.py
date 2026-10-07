@@ -7,6 +7,7 @@ and independent grading share one wall-clock budget, including child processes.
 from __future__ import annotations
 
 from contextlib import ExitStack
+import copy
 import hashlib
 import json
 import math
@@ -224,6 +225,14 @@ def publish(candidate, output, json_out, provenance):
     print('ROUTE_CANDIDATES: ' + json.dumps(provenance, sort_keys=True))
 
 
+def frozen_factory_args(args, frozen_files):
+    """Resolve grading defaults from the same override bytes as both children."""
+    resolved = copy.copy(args)
+    if 'fab_overrides' in frozen_files:
+        resolved.fab_overrides = str(frozen_files['fab_overrides'])
+    return resolved
+
+
 def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
     if os.environ.get('KRT_INTERNAL_ROUTE_CANDIDATE'):
         return None
@@ -268,7 +277,7 @@ def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
         from fab_tiers import fab_floor_min, fab_tier_from_args, count_copper_layers_in_file
         # Freeze the permitted manufacturing envelope before either run; it
         # must never come from a candidate's rewritten project or ledger.
-        tier, overrides = fab_tier_from_args(args)
+        tier, overrides = fab_tier_from_args(frozen_factory_args(args, frozen_files))
         floors = fab_floor_min(count_copper_layers_in_file(str(original)), tier, overrides)
         fallback = {'clearance': floors['clearance'], 'size_floors': {
                     k: floors[k] for k in ('track_width', 'via_diameter', 'via_drill', 'annular')}, 'tier': tier,
