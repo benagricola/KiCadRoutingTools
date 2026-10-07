@@ -257,7 +257,7 @@ def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
                 shutil.copy2(source, original.with_suffix(suffix))
         frozen_files = {}
         provenance['constraint_files'] = {}
-        for field in ('connections', 'net_clearances'):
+        for field in ('connections', 'net_clearances', 'fab_overrides'):
             source = getattr(args, field, None)
             if source:
                 frozen = original.parent / (field + Path(source).suffix)
@@ -265,6 +265,17 @@ def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
                 frozen_files[field] = frozen
                 provenance['constraint_files'][field] = hashlib.sha256(frozen.read_bytes()).hexdigest()
         task_file = frozen_files.get('connections')
+        from fab_tiers import fab_floor_min, fab_tier_from_args, count_copper_layers_in_file
+        # Freeze the permitted manufacturing envelope before either run; it
+        # must never come from a candidate's rewritten project or ledger.
+        tier, overrides = fab_tier_from_args(args)
+        floors = fab_floor_min(count_copper_layers_in_file(str(original)), tier, overrides)
+        fallback = {'clearance': floors['clearance'], 'tier': tier,
+                    'overrides': overrides, 'source': 'original_invocation_fab_floor_min'}
+        if getattr(args, 'escalation', None) == 'off':
+            fallback['clearance'] = max(fallback['clearance'], args.clearance)
+            fallback['source'] = 'original_invocation_no_escalation'
+        provenance['manufacturing_defaults'] = fallback
         output_seed = root / 'output_seed'
         output_seed.mkdir()
         for suffix in ARTIFACT_SUFFIXES[1:]:
@@ -327,6 +338,7 @@ def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
                 request = candidate['board'].parent / 'request.json'
                 request.write_text(json.dumps({'board': str(candidate['board']),
                     'input': str(original), 'summary': candidate['summary'], 'scope': frozen_scope,
+                    'manufacturing_defaults': fallback,
                     'explicit_width': args.track_width if 'track_width' in supplied else None,
                     'connections': str(task_file) if task_file else None,
                     'power_nets': getattr(args, 'power_nets', None),
@@ -376,7 +388,18 @@ def grade_request(request):
             original = Path(request['input']).with_suffix(suffix)
             if original.is_file():
                 shutil.copy2(original, checked.with_suffix(suffix))
-        drc, undersized, _ = board_score.score_drc(str(root), str(checked), sizes=sizes)
+        from fix_kicad_drc_settings import project_copper_clearance
+        original_project = load_json(Path(request['input']).with_suffix('.kicad_pro')) or {}
+        # check_drc invents 0.2 when there is no declared project clearance.
+        # Replace only that undeclared fallback with the identical pre-run
+        # manufacturing envelope. Every original declared floor still wins.
+        declared = project_copper_clearance(original_project)
+        fallback = request.get('manufacturing_defaults') or {}
+        clearance = fallback.get('clearance') if declared is None else None
+        if declared is None and clearance is None:
+            return {'known': False, 'reason': 'manufacturing_defaults_missing'}
+        drc, undersized, _ = board_score.score_drc(str(root), str(checked),
+                                                 clearance=clearance, sizes=sizes)
     summary = request['summary']
     if not isinstance(summary, dict):
         return {'known': False, 'reason': 'summary_missing'}

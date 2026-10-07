@@ -36,7 +36,7 @@ def args_for(root):
     inp.with_suffix('.kicad_pro').write_text('original rules')
     return SimpleNamespace(input_file=str(inp), output_file=str(out), output=None,
         preview=False, skip_routing=False, schematic_dir=None,
-        json_out=str(root / 'result.json'), track_width=0.2, connections=None, via_size=0.6, via_drill=0.3)
+        json_out=str(root / 'result.json'), track_width=0.2, connections=None, via_size=0.6, via_drill=0.3, clearance=0.25)
 
 
 def grade(opened, vias=10, **overrides):
@@ -284,7 +284,8 @@ def test_grade_preserves_original_rule_floors_without_promoting_nominal_width():
             assert project['net_settings']['classes'][0]['track_width'] == 0.4
             return {'ran': True, 'count': 0}, {'ran': True, 'count': 0}, {}
         request = {'board': str(output), 'input': str(original), 'explicit_width': None,
-                   'summary': {'routed_single': ['N']}, 'scope': ['N'], 'connections': None}
+                   'summary': {'routed_single': ['N']}, 'scope': ['N'], 'connections': None,
+                   'manufacturing_defaults': {'clearance': 0.1}}
         with patch.object(kicad_parser, 'parse_kicad_pcb', return_value=board), \
              patch.object(improvement_gate, 'grade_nets', return_value={1: {'broken': False, 'failed_pads': []}}), \
              patch.object(board_score, 'score_drc', check), \
@@ -295,6 +296,34 @@ def test_grade_preserves_original_rule_floors_without_promoting_nominal_width():
             assert candidates.grade_request(request)['widths_unknown']
             request['clearance_unproved'] = True
             assert not candidates.grade_request(request)['known']
+
+
+def test_no_project_grading_uses_frozen_default_not_candidate_writeback():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'py_tools'))
+    import board_score
+    import kicad_parser
+    import improvement_gate
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        original, output = root / 'input.kicad_pcb', root / 'output.kicad_pcb'
+        original.write_text('original board without project')
+        output.write_text('final copper')
+        output.with_suffix('.kicad_pro').write_text(json.dumps({'board': {
+            'design_settings': {'rules': {'min_clearance': 0.01}}}}))
+        board = SimpleNamespace(nets={1: SimpleNamespace(name='N')}, segments=[],
+            vias=[], footprints={}, board_info=SimpleNamespace(copper_layers=['F.Cu', 'B.Cu']))
+        def check(root, final_file, **kwargs):
+            assert kwargs['clearance'] == 0.15
+            assert not Path(final_file).with_suffix('.kicad_pro').exists()
+            return {'ran': True, 'count': 0}, {'ran': True, 'count': 0}, {}
+        request = {'board': str(output), 'input': str(original), 'explicit_width': None,
+                   'summary': {'routed_single': ['N']}, 'scope': ['N'], 'connections': None,
+                   'manufacturing_defaults': {'clearance': 0.15}}
+        with patch.object(kicad_parser, 'parse_kicad_pcb', return_value=board), \
+             patch.object(improvement_gate, 'grade_nets', return_value={1: {'broken': False, 'failed_pads': []}}), \
+             patch.object(board_score, 'score_drc', check), \
+             patch.object(board_score, 'quality', return_value={'vias': 0, 'copper_mm': 0, 'segments': 0}):
+            assert candidates.grade_request(request)['known']
 
 
 if __name__ == '__main__':
