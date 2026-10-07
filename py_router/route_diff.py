@@ -1171,10 +1171,10 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                 # --impedance derives width per layer, so a netclass width must
                 # not override it (#610: from_class now purely means "the flag
                 # was omitted", the impedance guard lives here).
-                _w = (_c.get('diff_pair_width')
-                      if diff_pair_width_from_class and impedance is None else None)
                 _g = _c.get('diff_pair_gap') if diff_pair_gap_from_class else None
-                _ew = max(_w if _w is not None else config.track_width, _wfloor)
+                from nominal_width_policy import pair_class_width
+                _ew = pair_class_width(_classes, _rules, _pair.p_net_name, config.track_width,
+                                       diff_pair_width_from_class and impedance is None, _wfloor)
                 _eg = max(_g if _g is not None else config.diff_pair_gap, _gfloor)
                 # #441 again: a class gap REPLACES the call's floored one, so
                 # floor it at the clearance here too. Below it the pair was
