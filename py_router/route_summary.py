@@ -59,6 +59,10 @@ REGRADE_RE = re.compile(r'JSON_REGRADE: (\{.*\})')
 SUMMARY_SINK: List[dict] = []
 RECONCILE_RAISED = [False]
 FINAL_REGRADE: List[Optional[dict]] = [None]
+# placemat fork (docs/connections.md, "Failure evidence"): set by the outermost
+# run that writes a summary (--json-out), so its reconcile and finalize sub-runs
+# record failed searches too.
+FAILURE_EVIDENCE = [False]
 
 
 def reset_run_state() -> None:
@@ -66,6 +70,7 @@ def reset_run_state() -> None:
     SUMMARY_SINK.clear()
     RECONCILE_RAISED[0] = False
     FINAL_REGRADE[0] = None
+    FAILURE_EVIDENCE[0] = False
 
 # The one-line compact tally route.py prints at the end of every OUTERMOST
 # run (CLI and GUI alike): the merged verdict in <1KB, where the big
@@ -204,6 +209,12 @@ def merge_summaries(summaries: List[Dict], aborted: bool = False,
                     _failed |= {d.get('net_name') if isinstance(d, dict) else d
                                 for d in (merged.get('failed_multipoint') or [])}
                 merged[_k] = [e for e in first[_k] if e.get('net') in _failed]
+        # FORK DIVERGENCE (docs/connections.md, "Failure evidence"):
+        # `net_evidence` is keyed by net name; newest per net across the
+        # passes, kept for the nets still failing, as `blockers` is.
+        _failed = set(merged.get('failed_single') or [])
+        _failed |= {_fm_name(d) for d in (merged.get('failed_multipoint') or [])}
+        _carry_net_evidence(merged, summaries, _failed)
         # `finalize_excluded_nets` carries WHOLE, not through the
         # still-failing filter: it is a list of net NAMES rather than per-net
         # records, and it states what the finalize declined to do BY PLAN --
@@ -497,6 +508,21 @@ def regrade_record(summaries: List[Dict], grades: Dict[str, Dict],
     }
 
 
+def _carry_net_evidence(merged: Dict, summaries: List[Dict], failing: set) -> None:
+    """`net_evidence` (placemat fork, docs/connections.md): each net's newest record across the summaries, for the
+    nets in `failing`; the key is dropped when none is left."""
+    if not any('net_evidence' in s for s in summaries):
+        return
+    by_net: Dict[str, Dict] = {}
+    for s in summaries:
+        by_net.update(s.get('net_evidence') or {})
+    kept = {n: e for n, e in by_net.items() if n in failing}
+    if kept:
+        merged['net_evidence'] = kept
+    else:
+        merged.pop('net_evidence', None)
+
+
 def _apply_regrade(merged: Dict, regrade: Dict, summaries: List[Dict]) -> None:
     """Overwrite the merged failure state with the re-grade (in place)."""
     for k in ('routed_single', 'failed_single', 'open_single',
@@ -527,6 +553,7 @@ def _apply_regrade(merged: Dict, regrade: Dict, summaries: List[Dict]) -> None:
                 if isinstance(e, dict) and e.get(key):
                     by_net[e[key]] = e
         merged[k] = [e for n, e in by_net.items() if n in broken]
+    _carry_net_evidence(merged, summaries, broken)
     if 'pad_pairs_total' in merged and 'pad_pairs_open' in merged:
         _deficit = sum(e.get('pairs_total', 0) - e.get('pairs_connected', 0)
                        for e in merged['pad_pairs_open'])

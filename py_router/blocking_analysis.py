@@ -702,6 +702,169 @@ def mincut_probe_order(pcb_data, config, working_obstacles, net_id,
     return order, True
 
 
+def static_blocker_records(
+    blocked_cells: List[Tuple[int, int, int]],
+    pcb_data: PCBData,
+    config: GridRouteConfig,
+    nets_to_route: Optional[Set[int]] = None,
+    net_id: Optional[int] = None,
+) -> List[dict]:
+    """The static copper the blocked cells fall on, as records (placemat fork, docs/connections.md): each pad of a net
+    not being routed, {"kind": "pad", "net", "ref", "pad", "layer": None, "at": [x, y], "cells"}, and each net's
+    earlier tracks per layer, {"kind": "track", "net", "ref": None, "pad": None, "layer", "at": the first hit
+    segment's midpoint, "cells"}. `cells` counts the blocked cells each one covers.
+
+    `net_id`: the net whose search left the cells. Given, a cell is tested against copper grown by that net's own
+    track half-width on the cell's layer (config.get_net_track_width) plus the pairwise obstacle clearance, and by
+    one diagonal grid step and one cell more: a frontier cell is the neighbour the search was refused, and the
+    obstacle stamps round outward to whole cells. Without it the tests are upstream's: pads grown by config.track_width / 2 plus the clearance,
+    tracks by their own half-width plus the clearance only, which misses the cells a wider track was kept out of, and
+    a pad's layers compared by name, which misses every `*.Cu` through-hole pad.
+
+    FORK DIVERGENCE (docs/fork-divergences.md, "Failure evidence as data"): upstream's analyze_static_blockers ran
+    these loops itself and kept only net names and part refs. The legacy print masks remain unchanged; evidence
+    confirms track distance after the bbox filter. The track loop keeps one record per (net, layer) rather than
+    stopping at a net's first hit. Expanded copper intersections name candidate blockers, not proven causes."""
+    coord = GridCoord(config.grid_step)
+    layer_map = build_layer_map(config.layers)
+    blocked_set = set(blocked_cells)
+    nets_to_route = nets_to_route or set()
+    records = []
+
+    # Sweep item 4 (#625 follow-up): the scalar version iterated ALL pads x
+    # ALL blocked cells and ALL segments x ALL blocked cells in pure Python
+    # (~10M iterations, 3-5 s) -- and this runs after EVERY failed search
+    # whose frontier had no routed-net blockers. Cells go into arrays once;
+    # each pad/segment then tests them with numpy masks (same comparisons),
+    # confirming pad shape via the vectorized twin of point_to_pad_distance.
+    from obstacle_map import _pad_dist_le_batch
+    from net_queries import expand_pad_layers
+    if not blocked_set:
+        return records
+    _cells = np.array(sorted(blocked_set), dtype=np.int64)
+    _cgx, _cgy, _clay = _cells[:, 0], _cells[:, 1], _cells[:, 2]
+    _cxf = _cgx * coord.grid_step  # == coord.to_float per cell
+    _cyf = _cgy * coord.grid_step
+    if net_id is None:
+        _half = {li: config.track_width / 2 for li in range(len(config.layers))}
+        _seg_half = {li: 0.0 for li in range(len(config.layers))}
+    else:
+        # The cell a search records is the neighbour it was refused
+        # (router.rs route_with_frontier: segment_blocked over the step, then
+        # on_blocked(ngx, ngy)), and the stamps round outward to whole cells:
+        # one diagonal step and one cell of slack.
+        _slack = config.grid_step * (1 + 2 ** 0.5)
+        _half = {li: config.get_net_track_width(net_id, l) / 2 + _slack for li, l in enumerate(config.layers)}
+        _seg_half = dict(_half)
+
+    # Check pads from other nets
+    for obstacle_net_id, pads in pcb_data.pads_by_net.items():
+        if obstacle_net_id in nets_to_route:
+            continue
+        net = pcb_data.nets.get(obstacle_net_id)
+        net_name = net.name if net else f"Net {obstacle_net_id}"
+        for pad in pads:
+            # Get pad grid area
+            pad_gx, pad_gy = coord.to_grid(pad.global_x, pad.global_y)
+
+            # Calculate pad expansion (matches obstacle_map.py formula)
+            # margin = track_width/2 + clearance (route needs half-width from center + clearance from pad edge)
+            # rotated-rect bbox so a tilted pad's blocked cells are covered
+            pad_half_w, pad_half_h = pad_rect_halfspan(pad)
+
+            # Blocked cells within this pad's area: bbox as a fast PREFILTER,
+            # then confirm with the pad's TRUE copper shape so a round pad's
+            # bbox corner doesn't over-attribute a blocked cell it doesn't
+            # actually cover (matches the shape-aware obstacle map). A cell on
+            # a layer the pad doesn't touch never counts; a cell whose layer
+            # index is out of range keeps the scalar version's semantics
+            # (layer_name None -> not filtered out).
+            # Grouped by margin: one group (upstream's) without net_id, one
+            # per distinct net width on the pad's layers with it.
+            # With net_id the pad's layers are expanded as the obstacle map
+            # expands them (obstacle_map.py:1282), so a `*.Cu` through-hole pad
+            # counts on every layer; upstream's test (kept without net_id)
+            # compares names and never matches one.
+            pad_layers = expand_pad_layers(pad.layers, config.layers) if net_id is not None else pad.layers
+            by_margin = {}
+            for li in range(len(config.layers)):
+                if config.layers[li] in pad_layers:
+                    clearance = (config.obstacle_clearance(obstacle_net_id)
+                                 if net_id is not None else config.clearance)
+                    by_margin.setdefault(_half[li] + clearance, []).append(li)
+            if net_id is None:
+                by_margin = {config.track_width / 2 + config.clearance: [
+                    li for lis in by_margin.values() for li in lis] + [None]}
+            n = 0
+            for margin, lis in by_margin.items():
+                expand_x = max(1, coord.to_grid_dist(pad_half_w + margin))
+                expand_y = max(1, coord.to_grid_dist(pad_half_h + margin))
+                _lay_ok = np.zeros(_clay.shape, dtype=bool)
+                for li in lis:
+                    if li is None:
+                        _lay_ok |= _clay >= len(config.layers)
+                    else:
+                        _lay_ok |= _clay == li
+                cand = (_lay_ok
+                        & (np.abs(_cgx - pad_gx) <= expand_x)
+                        & (np.abs(_cgy - pad_gy) <= expand_y))
+                if cand.any():
+                    n += int(_pad_dist_le_batch(_cxf[cand], _cyf[cand], pad, margin).sum())
+            if n:
+                records.append({"kind": "pad", "net": net_name, "ref": pad.component_ref,
+                                "pad": pad.pad_number, "layer": None,
+                                "at": [pad.global_x, pad.global_y], "cells": n})
+
+    # Check pre-existing tracks from other nets: one record per (net, layer),
+    # its cells the union of its segments' hits.
+    track_hits = {}  # (net_name, layer) -> [hit mask, first hit midpoint]
+    for seg in pcb_data.segments:
+        if seg.net_id in nets_to_route:
+            continue
+        layer_idx = layer_map.get(seg.layer)
+        if layer_idx is None:
+            continue
+        net = pcb_data.nets.get(seg.net_id)
+        net_name = net.name if net else f"Net {seg.net_id}"
+
+        # Get segment grid area
+        gx1, gy1 = coord.to_grid(seg.start_x, seg.start_y)
+        gx2, gy2 = coord.to_grid(seg.end_x, seg.end_y)
+        margin = seg.width / 2 + _seg_half[layer_idx] + (
+            config.obstacle_clearance(seg.net_id) if net_id is not None else config.clearance)
+        expansion_grid = max(1, coord.to_grid_dist(margin))
+
+        # Any blocked cell on this layer inside the segment bbox?
+        hit = ((_clay == layer_idx)
+               & (_cgx >= min(gx1, gx2) - expansion_grid)
+               & (_cgx <= max(gx1, gx2) + expansion_grid)
+               & (_cgy >= min(gy1, gy2) - expansion_grid)
+               & (_cgy <= max(gy1, gy2) + expansion_grid))
+        if net_id is not None and hit.any():
+            # Evidence attributes a cell to copper, not to the empty corners
+            # of a diagonal segment's bounding box. Keep the upstream print
+            # heuristic unchanged when net_id is absent.
+            dx, dy = seg.end_x - seg.start_x, seg.end_y - seg.start_y
+            length_sq = dx * dx + dy * dy
+            if length_sq:
+                along = np.clip(((_cxf - seg.start_x) * dx +
+                                 (_cyf - seg.start_y) * dy) / length_sq, 0, 1)
+            else:
+                along = np.zeros(_cxf.shape)
+            hit &= ((_cxf - seg.start_x - along * dx) ** 2 +
+                    (_cyf - seg.start_y - along * dy) ** 2 <= margin ** 2)
+        if hit.any():
+            key = (net_name, seg.layer)
+            if key in track_hits:
+                track_hits[key][0] |= hit
+            else:
+                track_hits[key] = [hit, [(seg.start_x + seg.end_x) / 2, (seg.start_y + seg.end_y) / 2]]
+    for (net_name, layer), (hit, at) in track_hits.items():
+        records.append({"kind": "track", "net": net_name, "ref": None, "pad": None, "layer": layer,
+                        "at": at, "cells": int(hit.sum())})
+    return records
+
+
 def analyze_static_blockers(
     blocked_cells: List[Tuple[int, int, int]],
     pcb_data: PCBData,
@@ -717,111 +880,32 @@ def analyze_static_blockers(
     - 'zones': count of cells in BGA exclusion zones
     """
     coord = GridCoord(config.grid_step)
-    layer_map = build_layer_map(config.layers)
     blocked_set = set(blocked_cells)
-    nets_to_route = nets_to_route or set()
 
     result = {
         'pads': [],
         'tracks': [],
         'zone_cells': 0,
     }
-
-    # Sweep item 4 (#625 follow-up): the scalar version iterated ALL pads x
-    # ALL blocked cells and ALL segments x ALL blocked cells in pure Python
-    # (~10M iterations, 3-5 s) -- and this runs after EVERY failed search
-    # whose frontier had no routed-net blockers. Cells go into arrays once;
-    # each pad/segment then tests them with numpy masks (same comparisons),
-    # confirming pad shape via the vectorized twin of point_to_pad_distance.
-    from obstacle_map import _pad_dist_le_batch
     if blocked_set:
         _cells = np.array(sorted(blocked_set), dtype=np.int64)
-        _cgx, _cgy, _clay = _cells[:, 0], _cells[:, 1], _cells[:, 2]
-        _cxf = _cgx * coord.grid_step  # == coord.to_float per cell
-        _cyf = _cgy * coord.grid_step
+        _cgx, _cgy = _cells[:, 0], _cells[:, 1]
     else:
-        _cgx = _cgy = _clay = _cxf = _cyf = np.empty(0)
+        _cgx = _cgy = np.empty(0)
 
-    # Track which nets' pads are blocking
+    # FORK DIVERGENCE (docs/fork-divergences.md): the pad and track loops are
+    # static_blocker_records; the strings are built from its records.
+    recs = static_blocker_records(blocked_cells, pcb_data, config, nets_to_route)
     pad_blockers = {}  # net_name -> set of pad refs
-
-    # Check pads from other nets
-    for net_id, pads in pcb_data.pads_by_net.items():
-        if net_id in nets_to_route:
-            continue
-        net = pcb_data.nets.get(net_id)
-        net_name = net.name if net else f"Net {net_id}"
-        for pad in pads:
-            if not len(_cgx):
-                break
-            # Get pad grid area
-            pad_gx, pad_gy = coord.to_grid(pad.global_x, pad.global_y)
-
-            # Calculate pad expansion (matches obstacle_map.py formula)
-            # margin = track_width/2 + clearance (route needs half-width from center + clearance from pad edge)
-            # rotated-rect bbox so a tilted pad's blocked cells are covered
-            pad_half_w, pad_half_h = pad_rect_halfspan(pad)
-            margin = config.track_width / 2 + config.clearance
-            expand_x = max(1, coord.to_grid_dist(pad_half_w + margin))
-            expand_y = max(1, coord.to_grid_dist(pad_half_h + margin))
-
-            # Blocked cells within this pad's area: bbox as a fast PREFILTER,
-            # then confirm with the pad's TRUE copper shape so a round pad's
-            # bbox corner doesn't over-attribute a blocked cell it doesn't
-            # actually cover (matches the shape-aware obstacle map). A cell on
-            # a layer the pad doesn't touch never counts; a cell whose layer
-            # index is out of range keeps the scalar version's semantics
-            # (layer_name None -> not filtered out).
-            _lay_ok = np.zeros(_clay.shape, dtype=bool)
-            for li in range(len(config.layers)):
-                if config.layers[li] in pad.layers:
-                    _lay_ok |= _clay == li
-            _lay_ok |= _clay >= len(config.layers)
-            cand = (_lay_ok
-                    & (np.abs(_cgx - pad_gx) <= expand_x)
-                    & (np.abs(_cgy - pad_gy) <= expand_y))
-            if not cand.any():
-                continue
-            if _pad_dist_le_batch(_cxf[cand], _cyf[cand], pad, margin).any():
-                if net_name not in pad_blockers:
-                    pad_blockers[net_name] = set()
-                pad_blockers[net_name].add(pad.component_ref)
-
-    # Format pad blockers
+    for r in recs:
+        if r["kind"] == "pad":
+            pad_blockers.setdefault(r["net"], set()).add(r["ref"])
     for net_name, refs in sorted(pad_blockers.items(), key=lambda x: -len(x[1])):
         if len(refs) <= 3:
             result['pads'].append(f"{net_name} ({', '.join(sorted(refs))})")
         else:
             result['pads'].append(f"{net_name} ({len(refs)} pads)")
-
-    # Check pre-existing tracks from other nets
-    track_blockers = set()
-    for seg in pcb_data.segments:
-        if seg.net_id in nets_to_route:
-            continue
-        layer_idx = layer_map.get(seg.layer)
-        if layer_idx is None:
-            continue
-        net = pcb_data.nets.get(seg.net_id)
-        net_name = net.name if net else f"Net {seg.net_id}"
-        if net_name in track_blockers or not len(_cgx):
-            continue  # already attributed; membership is all that's reported
-
-        # Get segment grid area
-        gx1, gy1 = coord.to_grid(seg.start_x, seg.start_y)
-        gx2, gy2 = coord.to_grid(seg.end_x, seg.end_y)
-        expansion_grid = max(1, coord.to_grid_dist(seg.width / 2 + config.clearance))
-
-        # Any blocked cell on this layer inside the segment bbox?
-        hit = ((_clay == layer_idx)
-               & (_cgx >= min(gx1, gx2) - expansion_grid)
-               & (_cgx <= max(gx1, gx2) + expansion_grid)
-               & (_cgy >= min(gy1, gy2) - expansion_grid)
-               & (_cgy <= max(gy1, gy2) + expansion_grid))
-        if hit.any():
-            track_blockers.add(net_name)
-
-    result['tracks'] = sorted(track_blockers)
+    result['tracks'] = sorted({r["net"] for r in recs if r["kind"] == "track"})
 
     # Check BGA exclusion zones
     zone_cells = 0

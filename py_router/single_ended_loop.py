@@ -913,6 +913,11 @@ def route_single_ended_nets(
             flush_diagnostics(diag_buf)
             print(f"  FAILED: Could not find route ({elapsed:.2f}s)")
             total_iterations += iterations
+            # FORK DIVERGENCE (docs/connections.md): the failed search as data, before rip-up pops its cells.
+            if getattr(config, 'failure_evidence', False) and result:
+                from failure_evidence import search_facts
+                record_net_event(state, net_id, "search_failed",
+                                 search_facts(result, pcb_data, config, net_id, set(remaining_net_ids) | {net_id}))
 
             # Restore working obstacles before attempting rip-up (in-place approach)
             if same_net_via_cells is not None and state.working_obstacles is not None:
