@@ -33,7 +33,10 @@ runs the legacy router from an isolated copy of the input board and its project
 and rule sidecars. A reported complete legacy result is preserved exactly;
 this shortcut is a routing scope report, not a manufacturing certificate.
 Only an incomplete measured result permits one pocket-prioritized proposal
-from the same original input, with identical routing flags and task files.
+from the same original input, with identical routing flags and a frozen task file.
+Both grades use the same requested net set plus the union of both summaries'
+owned nets; the sorted scope and task identity are recorded with a SHA-256.
+CLI option abbreviations are refused; attached short-option values remain supported.
 
 Both runs and independent final-file grading share a wall-clock deadline:
 `KRT_ROUTE_BUDGET_S` defaults to 3600 seconds, and a caller's earlier absolute

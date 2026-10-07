@@ -15,14 +15,14 @@ import route_candidates as candidates
 
 
 def parser_for_tests():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument('--output')
     parser.add_argument('--json-out')
     parser.add_argument('--overwrite', action='store_true')
     parser.add_argument('--connections')
     parser.add_argument('--bus-nets', nargs='+')
     parser.add_argument('--capture')
-    parser.add_argument('--nets', nargs='+')
+    parser.add_argument('--nets', '-n', nargs='+')
     return parser
 
 
@@ -106,7 +106,7 @@ def test_complete_legacy_never_runs_pocket_and_preserves_summary():
     with tempfile.TemporaryDirectory() as tmp:
         args, calls = args_for(Path(tmp)), []
         with patch.dict(os.environ, {}, clear=True), patch.object(candidates, 'run_child', fake_run({'legacy': 0}, calls)):
-            assert candidates.maybe_run_candidates(args, [args.input_file, '--nets', 'N'], 'route.py', parser_for_tests()) == 0
+            assert candidates.maybe_run_candidates(args, [args.input_file, '--nets', 'N'], 'route.py', parser_for_tests(), ['N']) == 0
         assert len(calls) == 1
         assert Path(args.output_file).read_text() == 'legacy'
         assert Path(args.input_file).read_text() == 'original'
@@ -118,7 +118,7 @@ def test_isolated_proposal_publishes_matching_artifacts_and_preserves_input():
         args, calls = args_for(Path(tmp)), []
         scores = {'legacy': grade(2), 'pocket': grade(0)}
         with patch.dict(os.environ, {}, clear=True), patch.object(candidates, 'run_child', fake_run({'legacy': 1, 'pocket': 0}, calls, scores)):
-            assert candidates.maybe_run_candidates(args, [args.input_file, '--nets', 'N'], 'route.py', parser_for_tests()) == 0
+            assert candidates.maybe_run_candidates(args, [args.input_file, '--nets', 'N'], 'route.py', parser_for_tests(), ['N']) == 0
         assert len(calls) == 4
         assert Path(args.output_file).read_text() == 'pocket'
         assert Path(args.output_file).with_suffix('.kicad_pro').read_text() == 'pocket rules'
@@ -132,7 +132,7 @@ def test_timeout_retains_complete_first_artifacts():
     with tempfile.TemporaryDirectory() as tmp:
         args, calls = args_for(Path(tmp)), []
         with patch.dict(os.environ, {}, clear=True), patch.object(candidates, 'run_child', fake_run({'legacy': 1}, calls, timeout_pocket=True)):
-            assert candidates.maybe_run_candidates(args, [args.input_file], 'route.py', parser_for_tests()) == 0
+            assert candidates.maybe_run_candidates(args, [args.input_file], 'route.py', parser_for_tests(), ['N']) == 0
         assert Path(args.output_file).read_text() == 'legacy'
         assert json.loads(Path(args.json_out).read_text())['route_candidates']['stopped']
 
@@ -143,10 +143,10 @@ def test_quick_preview_skip_schematic_are_legacy():
             args = args_for(Path(tmp))
             setattr(args, field, True)
             with patch.dict(os.environ, {}, clear=True), patch.object(candidates, 'run_child', side_effect=AssertionError('child')):
-                assert candidates.maybe_run_candidates(args, [args.input_file], 'route.py', parser_for_tests()) is None
+                assert candidates.maybe_run_candidates(args, [args.input_file], 'route.py', parser_for_tests(), ['N']) is None
         args = args_for(Path(tmp))
         with patch.dict(os.environ, {'KRT_ROUTE_QUICK': '1'}, clear=True):
-            assert candidates.maybe_run_candidates(args, [args.input_file], 'route.py', parser_for_tests()) is None
+            assert candidates.maybe_run_candidates(args, [args.input_file], 'route.py', parser_for_tests(), ['N']) is None
 
 
 def test_output_aliases_are_rewritten_by_position():
@@ -191,6 +191,29 @@ def test_publication_failure_restores_entire_previous_artifact_set():
         assert output.read_text() == 'old board'
         assert output.with_suffix('.kicad_pro').read_text() == 'old rules'
         assert result.read_text() == 'old summary'
+
+
+def test_frozen_scope_charges_a_candidate_that_omits_an_owned_failure():
+    inputs = [{'summary': {'failed_single': ['omitted']}},
+              {'summary': {'routed_single': ['requested']}}]
+    scope, identity = candidates.freeze_scope(['requested'], inputs)
+    assert scope == ['omitted', 'requested']
+    assert identity['requested_nets'] == ['requested']
+    assert identity['sha256'] == candidates.freeze_scope(['requested'], list(reversed(inputs)))[1]['sha256']
+
+
+def test_short_attached_net_values_are_preserved():
+    parser = parser_for_tests()
+    args = SimpleNamespace(input_file='in.pcb', output_file='out.pcb')
+    result = candidates.child_argv(['in.pcb', 'out.pcb', '-nNET', 'NEXT'], args,
+                                   '/copy/in.pcb', '/trial/out.pcb', 's.json', parser)
+    assert result[:4] == ['/copy/in.pcb', '/trial/out.pcb', '-nNET', 'NEXT']
+    try:
+        parser.parse_args(['--out', 'out.pcb'])
+    except SystemExit as error:
+        assert error.code == 2
+    else:
+        raise AssertionError('abbreviated options must be refused consistently')
 
 
 if __name__ == '__main__':

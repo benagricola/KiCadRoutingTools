@@ -7,6 +7,7 @@ and independent grading share one wall-clock budget, including child processes.
 from __future__ import annotations
 
 from contextlib import ExitStack
+import hashlib
 import json
 import math
 import os
@@ -62,29 +63,46 @@ def prefer_pocket(legacy, pocket):
     return False
 
 
-def child_argv(argv, args, input_file, output_file, summary_file, parser):
+def freeze_scope(requested_scope, candidates, tasks=None):
+    """Both proposals owe exactly the same requested and discovered obligations."""
+    from route_summary import named_nets
+    requested = sorted(set(requested_scope))
+    scope = sorted(set(requested) | {net for candidate in candidates
+        for net in named_nets([candidate['summary'] or {}])})
+    identity = {'requested_nets': requested, 'graded_nets': scope, 'tasks': tasks}
+    identity['sha256'] = hashlib.sha256(json.dumps(identity, sort_keys=True,
+        separators=(',', ':')).encode('utf-8')).hexdigest()
+    return scope, identity
+
+
+def child_argv(argv, args, input_file, output_file, summary_file, parser, task_file=None):
     """Rewrite by argparse argument positions, never by matching token values."""
-    actions = {flag: action for action in parser._actions
-               for flag in action.option_strings}
     out, positional = [], 0
     i = 0
     while i < len(argv):
         token = argv[i]
-        flag = token.split('=', 1)[0]
-        if flag in actions:
-            action = actions[flag]
+        parsed = parser._parse_optional(token)
+        if parsed is not None and parsed[0] is not None:
+            action, flag, explicit = parsed[0], parsed[1], parsed[-1]
             count = 0
-            if '=' not in token:
+            if explicit is None:
                 if action.nargs in ('*', '+'):
                     j = i + 1
-                    while j < len(argv) and argv[j].split('=', 1)[0] not in actions:
+                    while j < len(argv) and parser._parse_optional(argv[j]) is None:
                         j += 1
                     count = j - i - 1
                 elif action.nargs == '?':
-                    count = int(i + 1 < len(argv) and argv[i + 1].split('=', 1)[0] not in actions)
+                    count = int(i + 1 < len(argv) and parser._parse_optional(argv[i + 1]) is None)
                 else:
                     count = 1 if action.nargs is None else action.nargs
-            if flag not in ('--output', '--json-out'):
+            elif action.nargs in ('*', '+'):
+                j = i + 1
+                while j < len(argv) and parser._parse_optional(argv[j]) is None:
+                    j += 1
+                count = j - i - 1
+            if action.dest == 'connections' and task_file is not None:
+                out.extend([flag, str(task_file)])
+            elif flag not in ('--output', '--json-out'):
                 out.extend(argv[i:i + count + 1])
             i += count + 1
             continue
@@ -192,7 +210,7 @@ def publish(candidate, output, json_out, provenance):
     print('ROUTE_CANDIDATES: ' + json.dumps(provenance, sort_keys=True))
 
 
-def maybe_run_candidates(args, argv, route_file, parser):
+def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
     if os.environ.get('KRT_INTERNAL_ROUTE_CANDIDATE'):
         return None
     unavailable = next((reason for active, reason in (
@@ -222,6 +240,10 @@ def maybe_run_candidates(args, argv, route_file, parser):
             source = Path(args.input_file).with_suffix(suffix)
             if source.is_file():
                 shutil.copy2(source, original.with_suffix(suffix))
+        task_file = None
+        if getattr(args, 'connections', None):
+            task_file = original.parent / 'connections.json'
+            shutil.copy2(args.connections, task_file)
         output_seed = root / 'output_seed'
         output_seed.mkdir()
         for suffix in ARTIFACT_SUFFIXES[1:]:
@@ -241,7 +263,7 @@ def maybe_run_candidates(args, argv, route_file, parser):
             if name == 'pocket':
                 env['KRT_INTERNAL_POCKET_WALLS'] = '1'
             command = [sys.executable, str(route_file)] + child_argv(
-                argv, args, original, board, summary_file, parser)
+                argv, args, original, board, summary_file, parser, task_file)
             provenance['attempts'] += 1
             try:
                 rc = run_child(command, log, env, deadline)
@@ -270,14 +292,17 @@ def maybe_run_candidates(args, argv, route_file, parser):
                     break
         selected = candidates[0]
         if len(candidates) == 2:
+            frozen_scope, scope_identity = freeze_scope(requested_scope, candidates,
+                load_json(task_file) if task_file else None)
+            provenance['scope'] = scope_identity
             for candidate in candidates:
                 grade_file = candidate['board'].parent / 'grade.json'
                 request = candidate['board'].parent / 'request.json'
                 request.write_text(json.dumps({'board': str(candidate['board']),
-                    'input': str(original), 'summary': candidate['summary'],
+                    'input': str(original), 'summary': candidate['summary'], 'scope': frozen_scope,
                     'explicit_width': args.track_width if '--track-width' in argv
                         or any(t.startswith('--track-width=') for t in argv) else None,
-                    'connections': getattr(args, 'connections', None),
+                    'connections': str(task_file) if task_file else None,
                     'power_nets': getattr(args, 'power_nets', None),
                     'power_nets_widths': getattr(args, 'power_nets_widths', None),
                     'impedance': getattr(args, 'impedance', None),
@@ -342,7 +367,7 @@ def grade_request(request):
                 widths_unknown = True
         scope = {t.net for t in tasks}
     else:
-        scope = set(named_nets([summary]))
+        scope = set(request['scope'])
         if not scope and summary.get('status') != 'already_connected':
             return {'known': False, 'reason': 'scope_missing'}
         ids = [nid for nid, net in board.nets.items() if net.name in scope]
