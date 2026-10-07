@@ -353,6 +353,9 @@ def protection_map(pcb_data, input_file: Optional[str] = None) -> Dict[str, str]
     m = read_for_pcb_data(pcb_data, input_file)
     m.update({n: 'graphic' for n in graphic_net_names(pcb_data)})
     m.update({n: 'locked' for n in locked_net_names(pcb_data)})
+    # FORK DIVERGENCE (docs/connections.md): the private nets a --connections
+    # call moves the rest of a net into are never ripped, like locked copper.
+    m.update({n: 'locked' for n in (getattr(pcb_data, 'connections_private_names', None) or ())})
     return m
 
 
