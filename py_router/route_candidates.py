@@ -136,22 +136,46 @@ def explicit_fields(argv, parser):
 
 
 def run_child(command, log, env, deadline):
-    """A process group gives timed-out graders' subprocesses the same deadline."""
+    """Reap this owned process group on deadline, signal, or supervisor error."""
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise TimeoutError('shared candidate deadline expired')
     with open(log, 'w', encoding='utf-8') as sink:
-        proc = subprocess.Popen(command, stdout=sink, stderr=subprocess.STDOUT,
-                                env=env, start_new_session=True)
+        proc = None
+        interrupted = None
+        handlers = {}
+
+        def interrupt(signum, frame):
+            nonlocal interrupted
+            interrupted = signum
+            # During Popen, defer the exception until we have its owned PID.
+            if proc is not None:
+                raise SystemExit(128 + signum)
+
         try:
-            return proc.wait(timeout=remaining)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            proc.wait()
-            raise TimeoutError('shared candidate deadline expired') from None
+            for signum in (signal.SIGTERM, signal.SIGINT):
+                handlers[signum] = signal.signal(signum, interrupt)
+            proc = subprocess.Popen(command, stdout=sink, stderr=subprocess.STDOUT,
+                                    env=env, start_new_session=True)
+            if interrupted is not None:
+                raise SystemExit(128 + interrupted)
+            return proc.wait(timeout=max(0, deadline - time.monotonic()))
+        except BaseException as error:
+            # A repeated interrupt must not interrupt our own kill/reap step.
+            for signum in handlers:
+                signal.signal(signum, signal.SIG_IGN)
+            if proc is not None:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.wait()
+            if isinstance(error, subprocess.TimeoutExpired):
+                raise TimeoutError('shared candidate deadline expired') from None
+            raise
+        finally:
+            for signum, previous in handlers.items():
+                signal.signal(signum, previous)
 
 
 def load_json(path):

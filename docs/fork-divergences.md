@@ -47,6 +47,10 @@ UTC deadline in `KRT_ROUTE_DEADLINE_UTC` takes precedence. Timeout of a proposal
 or grader retains the first result. There are at most two complete routing
 runs; each retains the existing per-search and rip caps. The internal child
 switches are `KRT_INTERNAL_ROUTE_CANDIDATE` and `KRT_INTERNAL_POCKET_WALLS`.
+TERM, INT and supervisor exceptions kill and reap the current owned child
+process group before propagation; temporary signal handlers are restored.
+An interrupted supervisor does not publish a candidate. Callers must allow
+TERM cleanup before resorting to an uncatchable KILL.
 
 Adoption requires known final-file connectivity in the actual selected net or
 pad-task scope, no physical DRC violations, and no requested-size violations.
