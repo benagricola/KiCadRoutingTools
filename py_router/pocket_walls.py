@@ -83,15 +83,19 @@ def _blocking_cells(obstacles, gx1, gy1, gx2, gy2, layer, r) -> List[Cell]:
 
 def flood_pocket(obstacles, starts: Sequence[Cell], track_margin, max_cells: int,
                  via_rung: int = 0,
-                 forbidden_layers: Iterable[int] = ()) -> Optional[PocketFlood]:
+                 forbidden_layers: Iterable[int] = (),
+                 sources: Sequence[Cell] = ()) -> Optional[PocketFlood]:
     """Flood from `starts` (the target's cells) on `obstacles`. Returns the
     region and its wall when it closes within `max_cells` states, else None
-    (the target is not boxed in). Works on a clone, so the caller's map keeps
+    (the target is not boxed in). A region that reaches any recorded search
+    source is also rejected. Both endpoint sets retain their search terminal
+    exemptions. Works on a clone, so the caller's map keeps
     its source/target cells."""
     if not starts:
         return None
     m = obstacles.clone()
-    for gx, gy, layer in starts:
+    source_cells = set(tuple(c) for c in sources)
+    for gx, gy, layer in (*starts, *sources):
         m.add_source_target_cell(gx, gy, layer)
     num_layers = m.num_layers
     forbidden = set(forbidden_layers)
@@ -109,6 +113,8 @@ def flood_pocket(obstacles, starts: Sequence[Cell], track_margin, max_cells: int
             return None
         gx, gy, layer = queue[i]
         i += 1
+        if (gx, gy, layer) in source_cells:
+            return None  # A reachable search source means the target is not trapped.
         r = _margin_at(track_margin, layer)
         if layer not in forbidden:
             for dx, dy in DIRECTIONS:
@@ -164,10 +170,12 @@ def pocket_wall_blockers(failed_edge_blocking: Dict, obstacles, pcb_data, config
     for _key, entry in failed_edge_blocking.items():
         dirs = entry[2] if len(entry) > 2 else None
         starts = tuple(sorted(set(tuple(c) for c in (dirs or {}).get('tgt_cells') or ())))
-        if not starts or starts in done:
+        sources = tuple(sorted(set(tuple(c) for c in (dirs or {}).get('src_cells') or ())))
+        key = (starts, sources)
+        if not starts or not sources or key in done:
             continue
-        done.add(starts)
-        flood = flood_pocket(obstacles, starts, margins, cap, rung, forbidden)
+        done.add(key)
+        flood = flood_pocket(obstacles, starts, margins, cap, rung, forbidden, sources)
         if flood is None or not flood.wall:
             continue
         walls = list(analyze_frontier_blocking(

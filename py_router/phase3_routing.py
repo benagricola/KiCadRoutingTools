@@ -957,7 +957,7 @@ def try_phase3_ripup(
     # merged ranking let a larger failure region's walls outrank a small
     # pocket's, and the ladder spent its rips without opening the pad.
     _pockets = []
-    if tap_obstacles is not None:
+    if tap_obstacles is not None and env_knobs.POCKET_WALLS:
         from pocket_walls import pocket_wall_blockers
         _pockets = pocket_wall_blockers(
             failed_edge_blocking, tap_obstacles, pcb_data, config, net_id,

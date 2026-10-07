@@ -72,6 +72,8 @@ def refresh() -> None:
     # Seeded neighbour swaps of the net order after the fan pass
     # (order_jitter.py), for measuring order sensitivity; 0 = none.
     g['ORDER_JITTER'] = _i('KICAD_ORDER_JITTER', 0)
+    # FORK DIVERGENCE: only the isolated CLI fallback candidate enables this.
+    g['POCKET_WALLS'] = _opt_in('KRT_INTERNAL_POCKET_WALLS')
     # In-loop stub-debris trim (default ON, KICAD_STUB_DEBRIS_TRIM=0
     # reverts): when a route commits, immediately prune the unused
     # branches of its own pre-existing stub tree AND any via they leave
