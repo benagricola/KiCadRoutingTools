@@ -117,6 +117,10 @@ def t_unrecorded_search_start_is_unknown():
     facts = search_facts({'iterations_forward': 1, 'iterations_backward': 2}, pcb, cfg, 1, {1})
     check('unrecorded starts are not inferred from endpoints',
           facts['forward']['at'] is None and facts['backward']['at'] is None, facts)
+    missing = search_facts({}, pcb, cfg, 1, {1})
+    check('unrecorded counts stay unknown',
+          missing['forward']['iterations'] is None and missing['forward']['frontier_cells'] is None, missing)
+    check('recorded iterations remain exact', facts['forward']['iterations'] == 1, facts)
 
 
 def t_static_records_name_the_pads():

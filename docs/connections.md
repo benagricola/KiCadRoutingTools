@@ -87,7 +87,7 @@ A `failed` or `joined_narrow` record's `evidence` holds what the router recorded
 
 ```
 {"scope": "net" | "task",
- "search": {"forward":  {"iterations": int, "frontier_cells": int, "at": [x, y], "end": {"ref", "pad"} | null},
+ "search": {"forward":  {"iterations": int | null, "frontier_cells": int | null, "at": [x, y], "end": {"ref", "pad"} | null},
             "backward": {...}} | null,
  "blocked_by": [{"found_by": "frontier" | "static" | "preexisting",
                  "kind": "routed_copper" | "pad" | "track" | "copper",

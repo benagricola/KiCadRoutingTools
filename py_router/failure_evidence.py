@@ -55,7 +55,10 @@ def search_facts(result, pcb_data, config, net_id, nets_to_route) -> dict:
     out, static = {}, []
     for d in ("forward", "backward"):
         cells = list(result.get('blocked_cells_' + d) or [])
-        out[d] = {"iterations": int(result.get('iterations_' + d, 0)), "frontier_cells": len(cells), "at": result.get("search_start_" + d)}
+        iterations = result.get("iterations_" + d)
+        out[d] = {"iterations": int(iterations) if iterations is not None else None,
+                  "frontier_cells": len(cells) if "blocked_cells_" + d in result else None,
+                  "at": result.get("search_start_" + d)}
         recs = static_blocker_records(cells, pcb_data, config, set(nets_to_route), net_id=net_id)
         static += [dict(r, seen_from=d) for r in recs]
     out["static"] = static
