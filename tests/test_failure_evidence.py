@@ -65,6 +65,7 @@ def t_blockers_keep_where_they_were_found():
         {"net": "SIG", "blocked_count": 30, "unique_cells": 30, "track_cells": 30, "via_cells": 0,
          "near_target_cells": 5, "near_source_cells": 0}]}}
     history = {1: [{"event": "search_failed", "details": search},
+                   {"event": "frontier_blocking", "details": frontier[1]},
                    {"event": "preexisting_blockers", "details": {"hint": "text", "blockers": ["GND"]}}]}
     e = evidence_of(state(history, frontier), 1)
     check('blockers in found order', [b["found_by"] for b in e["blocked_by"]] == ["frontier", "static", "preexisting"],
@@ -90,6 +91,32 @@ def t_a_search_a_later_route_superseded_is_dropped():
     e = evidence_of(state({1: [{"event": "initial_route", "details": {}},
                                {"event": "search_failed", "details": search}]}), 1)
     check('a search after the last route is kept', e["search"] is not None, e["search"])
+
+
+def t_old_failure_facts_do_not_survive_success_or_a_new_search():
+    from failure_evidence import evidence_of
+    search = {'forward': {'iterations': 5, 'frontier_cells': 1, 'at': None},
+              'backward': {'iterations': 6, 'frontier_cells': 1, 'at': None}, 'static': []}
+    frontier = {'blocked_by': [{'net': 'OLD', 'blocked_count': 9}]}
+    old = [{'event': 'search_failed', 'details': search},
+           {'event': 'boxed_in_static', 'details': BOXED},
+           {'event': 'preexisting_blockers', 'details': {'blockers': ['OLD']}},
+           {'event': 'frontier_blocking', 'details': frontier}]
+    for boundary in ([{'event': 'rescue_succeeded', 'details': {}}], []):
+        history = old + boundary + [{'event': 'search_failed', 'details': search}]
+        ev = evidence_of(state({1: history}, {1: frontier}), 1)
+        check('new failure clears old verdict and blockers',
+              ev['diagnosis'] == 'unknown' and ev['verdicts'] == [] and ev['blocked_by'] == [], ev)
+
+
+def t_unrecorded_search_start_is_unknown():
+    from failure_evidence import search_facts
+    from routing_config import GridRouteConfig
+    pcb = make_pcb(nets={1: Net(1, 'SIG')})
+    cfg = GridRouteConfig(layers=['F.Cu', 'B.Cu'])
+    facts = search_facts({'iterations_forward': 1, 'iterations_backward': 2}, pcb, cfg, 1, {1})
+    check('unrecorded starts are not inferred from endpoints',
+          facts['forward']['at'] is None and facts['backward']['at'] is None, facts)
 
 
 def t_static_records_name_the_pads():
@@ -214,6 +241,8 @@ if __name__ == '__main__':
     t_two_verdicts_are_unknown()
     t_blockers_keep_where_they_were_found()
     t_a_search_a_later_route_superseded_is_dropped()
+    t_old_failure_facts_do_not_survive_success_or_a_new_search()
+    t_unrecorded_search_start_is_unknown()
     t_static_records_name_the_pads()
     t_static_tracks_per_net_and_layer()
     t_static_evidence_rejects_diagonal_bbox_and_preserves_legacy_pad_layers()

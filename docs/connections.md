@@ -101,17 +101,22 @@ A `failed` or `joined_narrow` record's `evidence` holds what the router recorded
 
 - `scope`: `"net"` for a failed task. KRT routes one group per net per call, so the evidence is the net's routed
   group's and every failed task of that group carries the same record. `"task"` for `joined_narrow`.
-- `search`: the net's last failed A* search (single_ended_loop.py, the failure branch, event `search_failed`), per
-  direction: its iterations and the number of frontier cells it found blocked (`iterations_forward/backward`,
-  `blocked_cells_forward/backward`), and `at`, the point it started from: the net's first source or target from
-  `get_net_endpoints` (connectivity.py:1131). `end` is the task end whose pad copper contains `at`
-  (using the pad's shape and rotation), else null. A search a later route of the net superseded (an `initial_route`,
-  `reroute_succeeded`, `rescue_succeeded` or `terminal_escalation_succeeded` event after it) is not reported. Null
-  when no failed search is on record.
+- `search`: the net's last recorded failed A* search (single_ended_loop.py,
+  event `search_failed`), per direction: its iterations and blocked frontier
+  cell count (`iterations_forward/backward`, `blocked_cells_forward/backward`).
+  `at` is null unless the search result explicitly records its actual start;
+  KRT currently does not. It is never reconstructed from net endpoints,
+  which may differ from the searched edge on multipoint nets. `end` is the
+  task end whose pad copper contains a recorded `at`, else null.
+  Search, verdict and blocker events are limited to the current recorded
+  failure epoch: after the latest successful route and from the latest
+  recorded failed search. Null when no failed search is on record.
 - `blocked_by`, in this order:
   - `frontier`, `routed_copper`: copper this run routed that the frontier met, per net, with its cell count and the
     cells near the source and the target (`analyze_frontier_blocking`, blocking_analysis.py:266; recorded last-wins
-    in `state.frontier_blocking`, blocking_analysis.py:149-163);
+    as a `frontier_blocking` history event. The legacy `state.frontier_blocking`
+    cache remains last-non-empty for its existing summary consumers; evidence
+    does not use that cache because it may describe an earlier failure;
   - `static`: the static copper the failed search's frontier cells fall on, per direction (`seen_from`): a pad of
     another net by part `ref`, `pad` number and centre, or a net's earlier tracks per `layer`, `at` the first hit
     segment's midpoint, `cells` the frontier cells it accounts for (`static_blocker_records`, blocking_analysis.py,
@@ -147,7 +152,7 @@ set for the call and its reconcile sub-runs), since finding the static copper co
 
 A multipoint net (a group whose ends span more than two pads) fails in one of two places. Its main edge
 (single_ended_routing.py `route_multipoint_main`) fails through the same branch as a two-pad net, so its `search` is
-recorded, with `at` from `get_net_endpoints`, which need not be the failed edge's pads. A tap edge
+recorded, with `at: null` because actual search starts are not recorded. A tap edge
 (`route_multipoint_taps`) discards its per-direction iteration counts (single_ended_routing.py:5026-5031) and records
 no search: such a failure has `search: null`, with whatever `frontier_blocking` (the phase 3 rip-up's,
 phase3_routing.py:944) and the verdict events hold.

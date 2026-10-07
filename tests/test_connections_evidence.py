@@ -111,8 +111,10 @@ def t_an_end_boxed_in_by_pads_says_so(tmp):
     check('KRT says boxed in', ev.get('diagnosis') == 'boxed_in_static', ev)
     check('within its iteration bound', all(v.get('iterations', 0) < 20000 for v in ev.get('verdicts') or ()),
           ev.get('verdicts'))
-    ends = [d.get('end') for d in (ev.get('search') or {}).values()]
-    check('the search from J1.1 is named by its end', {"ref": "J1", "pad": "1"} in ends, ev.get('search'))
+    directions = list((ev.get('search') or {}).values())
+    check('unrecorded search starts and ends remain unknown',
+          len(directions) == 2 and all(d.get('at') is None and d.get('end') is None for d in directions),
+          ev.get('search'))
     check('the ring is named by its pads', {b['pad'] for b in ev.get('blocked_by') or ()
                                             if b['found_by'] == 'static' and b['ref'] == 'U2'}
           == {str(i + 1) for i in range(8)}, ev.get('blocked_by'))
