@@ -317,7 +317,8 @@ def _empty_results_data() -> dict:
 # defined here was two sinks. Aliases only; mutate in place, never rebind.
 from route_summary import (SUMMARY_SINK as _SUMMARY_SINK,          # noqa: E402
                            RECONCILE_RAISED as _RECONCILE_RAISED,
-                           FINAL_REGRADE as _FINAL_REGRADE)
+                           FINAL_REGRADE as _FINAL_REGRADE,
+                           FAILURE_EVIDENCE as _FAILURE_EVIDENCE)
 
 # #562 finalize re-entry guard. batch_route's plane finalize calls
 # repair_planes, whose own rip-casualty / pad-repair sub-runs call batch_route
@@ -1103,6 +1104,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     if json_out or final_reconcile:
         from route_summary import reset_run_state as _reset_run1069
         _reset_run1069()
+    # FORK DIVERGENCE (docs/connections.md, "Failure evidence"): a run that
+    # writes a summary records its failed searches, and so do its sub-runs.
+    if json_out:
+        _FAILURE_EVIDENCE[0] = True
     if not _SUMMARY_SINK:
         # First (outermost) entry of this process's run: start the
         # protected-net refusal record clean. The nested sub-runs re-enter
@@ -1242,9 +1247,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                   {st: sum(1 for t in _conn_tasks if (t.status or 'open') == st)
                    for st in {(t.status or 'open') for t in _conn_tasks}}.items())))
 
-    def _conn_records(pcb_after=None, routed=True):
+    def _conn_records(pcb_after=None, routed=True, net_evidence=None):
         """The `connections` summary records, measured on pcb_after (the board
-        the call ships), or None outside a --connections call."""
+        the call ships), or None outside a --connections call. `net_evidence`:
+        the run's per-net failure evidence (the summary's `net_evidence`)."""
         if _conn_tasks is None:
             return None
         import connections as _conn
@@ -1257,6 +1263,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             for _t in _conn_tasks:
                 if _t.status is None:
                     _t.status = 'failed'
+        # FORK DIVERGENCE (docs/connections.md, "Failure evidence").
+        _conn.attach_evidence(_conn_tasks, net_evidence or {}, names={
+            pcb_data.nets[_pid].name: pcb_data.nets[_nid].name
+            for _nid, _pid in _conn_private.items()
+            if _pid in pcb_data.nets and _nid in pcb_data.nets})
         return _conn.records(_conn_tasks)
 
     # Cross-class clearance: when no map was passed (net_clearances is None -- e.g.
@@ -1746,6 +1757,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         print(f"Same-net pad via clearance {_snpc581:g}mm (from {_snpc_src}, "
               f"#581): vias stay off same-net pads")
     config = GridRouteConfig(**config_kwargs)
+    # FORK DIVERGENCE (docs/connections.md, "Failure evidence").
+    config.failure_evidence = bool(json_out) or _FAILURE_EVIDENCE[0]
     # FORK DIVERGENCE (docs/connections.md): --bus-nets groups, resolved the way
     # --nets patterns are (bus_detection.resolve_stated_buses).
     if bus_nets:
@@ -4652,6 +4665,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     boxed_in_report = []
     fanout_dropped_report = []
     sealed_by_snpc_report = []
+    net_evidence = {}
     try:
         _final_failed_ids = list(dict.fromkeys(
             failed_single_ids + [m['net_id'] for m in failed_multipoint]))
@@ -4718,6 +4732,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                     _sn = _ev.get('details') or _sn
             if _sn:
                 sealed_by_snpc_report.append(dict(_sn, net=_name))
+            # FORK DIVERGENCE (docs/connections.md): the same facts as one record per net.
+            from failure_evidence import evidence_of
+            net_evidence[_name] = evidence_of(state, _nid)
         if blockers_report:
             summary['blockers'] = blockers_report
         if boxed_in_report:
@@ -4726,6 +4743,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             summary['fanout_dropped'] = fanout_dropped_report
         if sealed_by_snpc_report:
             summary['sealed_by_snpc'] = sealed_by_snpc_report
+        if net_evidence:
+            summary['net_evidence'] = net_evidence
     except Exception:
         blockers_report = []
     # #409 follow-up: pad-pair routability tallies (PRR ingredients: connected
@@ -6983,7 +7002,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                               f"{output_file} ({_cpe}); measuring in memory")
                 if _merged is None:
                     _merged = {}
-                _merged['connections'] = _conn_records(_conn_after, routed=True)
+                _merged['connections'] = _conn_records(
+                    _conn_after, routed=True,
+                    net_evidence=_merged.get('net_evidence'))
             # FORK DIVERGENCE (docs/connections.md): the bus groups this call
             # routed, stated and detected, in route order.
             if config.bus_enabled:

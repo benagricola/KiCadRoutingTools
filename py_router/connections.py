@@ -51,6 +51,8 @@ class Task:
     path: Optional[list] = None          # the joining path's segments, kept for joined_narrow only
     start_roots: set = field(default_factory=set)
     end_roots: set = field(default_factory=set)
+    layers: list = field(default_factory=list)       # the layers the call routed
+    evidence: Optional[dict] = None                  # failed and joined_narrow only (attach_evidence)
 
     def record(self) -> dict:
         path = None
@@ -59,7 +61,8 @@ class Task:
                     for s in self.path]
         return {"net": self.net, "from": dict(self.start), "to": dict(self.end), "status": self.status,
                 "reason": self.reason, "joined": self.joined, "length_mm": self.length_mm,
-                "min_width_mm": dict(self.min_width_mm), "path": path}
+                "min_width_mm": dict(self.min_width_mm), "path": path,
+                "widths": dict(self.widths), "layers": list(self.layers), "evidence": self.evidence}
 
 
 def read_file(path) -> list:
@@ -91,6 +94,7 @@ def resolve(raw: list, pcb_data, routing_layers, min_track: float) -> List[Task]
         task = Task(i, t['net'], {"ref": t['from']['ref'], "pad": t['from']['pad']},
                     {"ref": t['to']['ref'], "pad": t['to']['pad']},
                     {k: float(v) for k, v in t['widths'].items()})
+        task.layers = list(routing_layers)
         out.append(task)
         nid = by_name.get(task.net)
         task.net_id = nid
@@ -342,3 +346,37 @@ def _finish(pcb_after, tasks, chosen, routed):
 
 def records(tasks: List[Task]) -> list:
     return [t.record() for t in tasks]
+
+
+def _end_at(t: Task, at) -> Optional[dict]:
+    """The task end whose pad copper contains `at`, else None."""
+    if at is None:
+        return None
+    from check_drc import point_to_pad_distance
+    for end, pads in ((t.start, t.start_pads), (t.end, t.end_pads)):
+        if any(point_to_pad_distance(at[0], at[1], p) <= 1e-6 for p in pads):
+            return dict(end)
+    return None
+
+
+def attach_evidence(tasks: List[Task], net_evidence: dict, names: Optional[dict] = None) -> None:
+    """Each failed task carries its net's evidence (failure_evidence.EMPTY when the run recorded none); a joined_narrow
+    task carries the segments of its joining path under their layer's asked width. `names` maps a private obstacle
+    net's name (split_nets) to its net's name, so copper of the task's own net outside its ends is named by that net."""
+    import copy
+    from failure_evidence import EMPTY
+    names = names or {}
+    for t in tasks:
+        if t.status == 'failed':
+            t.evidence = copy.deepcopy(net_evidence.get(t.net) or EMPTY)
+            for b in t.evidence.get("blocked_by") or ():
+                b["net"] = names.get(b.get("net"), b.get("net"))
+            for d in (t.evidence.get("search") or {}).values():
+                d["end"] = _end_at(t, d.get("at"))
+        elif t.status == 'joined_narrow':
+            narrow = [{"layer": s.layer, "start": [s.start_x, s.start_y], "end": [s.end_x, s.end_y],
+                       "width": s.width, "need": t.widths[s.layer]}
+                      for s in (t.path or ()) if s.layer in t.widths and s.width < t.widths[s.layer] - 1e-6]
+            t.evidence = dict(copy.deepcopy(EMPTY), scope="task", narrow=narrow, diagnosis="narrow_copper")
+        else:
+            t.evidence = None

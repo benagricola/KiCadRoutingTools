@@ -42,6 +42,25 @@ Deliberate differences between this fork and upstream. Each is marked in the cod
 - Why: placemat's routing phases route chosen connections of a net at their own widths.
 - Test: tests/test_connections_unit.py, tests/test_connections_route.py.
 
+## Failure evidence as data
+
+- Upstream: the facts about a failed net are printed and partly serialised in the summary's `blockers`, `boxed_in`,
+  `fanout_dropped` and `sealed_by_snpc`; the static copper a failed search met is printed as strings only
+  (`analyze_static_blockers`), and the failed search's iterations and frontier are not kept.
+- Fork: a failed search is recorded as a `search_failed` net event when the call writes a summary
+  (`GridRouteConfig.failure_evidence`, single_ended_loop.py); `static_blocker_records` (blocking_analysis.py) returns
+  the static copper as records and `analyze_static_blockers` prints from them (its strings unchanged; the track loop
+  keeps one record per net and layer). Evidence checks distance to the actual segment,
+  avoiding attribution to the empty corners of a diagonal track's bounding box, and uses pairwise obstacle clearance. For the evidence (`net_id` given) a cell is tested at the failed net's own
+  track width plus a cell's slack, and a `*.Cu` pad counts on every layer; upstream's tests, kept for the print,
+  use a track bounding box grown by its own half-width only and compare pad layers by name, so they name neither a wide net's
+  blocking tracks nor any through-hole pad; `failure_evidence.evidence_of` builds one record per failed net, written as
+  the summary's `net_evidence` (route.py, merged in route_summary.py) and as each failed or `joined_narrow`
+  connections record's `evidence`. Each marked `FORK DIVERGENCE`. Described in docs/connections.md, "Failure
+  evidence".
+- Why: placemat's run loop reads why a connection failed as data, to choose what to move.
+- Test: tests/test_failure_evidence.py, tests/test_connections_evidence.py.
+
 ## --bus-nets: a stated bus
 
 - Upstream: `--bus` detects bus groups from clustered endpoints, drops groups the geometric filter does not accept
