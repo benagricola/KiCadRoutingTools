@@ -101,8 +101,8 @@ A `failed` or `joined_narrow` record's `evidence` holds what the router recorded
 
 - `scope`: `"net"` for a failed task. KRT routes one group per net per call, so the evidence is the net's routed
   group's and every failed task of that group carries the same record. `"task"` for `joined_narrow`.
-- `search`: the net's last recorded failed A* search (single_ended_loop.py,
-  event `search_failed`), per direction: its iterations and blocked frontier
+- `search`: the net's latest recorded actual failed search (initial/retry, rescue,
+  reroute and committing oracle attempts; event `search_failed`), per direction: its iterations and blocked frontier
   cell count (`iterations_forward/backward`, `blocked_cells_forward/backward`).
   `at` is null unless the search result explicitly records its actual start;
   KRT currently does not. It is never reconstructed from net endpoints,
@@ -141,11 +141,17 @@ A `failed` or `joined_narrow` record's `evidence` holds what the router recorded
   `unknown`. `unknown` is a valid answer: when a search fails KRT cannot tell an end it could not leave from a
   corridor it could not cross or a via it could not place.
 
-The search on record is at the asked widths. KRT's terminal geometry escalation (net_rescue.py
-`terminal_geometry_escalation`) and per-net rescue (`rescue_failed_nets`) retry a failed net narrower. When one
-routes it, the task reads `routed` and its `min_width_mm` is under its `widths` (a 1.0 mm task through 0.84 mm gaps
-was routed at 0.418 mm). When none does, their tries are not in the evidence; the summary's `terminal_escalations`
-names their outcome per net.
+The search on record may be from a later retry or narrower rescue attempt. Its static frontier attribution
+uses that attempt's actual routing configuration and terrain before frontier consumption or terrain restoration.
+The optional top-level `attempt` record carries the actual configuration clone: `grid_step_mm`,
+`track_widths_mm` keyed by canonical copper layer, `layers`, `via_size_mm` and `via_drill_mm`. Dimensions
+are finite and positive; unavailable or unsupported facts are null, never inferred from the task's asked
+`widths`. Older evidence may omit `attempt`. This records search geometry, not fabricated copper legality
+or fabrication permission. Directional `search` records remain separate from `attempt`. A successful partial search clears older
+failure evidence even if the net remains open. A found route later rejected or rolled back clears it to unknown;
+it does not become a fabricated failed-search verdict. An unavailable latest result likewise invalidates stale
+facts. Noncommitting feasibility and width-upgrade probes do not replace the net's actual failure epoch.
+The summary's `terminal_escalations` records narrower whole-net outcomes separately.
 
 The failed search is recorded only when the call writes a summary (`--json-out`; `GridRouteConfig.failure_evidence`,
 set for the call and its reconcile sub-runs), since finding the static copper costs time on every failed search.

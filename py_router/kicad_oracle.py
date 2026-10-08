@@ -1679,7 +1679,8 @@ def oracle_reconnect(board_file: str, net_names, config,
                      project_from: str = None,
                      net_clearances_by_name: Optional[Dict[str, float]] = None,
                      net_widths_by_name: Optional[Dict[str, dict]] = None,
-                     net_ids_by_name: Optional[Dict[str, int]] = None
+                     net_ids_by_name: Optional[Dict[str, int]] = None,
+                     search_observer=None
                      ) -> dict:
     """Route the exact missing links kicad-cli reports for `net_names` on
     `board_file`, in place, until KiCad is satisfied or no progress.
@@ -2348,6 +2349,10 @@ def oracle_reconnect(board_file: str, net_names, config,
                         track_margin=0,
                         max_iterations=max_iterations,
                         verbose=verbose)
+                    if search_observer is not None:
+                        found=bool(_eres and (len(_eres[0]) >= 2 or _eres[1]))
+                        search_observer({'failed':False} if found else None,
+                                        pcb_data,_ecfg,net_id)
                     if _eres and (len(_eres[0]) >= 2 or _eres[1]):
                         return 'route', (_eres, _ecfg, _eobst)
                 # Rescue-ladder the approach gap (scoped window, fine grid,
@@ -2363,7 +2368,8 @@ def oracle_reconnect(board_file: str, net_names, config,
                     _esc2, _esc2_cfg = _attempt_edge(
                         pcb_data, net_id, _gap2, config,
                         config.net_clearances or None,
-                        strict_endpoints=True)
+                        strict_endpoints=True,
+                        search_observer=search_observer)
                 except Exception:
                     _esc2 = None
                 if _esc2 and not _esc2.get('failed'):
@@ -2622,6 +2628,10 @@ def oracle_reconnect(board_file: str, net_names, config,
                     track_margin=0,
                     max_iterations=max_iterations,
                     verbose=verbose)
+                if search_observer is not None:
+                    found=bool(result and (len(result[0]) >= 2 or result[1]))
+                    search_observer({'failed':False} if found else None,
+                                    pcb_data,rung_cfg,net_id)
                 if result:
                     used_via_size, used_via_drill = vs, vd
                     break
@@ -2704,7 +2714,8 @@ def oracle_reconnect(board_file: str, net_names, config,
                     _esc, _esc_cfg = _attempt_edge(
                         pcb_data, net_id, _gap, config,
                         config.net_clearances or None,
-                        strict_endpoints=True)
+                        strict_endpoints=True,
+                        search_observer=search_observer)
                 except Exception as _ee:
                     if verbose:
                         print(f"    (weld escalation unavailable: {_ee})")
@@ -3018,6 +3029,10 @@ def oracle_reconnect(board_file: str, net_names, config,
                     track_margin=0,
                     max_iterations=max_iterations,
                     verbose=verbose)
+                if search_observer is not None:
+                    found=bool(result2 and (len(result2[0]) >= 2 or result2[1]))
+                    search_observer({'failed':False} if found else None,
+                                    pcb_data,rung_cfg,net_id)
                 if result2 and (len(result2[0]) >= 2 or result2[1]):
                     result = result2
                     route_points, via_positions = result

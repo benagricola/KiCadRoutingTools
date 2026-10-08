@@ -1600,6 +1600,13 @@ def _retry_victim_main_with_ripup(
             result = route_net_with_obstacles(pcb_data, victim_id, config, obstacles,
                                               attraction_path=_attr, reverse_direction=_rev)
 
+        if getattr(config, 'failure_evidence', False):
+            from failure_evidence import search_observer
+            search_observer(state, state.all_unrouted_net_ids)(
+                result, pcb_data, config, victim_id,
+                rejected=bool(result and not result.get('failed')
+                              and not (result.get('path') or result.get('phase1_exhausted'))))
+
         if result and not result.get('failed') \
                 and (result.get('path') or result.get('phase1_exhausted')):
             # phase1_exhausted (#348) is a SUCCESS shape: no new main copper,
@@ -1702,6 +1709,11 @@ def _reroute_phase3_ripped_nets(
             # Route the main path for simple nets
             result = route_net_with_obstacles(pcb_data, ripped_net_id, config, obstacles,
                                               attraction_path=_attr, reverse_direction=_rev)
+
+        if getattr(config, 'failure_evidence', False):
+            from failure_evidence import search_observer
+            search_observer(state, state.all_unrouted_net_ids)(
+                result, pcb_data, config, ripped_net_id)
 
         # A victim whose main re-route fails BARE strands, and the #85
         # arbitration then abandons the (successful) tap rip-up that ripped

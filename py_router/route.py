@@ -5087,8 +5087,15 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                             install_layer_clearances(
                                 _cap_cfg, dict(config.layer_clearances or {}),
                                 input_file, None)
+                            _cap_observe = None
+                            if getattr(config, 'failure_evidence', False):
+                                from failure_evidence import oracle_search_observer
+                                _cap_cfg.failure_evidence = True
+                                _cap_observe = oracle_search_observer(
+                                    state,state.all_unrouted_net_ids)
                             _orc_cap = oracle_reconnect(
                                 output_file, _mvnames, _cap_cfg,
+                                search_observer=_cap_observe,
                                 track_via_clearance=config.clearance,
                                 hole_to_hole_clearance=(
                                     config.hole_to_hole_clearance),
@@ -5756,8 +5763,15 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 # board every round, and on the GUI that board is a pcbnew
                 # save whose net ids are not this run's.
                 _ncbn9 = config.net_clearances_by_name(pcb_data.nets)
+                _oracle_observe = None
+                if getattr(config, 'failure_evidence', False):
+                    from failure_evidence import oracle_search_observer
+                    _ocfg.failure_evidence = True
+                    _oracle_observe = oracle_search_observer(
+                        state,state.all_unrouted_net_ids)
                 _orc = oracle_reconnect(
                     _orc_file9, _zna, _ocfg,
+                    search_observer=_oracle_observe,
                     track_via_clearance=defaults.PLANE_TRACK_VIA_CLEARANCE,
                     hole_to_hole_clearance=config.hole_to_hole_clearance,
                     progress_callback=_opc9,

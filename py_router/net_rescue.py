@@ -627,7 +627,7 @@ def _fence_window(obstacles, window, cfg):
 
 
 def _attempt_edge(pcb_data, net_id, gap, config, net_clearances,
-                  strict_endpoints: bool = False, island_points=None):
+                  strict_endpoints: bool = False, island_points=None, search_observer=None):
     """Try to route one gap inside a scoped window. Returns (result, cfg_used)
     or (None, None). Routes through free space only - no rip-up.
 
@@ -761,14 +761,20 @@ def _attempt_edge(pcb_data, net_id, gap, config, net_clearances,
         result = route_net_with_obstacles(window, net_id, cfg, obstacles, bounds=bounds,
                                           sources_override=src_over,
                                           targets_override=tgt_over)
+        if search_observer is not None:
+            search_observer(result, window, cfg, net_id)
         if result and not result.get('failed'):
             if _result_escapes_window(result, window, cfg):
+                if search_observer is not None:
+                    search_observer(result, window, cfg, net_id, rejected=True)
                 print(f"    rescue rung rejected: route escaped the window "
                       f"bounds (fence leak) net={net_id}")
                 continue
             _tie_bad = _tie_band_violations(
                 pcb_data, net_id, cfg, result.get('new_segments') or [])
             if _tie_bad:
+                if search_observer is not None:
+                    search_observer(result, window, cfg, net_id, rejected=True)
                 _s, _p, _d = _tie_bad[0]
                 print(f"    rescue rung rejected: {len(_tie_bad)} segment(s) "
                       f"ride net-tie partner pad "
@@ -1436,9 +1442,14 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                     for x, y in comp_points.get(gap_cid, [])}
             _isl.update((round(p.global_x, 3), round(p.global_y, 3))
                         for p in comp_pads.get(gap_cid, []))
+            observe_search = None
+            if getattr(config, 'failure_evidence', False):
+                from failure_evidence import search_observer
+                observe_search = search_observer(state, state.all_unrouted_net_ids)
             result, used_cfg = _attempt_edge(pcb_data, net_id, gap, config,
                                              net_clearances,
-                                             island_points=_isl)
+                                             island_points=_isl,
+                                             search_observer=observe_search)
             if result is None:
                 failed_gaps.add(key)
                 continue
@@ -1448,6 +1459,8 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                                                                     net_id)
             if num_after >= num:
                 # Window connectivity lied (copper outside the window) - undo.
+                if observe_search is not None:
+                    observe_search(result, pcb_data, used_cfg, net_id, rejected=True)
                 remove_route_from_pcb_data(pcb_data, result)
                 num, comp_points, comp_pads = _net_component_info(pcb_data,
                                                                   net_id)
@@ -1718,7 +1731,7 @@ def _escalation_ladder(config, pcb_data, net_id):
 
 
 def _attempt_net_at_geometry(pcb_data, net_id, cfg, net_clearances,
-                             cancel_check=None):
+                             cancel_check=None, search_observer=None):
     """One escalation rung: a BOARD-GLOBAL obstacle map rebuilt at the rung's
     geometry (a smaller width/via gains nothing on the run's shared map --
     its inflation is baked at the run geometry, the #371 lesson), then the
@@ -1787,6 +1800,8 @@ def _attempt_net_at_geometry(pcb_data, net_id, cfg, net_clearances,
         result = route_net_with_obstacles(pcb_data, net_id, cfg, obstacles,
                                           sources_override=src_over,
                                           targets_override=tgt_over)
+        if search_observer is not None:
+            search_observer(result, pcb_data, cfg, net_id)
         if not result or result.get('failed'):
             failed_gaps.add(key)
             continue
@@ -1795,6 +1810,8 @@ def _attempt_net_at_geometry(pcb_data, net_id, cfg, net_clearances,
                                                                 net_id)
         if num_after >= num:
             # The route joined nothing new (authoritative check) - undo.
+            if search_observer is not None:
+                search_observer(result, pcb_data, cfg, net_id, rejected=True)
             remove_route_from_pcb_data(pcb_data, result)
             num, comp_points, comp_pads = _net_component_info(pcb_data, net_id)
             failed_gaps.add(key)
@@ -1883,13 +1900,20 @@ def terminal_geometry_escalation(state, single_ended_nets, net_clearances=None,
             print(f"  terminal escalation: {net_name} at track "
                   f"{cfg.track_width:.4g} via {cfg.via_size:.4g}/"
                   f"{cfg.via_drill:.4g} (rung {k}/{n_rungs})")
+            observe_search = None
+            if getattr(cfg, 'failure_evidence', False):
+                from failure_evidence import search_observer
+                observe_search = search_observer(state, state.all_unrouted_net_ids)
             edges, fully = _attempt_net_at_geometry(
-                pcb_data, net_id, cfg, net_clearances, cancel_check)
+                pcb_data, net_id, cfg, net_clearances, cancel_check,
+                search_observer=observe_search)
             if fully:
                 accepted_cfg = cfg
                 edge_results = edges
                 break
             # Rejected rung: undo completely so nothing changes.
+            if edges and observe_search is not None:
+                observe_search(None, pcb_data, cfg, net_id, rejected=True)
             for r in reversed(edges):
                 remove_route_from_pcb_data(pcb_data, r)
 

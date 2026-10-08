@@ -377,6 +377,10 @@ def run_reroute_loop(
             elapsed = time.time() - start_time
             total_time += elapsed
 
+            if getattr(config, 'failure_evidence', False):
+                from failure_evidence import search_observer
+                search_observer(state, all_unrouted_net_ids)(
+                    result, pcb_data, config, ripped_net_id)
             if result and not result.get('failed'):
                 routed_length = calculate_route_length(result['new_segments'], result.get('new_vias', []), pcb_data)
                 route_length = routed_length + stub_length
@@ -650,6 +654,10 @@ def run_reroute_loop(
                                                                         attraction_path=_attr,
                                                                         reverse_direction=_rev)
 
+                            if getattr(config, 'failure_evidence', False):
+                                from failure_evidence import search_observer
+                                search_observer(state, all_unrouted_net_ids)(
+                                    retry_result, pcb_data, config, ripped_net_id)
                             if retry_result and not retry_result.get('failed'):
                                 routed_length = calculate_route_length(retry_result['new_segments'], retry_result.get('new_vias', []), pcb_data)
                                 route_length = routed_length + stub_length

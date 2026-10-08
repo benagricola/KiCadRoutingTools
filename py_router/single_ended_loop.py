@@ -143,8 +143,13 @@ def _route_on_prepared_map(pcb_data, net_id, config, state, routed_net_ids,
         layer_map, state.net_obstacles_cache,
         state.ripped_route_layer_costs, state.ripped_route_via_positions)
     try:
-        return route_net_with_obstacles(pcb_data, net_id, config,
-                                        state.working_obstacles)
+        result = route_net_with_obstacles(pcb_data, net_id, config,
+                                          state.working_obstacles)
+        if getattr(config, 'failure_evidence', False):
+            from failure_evidence import search_observer
+            search_observer(state, state.all_unrouted_net_ids)(
+                result, pcb_data, config, net_id)
+        return result
     finally:
         restore_obstacles_inplace(state.working_obstacles, net_id,
                                   state.net_obstacles_cache, via_cells)
@@ -914,10 +919,10 @@ def route_single_ended_nets(
             print(f"  FAILED: Could not find route ({elapsed:.2f}s)")
             total_iterations += iterations
             # FORK DIVERGENCE (docs/connections.md): the failed search as data, before rip-up pops its cells.
-            if getattr(config, 'failure_evidence', False) and result:
-                from failure_evidence import search_facts
-                record_net_event(state, net_id, "search_failed",
-                                 search_facts(result, pcb_data, config, net_id, set(remaining_net_ids) | {net_id}))
+            if getattr(cfg_route, 'failure_evidence', False):
+                from failure_evidence import search_observer
+                search_observer(state, set(remaining_net_ids) | {net_id})(
+                    result, pcb_data, cfg_route, net_id)
 
             # Restore working obstacles before attempting rip-up (in-place approach)
             if same_net_via_cells is not None and state.working_obstacles is not None:
@@ -1329,6 +1334,10 @@ def route_single_ended_nets(
                                                                      attraction_path=retry_attraction_path,
                                                                      reverse_direction=retry_reverse_direction)
 
+                        if getattr(retry_cfg, 'failure_evidence', False):
+                            from failure_evidence import search_observer
+                            search_observer(state, set(remaining_net_ids) | {net_id})(
+                                retry_result, pcb_data, retry_cfg, net_id)
                         if retry_result and not retry_result.get('failed'):
                             route_length = calculate_route_length(retry_result['new_segments'], retry_result.get('new_vias', []), pcb_data)
                             retry_result['route_length'] = route_length
