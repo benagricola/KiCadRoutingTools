@@ -680,7 +680,98 @@ def ordinary_scope_request(request):
     return {'scope': scope, 'identity': identity}
 
 
+def nominal_evidence_request(request):
+    """Read actual completed legacy telemetry; no model read, route or adoption."""
+    import math
+    from final_escape import load_child_context, validate_failure, ProofRefusal, digest
+    fields={'schema','deadline_utc','board','context','evidence','log','summary','files'}
+    if (not isinstance(request,dict) or set(request)!=fields
+            or type(request['schema']) is not int or request['schema']!=1
+            or type(request['deadline_utc']) not in (int,float)
+            or not math.isfinite(request['deadline_utc']) or request['deadline_utc']<=time.time()):
+        raise ValueError('nominal evidence request unavailable')
+    paths={key:Path(request[key]) for key in ('board','context','evidence','log','summary')
+           if isinstance(request[key],str) and request[key]}
+    if len(paths)!=5 or not isinstance(request['files'],dict):
+        raise ValueError('nominal evidence artifact unavailable')
+    expected={str(path.resolve()) for path in paths.values()}
+    expected.update(str(paths['board'].with_suffix(ext).resolve()) for ext in ('.kicad_pro','.kicad_dru'))
+    if set(request['files'])!=expected:
+        raise ValueError('nominal evidence input set unavailable')
+    def unchanged():
+        if time.time()>=request['deadline_utc']:
+            raise TimeoutError('nominal evidence deadline')
+        for path,value in request['files'].items():
+            if value is not None and (not isinstance(value,str) or len(value)!=64):
+                raise ValueError('nominal evidence hash unavailable')
+            if (digest(path) if Path(path).is_file() else None)!=value:
+                raise ValueError('nominal evidence artifact changed')
+    unchanged()
+    # Decode only exact request-bound bytes. The context loader retains its
+    # existing validation over a private byte-identical immutable snapshot.
+    raw_inputs={}
+    for key in ('summary','context','evidence','log'):
+        raw=paths[key].read_bytes()
+        if hashlib.sha256(raw).hexdigest()!=request['files'][str(paths[key].resolve())]:
+            raise ValueError('nominal evidence decoded bytes changed')
+        raw_inputs[key]=raw
+    summary=json.loads(raw_inputs['summary'])
+    policy=summary.get('execution_policy') if isinstance(summary,dict) else None
+    if (not isinstance(policy,dict) or type(policy.get('schema')) is not int or policy['schema']!=2
+            or policy.get('policy')!='nested-board-candidates-disabled'
+            or type(policy.get('board_proposals')) is not int or policy['board_proposals']!=1
+            or policy.get('deadline_utc')!=request['deadline_utc']):
+        raise ValueError('nominal evidence actual execution unavailable')
+    for key in ('aborted','cancelled','timed_out'):
+        value=summary.get(key)
+        if value is not None and value is not False:
+            raise ValueError('nominal evidence interrupted execution')
+    tasks=summary.get('connections',[])
+    if (summary.get('deferred_work') or summary.get('deferred_nets')
+            or not isinstance(tasks,list) or any(not isinstance(task,dict) or task.get('status')=='deferred' for task in tasks)):
+        raise ValueError('nominal evidence deferred execution')
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix='nominal-context-') as private:
+        bound_context=Path(private)/'context.json'
+        bound_context.write_bytes(raw_inputs['context'])
+        context=load_child_context(bound_context,paths['board'],policy['nets'],policy['layers'])
+        if bound_context.read_bytes()!=raw_inputs['context']:
+            raise ValueError('nominal evidence context snapshot changed')
+    if context['candidate']!='legacy' or context['proof']['deadline_utc']!=request['deadline_utc']:
+        raise ValueError('nominal evidence context unavailable')
+    identity=context['identity'];proof=context['proof']
+    evidence=json.loads(raw_inputs['evidence'])
+    if (not isinstance(evidence,dict) or type(evidence.get('schema')) is not int
+            or evidence['schema']!=1 or evidence.get('disabled') is not False
+            or not isinstance(evidence.get('nominal_taps'),list)):
+        raise ValueError('nominal evidence incomplete')
+    complete=[]
+    for line in raw_inputs['log'].decode('utf-8').splitlines():
+        if line.startswith('FINAL_CALL_EVIDENCE_REFUSED: '):
+            raise ValueError('nominal evidence refused')
+        if line.startswith('FINAL_CALL_EVIDENCE_COMPLETE: '):
+            complete.append(json.loads(line.split(': ',1)[1]))
+    bound={'schema':1,'proof_sha256':identity['proof_sha256'],'call_id':identity['call_id'],
+           'evidence_sha256':request['files'][str(paths['evidence'].resolve())]}
+    from final_escape import record_digest
+    if len(complete)!=1 or record_digest(complete[0])!=record_digest(bound):
+        raise ValueError('nominal evidence completion unavailable')
+    failures=[];refused=[]
+    for failure in evidence['nominal_taps']:
+        try:validate_failure(failure,proof,identity)
+        except ProofRefusal as error:refused.append(error.reason)
+        else:failures.append(failure)
+    unchanged()
+    return {'schema':1,'proof_sha256':identity['proof_sha256'],'call_id':identity['call_id'],
+            'input_files':proof['input_files'],'files':dict(request['files']),
+            'failures':failures,'refused':refused,'comparison_authority':False}
+
+
 if __name__ == '__main__':
+    if len(sys.argv)==4 and sys.argv[1]=='--nominal-evidence':
+        result=nominal_evidence_request(load_json(sys.argv[2]))
+        Path(sys.argv[3]).write_text(json.dumps(result,sort_keys=True,allow_nan=False),encoding='utf-8')
+        sys.exit(0)
     if len(sys.argv) == 4 and sys.argv[1] == '--ordinary-scope':
         result = ordinary_scope_request(load_json(sys.argv[2]))
         Path(sys.argv[3]).write_text(json.dumps(result, sort_keys=True), encoding='utf-8')
