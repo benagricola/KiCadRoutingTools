@@ -448,6 +448,28 @@ def script_flags(path, _depth=1):
     return sorted(flags)
 
 
+# Load the configured source file directly: installed namespaces cannot shadow it.
+import importlib.util
+import hashlib
+
+_publisher_path = os.path.join(ROOT, 'py_router', 'execution_policy_capabilities.py')
+if not os.path.isfile(_publisher_path):
+    _publisher_path = os.path.join(ROOT, 'execution_policy_capabilities.py')
+_publisher_path = os.path.realpath(_publisher_path)
+_publisher_spec = importlib.util.spec_from_file_location('_krt_execution_policy_publisher', _publisher_path)
+_publisher = importlib.util.module_from_spec(_publisher_spec)
+with open(_publisher_path, 'rb') as _publisher_file:
+    _publisher_bytes = _publisher_file.read()
+exec(compile(_publisher_bytes, _publisher_path, 'exec'), _publisher.__dict__)
+if os.path.realpath(_publisher.__file__) != _publisher_path:
+    raise ImportError('execution policy publisher origin changed')
+_execution_policies = _publisher.execution_policies
+
+
+def execution_policies(root):
+    return _execution_policies(root, _tool_path)
+
+
 def capabilities(root=ROOT):
     mods = {m: os.path.isfile(_tool_path(root, m)) for m in KNOWN_MODULES}
     flags = {s: script_flags(_tool_path(root, s))
@@ -458,6 +480,9 @@ def capabilities(root=ROOT):
         'is_git_clone': os.path.exists(os.path.join(root, '.git')),
         'modules': mods,
         'flags': flags,
+        'execution_policies': execution_policies(root),
+        'execution_policy_publisher': {'path': _publisher_path,
+            'sha256': hashlib.sha256(_publisher_bytes).hexdigest()},
     }
     try:                                    # best-effort, never fatal
         # (This used to insert py_router/ on sys.path so `routing_defaults`

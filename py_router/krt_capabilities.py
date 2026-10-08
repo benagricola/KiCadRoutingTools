@@ -448,38 +448,26 @@ def script_flags(path, _depth=1):
     return sorted(flags)
 
 
+# Load the configured source file directly: installed namespaces cannot shadow it.
+import importlib.util
+import hashlib
+
+_publisher_path = os.path.join(ROOT, 'py_router', 'execution_policy_capabilities.py')
+if not os.path.isfile(_publisher_path):
+    _publisher_path = os.path.join(ROOT, 'execution_policy_capabilities.py')
+_publisher_path = os.path.realpath(_publisher_path)
+_publisher_spec = importlib.util.spec_from_file_location('_krt_execution_policy_publisher', _publisher_path)
+_publisher = importlib.util.module_from_spec(_publisher_spec)
+with open(_publisher_path, 'rb') as _publisher_file:
+    _publisher_bytes = _publisher_file.read()
+exec(compile(_publisher_bytes, _publisher_path, 'exec'), _publisher.__dict__)
+if os.path.realpath(_publisher.__file__) != _publisher_path:
+    raise ImportError('execution policy publisher origin changed')
+_execution_policies = _publisher.execution_policies
+
+
 def execution_policies(root):
-    """Source-advertised internal requests, never routing/adoption proof."""
-    import hashlib
-    route = _tool_path(root, 'route.py')
-    helper = os.path.join(os.path.dirname(route), 'route_execution_receipt.py')
-    grade = os.path.join(os.path.dirname(route), 'route_candidates.py')
-    try:
-        raw = open(route, 'rb').read()
-        helper_raw = open(helper, 'rb').read()
-        grade_raw = open(grade, 'rb').read()
-        tree = ast.parse(raw, filename=route)
-        records = [ast.literal_eval(node.value) for node in tree.body
-                   if isinstance(node, ast.Assign) and any(
-                       isinstance(target, ast.Name) and target.id == 'KRT_EXECUTION_POLICIES'
-                       for target in node.targets)]
-    except (OSError, SyntaxError, ValueError, TypeError):
-        return {}
-    expected = {'schema', 'legacy_only', 'pocket', 'policy_receipt_schema', 'parent_scope_schema', 'ordinary_grade_request_schema'}
-    if len(records) != 1 or not isinstance(records[0], dict) or set(records[0]) != expected:
-        return {}
-    record = records[0]
-    if (any(type(record[key]) is not int or record[key] != expected_value
-            for key, expected_value in {'schema':1,'policy_receipt_schema':2,
-                'parent_scope_schema':2,'ordinary_grade_request_schema':2}.items())
-            or record['legacy_only'] is not True or record['pocket'] is not True):
-        return {}
-    return {'route.py': dict(record, route_path=os.path.realpath(route),
-                            helper_path=os.path.realpath(helper),
-                            route_sha256=hashlib.sha256(raw).hexdigest(),
-                            helper_sha256=hashlib.sha256(helper_raw).hexdigest(),
-                            grade_path=os.path.realpath(grade),
-                            grade_sha256=hashlib.sha256(grade_raw).hexdigest())}
+    return _execution_policies(root, _tool_path)
 
 
 def capabilities(root=ROOT):
@@ -493,6 +481,8 @@ def capabilities(root=ROOT):
         'modules': mods,
         'flags': flags,
         'execution_policies': execution_policies(root),
+        'execution_policy_publisher': {'path': _publisher_path,
+            'sha256': hashlib.sha256(_publisher_bytes).hexdigest()},
     }
     try:                                    # best-effort, never fatal
         # (This used to insert py_router/ on sys.path so `routing_defaults`
