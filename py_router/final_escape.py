@@ -541,6 +541,46 @@ def optional_child_context(path, board, scope, layers, *, candidate, identity):
         return None
 
 
+def validated_child_context(path, board, scope, layers, *, argv, parser, tasks,
+                            candidate, identity):
+    """Actual single-call parser validation; transport cannot authorize adoption."""
+    try:
+        if tasks is not None:
+            raise ProofRefusal('connection_recorder_unsupported')
+        try:
+            raw_context = Path(path).read_bytes()
+            context_sha256 = hashlib.sha256(raw_context).hexdigest()
+            context = json.loads(raw_context.decode('utf-8'))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as error:
+            raise ProofRefusal('child_context_unavailable') from error
+        if (not isinstance(context, dict) or not isinstance(context.get('identity'), dict)
+                or context.get('candidate') != candidate):
+            raise ProofRefusal('child_context_schema')
+        actual = validate_proof(context.get('proof'), board=board, argv=argv,
+            parser=parser, scope=scope, kind='single', layers=layers,
+            tasks=None, bus_groups=(), pair_owned_nets=())
+        if (any(context['identity'].get(key) != value for key, value in actual.items())
+                or any(actual.get(key) != value for key, value in identity.items())):
+            raise ProofRefusal('actual_child_invocation_identity')
+        try:
+            loaded = load_child_context(path, board, scope, layers)
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError, KeyError, TypeError) as error:
+            raise ProofRefusal('child_context_changed_or_malformed') from error
+        try:
+            final_context_sha256 = digest(path)
+        except OSError as error:
+            raise ProofRefusal('child_context_unavailable_after_load') from error
+        if final_context_sha256 != context_sha256 or record_digest(loaded) != record_digest(context):
+            raise ProofRefusal('child_context_changed')
+    except ProofRefusal as error:
+        if candidate != 'legacy':
+            raise
+        print('FINAL_CALL_EVIDENCE_REFUSED: ' + json.dumps(dict(identity,
+              reason=error.reason)), flush=True)
+        return None
+    return loaded
+
+
 def prepare_runtime(pcb_data, config, context, cancel_check=None):
     """Optional legacy telemetry cannot change the incumbent routing result."""
     from routing_common import resolve_net_ids

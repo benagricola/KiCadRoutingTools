@@ -1006,7 +1006,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 same_net_pad_clearance: Optional[float] = None,
                 # FORK DIVERGENCE: validated isolated final-call proposal only.
                 # None preserves direct/GUI routing and reconciliation paths.
-                final_escape_context: Optional[dict] = None) -> Tuple[int, int, float]:
+                final_escape_context: Optional[dict] = None,
+                execution_receipt: Optional[dict] = None) -> Tuple[int, int, float]:
     """
     Route single-ended nets using the Rust router.
 
@@ -1079,7 +1080,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # json_out joins them: the sub-run must not write the parent's file. The
     # OUTERMOST call owns it, and writes the MERGED tally after reconciliation.
     for _k in ('input_file', 'output_file', 'net_names', 'pcb_data',
-               'net_name_patterns', 'json_out', 'final_escape_context',
+               'net_name_patterns', 'json_out', 'final_escape_context', 'execution_receipt',
                # #572: links describe ONE board state; only the finalize
                # custody handoff may set them on a sub-run, never blanket
                # forwarding.
@@ -6958,6 +6959,14 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             # does, while every reader of this file -- including an external
             # `place_route_loop --accept-cmd` judge -- crashed on it. Failing
             # CLOSED, with no file, is the case they all already handle.
+            if execution_receipt is not None and _merged is not None:
+                from route_execution_receipt import verify_unchanged, ReceiptUnavailable
+                try:
+                    verify_unchanged(execution_receipt)
+                except (ReceiptUnavailable, OSError) as _execution_error:
+                    print(f"  Legacy-only execution receipt unavailable: {_execution_error}")
+                else:
+                    _merged['execution_policy'] = execution_receipt
             write_summary_file(json_out, _merged)
             print(f"  route summary written to {json_out}")
         except Exception as _e:
@@ -7167,6 +7176,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     if return_results:
         return successful, failed, total_time, results_data
     return successful, failed, total_time
+
+
+KRT_EXECUTION_POLICIES = {'schema': 1, 'legacy_only': True, 'pocket': True,
+                          'policy_receipt_schema': 2, 'parent_scope_schema': 2,
+                          'ordinary_grade_request_schema': 2}
 
 if __name__ == "__main__":
     import argparse
@@ -8126,19 +8140,49 @@ For differential pair routing, use route_diff.py:
             print(f"Netclass clearances for {len(_net_clearances_map)} net(s), {_mode} "
                   f"(mm: {_classes}); cross-class max(A,B) respected.")
 
+    # Capture the parent's actual CLI post-floor scope before candidate search.
+    # It observes resolution only; it grants no proposal count or adoption proof.
+    _parent_scope = None
+    if 'KRT_ROUTE_DEADLINE_UTC' in os.environ:
+        from route_execution_receipt import observe_scope, publish_scope, ReceiptUnavailable
+        try:
+            _parent_scope = observe_scope(args, sys.argv[1:], net_names,
+                args.layers or pcb_data.board_info.copper_layers, os.environ,
+                __file__, _connections_raw, _net_clearances_map,
+                requested_clearances=_name_to_clr if args.net_clearances else None, parser=parser)
+        except (ReceiptUnavailable, OSError, ValueError) as _scope_error:
+            print(f"Parent routing scope observation unavailable: {_scope_error}")
+
     # FORK DIVERGENCE: file-isolated, bounded pocket repair candidate.
     from route_candidates import maybe_run_candidates
     _candidate_rc = maybe_run_candidates(args, sys.argv[1:], __file__, parser, net_names,
                                          actual_layers=pcb_data.board_info.copper_layers)
     if _candidate_rc is not None:
+        if _parent_scope is not None:
+            try:
+                publish_scope(_parent_scope, _candidate_rc)
+            except (ReceiptUnavailable, OSError, ValueError) as _scope_error:
+                print(f"Parent routing scope observation unavailable: {_scope_error}")
         sys.exit(_candidate_rc)
+
+    _execution_receipt = None
+    if os.environ.get('KRT_INTERNAL_ROUTE_CANDIDATE') == '1':
+        from route_execution_receipt import make, ReceiptUnavailable
+        try:
+            _execution_receipt = make(args, sys.argv[1:], net_names,
+                args.layers or pcb_data.board_info.copper_layers, os.environ,
+                __file__, _connections_raw, _net_clearances_map,
+                requested_clearances=_name_to_clr if args.net_clearances else None, parser=parser, observation=_parent_scope)
+        except (ReceiptUnavailable, OSError, ValueError) as _execution_error:
+            print(f"Legacy-only execution receipt unavailable: {_execution_error}")
 
     _final_escape_context = None
     if os.environ.get('KRT_INTERNAL_ROUTE_CANDIDATE') == '1' and os.environ.get('KRT_INTERNAL_FINAL_CALL_CONTEXT'):
-        from final_escape import optional_child_context
-        _final_escape_context = optional_child_context(
+        from final_escape import validated_child_context
+        _final_escape_context = validated_child_context(
             os.environ['KRT_INTERNAL_FINAL_CALL_CONTEXT'], args.input_file,
             net_names, args.layers or pcb_data.board_info.copper_layers,
+            argv=sys.argv[1:], parser=parser, tasks=getattr(args, 'connections', None),
             candidate=os.environ.get('KRT_INTERNAL_FINAL_CALL_KIND'),
             identity={'proof_sha256': os.environ.get('KRT_INTERNAL_FINAL_CALL_PROOF'),
                       'call_id': os.environ.get('KRT_INTERNAL_FINAL_CALL_ID')})
@@ -8154,6 +8198,7 @@ For differential pair routing, use route_diff.py:
                 "" if args.preview else args.output_file, net_names,
                 return_results=args.preview,
                 final_escape_context=_final_escape_context,
+                execution_receipt=_execution_receipt,
                 direction_order=args.direction,
                 ordering_strategy=args.ordering,
                 disable_bga_zones=args.no_bga_zones,

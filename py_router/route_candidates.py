@@ -257,6 +257,36 @@ def frozen_factory_args(args, frozen_files):
     return resolved
 
 
+def manufacturing_envelope(args, original, frozen_files):
+    from fab_tiers import fab_floor_min, fab_tier_from_args, count_copper_layers_in_file
+    # Freeze the permitted manufacturing envelope before either run; it
+    # must never come from a candidate's rewritten project or ledger.
+    tier, overrides = fab_tier_from_args(frozen_factory_args(args, frozen_files))
+    floors = fab_floor_min(count_copper_layers_in_file(str(original)), tier, overrides)
+    fallback = {'clearance': floors['clearance'], 'size_floors': {
+                k: floors[k] for k in ('track_width', 'via_diameter', 'via_drill', 'annular')}, 'tier': tier,
+                'overrides': overrides, 'source': 'original_invocation_fab_floor_min'}
+    if getattr(args, 'escalation', None) == 'off':
+        fallback['clearance'] = max(fallback['clearance'], args.clearance)
+        fallback['source'] = 'original_invocation_no_escalation'
+    return fallback
+
+
+def ordinary_grade_request(args, supplied, original, board, summary, scope, task_file, fallback):
+    return {'board': str(board),
+                    'input': str(original), 'summary': summary, 'scope': scope,
+                    'manufacturing_defaults': fallback,
+                    'explicit_width': args.track_width if 'track_width' in supplied else None,
+                    'connections': str(task_file) if task_file else None,
+                    'power_nets': getattr(args, 'power_nets', None),
+                    'power_nets_widths': getattr(args, 'power_nets_widths', None),
+                    'impedance': getattr(args, 'impedance', None),
+                    'clearance_unproved': bool({'clearance', 'clearance_ceiling', 'net_clearances', 'hole_to_hole_clearance', 'board_edge_clearance', 'same_net_pad_clearance'} & supplied),
+                    'electrical_unproved': bool(getattr(args, 'length_match_groups', None) or getattr(args, 'time_matching', False)),
+                    'via_size': args.via_size if 'via_size' in supplied else None,
+                    'via_drill': args.via_drill if 'via_drill' in supplied else None}
+
+
 def maybe_run_candidates(args, argv, route_file, parser, requested_scope, actual_layers=None):
     if os.environ.get('KRT_INTERNAL_ROUTE_CANDIDATE'):
         return None
@@ -327,17 +357,7 @@ def maybe_run_candidates(args, argv, route_file, parser, requested_scope, actual
                 frozen_files[field] = frozen
                 provenance['constraint_files'][field] = hashlib.sha256(frozen.read_bytes()).hexdigest()
         task_file = frozen_files.get('connections')
-        from fab_tiers import fab_floor_min, fab_tier_from_args, count_copper_layers_in_file
-        # Freeze the permitted manufacturing envelope before either run; it
-        # must never come from a candidate's rewritten project or ledger.
-        tier, overrides = fab_tier_from_args(frozen_factory_args(args, frozen_files))
-        floors = fab_floor_min(count_copper_layers_in_file(str(original)), tier, overrides)
-        fallback = {'clearance': floors['clearance'], 'size_floors': {
-                    k: floors[k] for k in ('track_width', 'via_diameter', 'via_drill', 'annular')}, 'tier': tier,
-                    'overrides': overrides, 'source': 'original_invocation_fab_floor_min'}
-        if getattr(args, 'escalation', None) == 'off':
-            fallback['clearance'] = max(fallback['clearance'], args.clearance)
-            fallback['source'] = 'original_invocation_no_escalation'
+        fallback = manufacturing_envelope(args, original, frozen_files)
         provenance['manufacturing_defaults'] = fallback
         output_seed = root / 'output_seed'
         output_seed.mkdir()
@@ -469,18 +489,9 @@ def maybe_run_candidates(args, argv, route_file, parser, requested_scope, actual
             for candidate in candidates:
                 grade_file = candidate['board'].parent / 'grade.json'
                 request = candidate['board'].parent / 'request.json'
-                request.write_text(json.dumps({'board': str(candidate['board']),
-                    'input': str(original), 'summary': candidate['summary'], 'scope': frozen_scope,
-                    'manufacturing_defaults': fallback,
-                    'explicit_width': args.track_width if 'track_width' in supplied else None,
-                    'connections': str(task_file) if task_file else None,
-                    'power_nets': getattr(args, 'power_nets', None),
-                    'power_nets_widths': getattr(args, 'power_nets_widths', None),
-                    'impedance': getattr(args, 'impedance', None),
-                    'clearance_unproved': bool({'clearance', 'clearance_ceiling', 'net_clearances', 'hole_to_hole_clearance', 'board_edge_clearance', 'same_net_pad_clearance'} & supplied),
-                    'electrical_unproved': bool(getattr(args, 'length_match_groups', None) or getattr(args, 'time_matching', False)),
-                    'via_size': args.via_size if 'via_size' in supplied else None,
-                    'via_drill': args.via_drill if 'via_drill' in supplied else None}), encoding='utf-8')
+                request.write_text(json.dumps(ordinary_grade_request(
+                    args, supplied, original, candidate['board'], candidate['summary'],
+                    frozen_scope, task_file, fallback)), encoding='utf-8')
                 try:
                     rc = run_child([sys.executable, __file__, '--grade', str(request),
                                     str(grade_file)], grade_file.with_suffix('.log'),
@@ -662,7 +673,18 @@ def grade_request(request):
             'open': opened, 'quality': [quality.get(k) for k in ('vias', 'copper_mm', 'segments')]}
 
 
+def ordinary_scope_request(request):
+    """The existing ordinary comparator's full requested/disclosed scope."""
+    scope, identity = freeze_scope(request['requested_scope'], request['candidates'],
+        load_json(request['connections']) if request['connections'] else None)
+    return {'scope': scope, 'identity': identity}
+
+
 if __name__ == '__main__':
+    if len(sys.argv) == 4 and sys.argv[1] == '--ordinary-scope':
+        result = ordinary_scope_request(load_json(sys.argv[2]))
+        Path(sys.argv[3]).write_text(json.dumps(result, sort_keys=True), encoding='utf-8')
+        sys.exit(0)
     if len(sys.argv) != 4 or sys.argv[1] != '--grade':
         sys.exit('internal grading worker: --grade REQUEST OUTPUT')
     result = grade_request(load_json(sys.argv[2]))
