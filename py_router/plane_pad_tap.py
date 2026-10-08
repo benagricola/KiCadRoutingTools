@@ -1012,6 +1012,7 @@ def try_tap_pad(
     plane_oracle=None,
     corridor_ghosts=None,
     ghost_exclude_ids=(),
+    seed_site_filter=None,
 ) -> TapResult:
     """Attempt to connect one pad to the plane with the given parameters.
 
@@ -1232,6 +1233,14 @@ def try_tap_pad(
             return corridor_ghosts.via_site_clear(x, y, via_size,
                                                   exclude_net_ids=_gx_ids)
 
+    # An optional proposal-only fabrication predicate is a hard constraint,
+    # composed with the existing zone constraint before searching any site.
+    site_filter = zone_filter
+    if seed_site_filter is not None:
+        def site_filter(x, y):
+            return ((zone_filter is None or zone_filter(x, y))
+                    and seed_site_filter(x, y))
+
     failed_positions: Set[Tuple[int, int]] = set()
     via_pos = find_via_position(
         pad, obstacles, coord, max_search_radius,
@@ -1242,7 +1251,7 @@ def try_tap_pad(
         verbose=verbose,
         failed_route_positions=failed_positions,
         pending_pads=pending_pads,
-        position_filter=zone_filter,
+        position_filter=site_filter,
         position_preference=ghost_pref,
     )
     if via_pos is None:
@@ -1272,6 +1281,8 @@ def try_tap_pad(
     # clamp_tap_via_to_edge.
     via_pos, _edge_moved = clamp_tap_via_to_edge(
         via_pos, pad, pcb_data, config, via_size)
+    if seed_site_filter is not None and not site_filter(*via_pos):
+        return TapResult(success=False, via_blocked=True)
 
     segments: List[Dict] = []
     # A via landing inside the pad's own copper connects it directly (via-in-pad)

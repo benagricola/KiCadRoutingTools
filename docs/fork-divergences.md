@@ -200,3 +200,7 @@ Quick routing (`KRT_ROUTE_QUICK`), preview, skip-routing and schematic-mutating
 calls retain the legacy path and report fallback unavailable. The quick wrapper
 can continue rewriting its existing top-level `batch_route` anchors unchanged.
 Tests: test_route_candidates.py and test_rip_pocket_walls_first.py.
+
+### Original fabrication policy in final-call seeds
+
+Proof-bound nominal seeds preserve the exact original same-net pad clearance and original source-policy receipt. With no proved original filled/capped authorization, candidate vias must be separated from supported pad copper and paste openings on the participating layers, including foreign-net and unassigned openings. The hard site predicate runs before search selection and after any edge clamp. Existing taps without this optional seed predicate retain their original behavior. This creates no fabrication permission, proposal slot, or adoption authority; unknown manufacturing checks remain unknown.

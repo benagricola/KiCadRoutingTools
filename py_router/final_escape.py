@@ -667,6 +667,9 @@ def seed_nominal(pcb_data, config, proof, identity, failures, *,
                             _net_component_info)
     from pcb_modification import bump_copper_epoch
 
+    from seed_site_policy import captured_original, conventional_site_filter
+    fabrication = captured_original(proof.get('original_fabrication'))
+    site_filter = conventional_site_filter(pcb_data, config.via_size, config.layers)
     segments, vias, attempts = [], [], []
     seen, successes = set(), {}
     for failure in failures:
@@ -742,10 +745,14 @@ def seed_nominal(pcb_data, config, proof, identity, failures, *,
             raise ProofRefusal('seed_nominal_geometry_changed')
         result = try_tap_pad(pad, layer, net_id, pcb_data, tap_config,
                              max_search_radius=1.5,
-                             via_size=config.via_size, via_drill=config.via_drill)
+                             via_size=config.via_size, via_drill=config.via_drill,
+                             same_net_pad_clearance=config.same_net_pad_clearance,
+                             seed_site_filter=site_filter)
         receipt = {'endpoint': dict(endpoint), 'result': copy.deepcopy(asdict(result)),
                    'accepted_seed': False,
-                   'fresh_graph_sha256': record_digest(fresh_graph)}
+                   'fresh_graph_sha256': record_digest(fresh_graph),
+                   'original_fabrication': fabrication,
+                   'same_net_pad_clearance': config.same_net_pad_clearance}
         attempts.append(receipt)
         if not result.success:
             continue
@@ -755,6 +762,9 @@ def seed_nominal(pcb_data, config, proof, identity, failures, *,
         v = result.via
         new_vias = ([Via(v['x'], v['y'], v['size'], v['drill'],
                          v.get('layers', ['F.Cu', 'B.Cu']), net_id)] if v else [])
+        if any(not site_filter(v.x, v.y) for v in new_vias):
+            receipt['refusal'] = 'seed_fabrication_site_unproved'
+            continue
         # Same exact copper guards as the existing rescue; the tap's window
         # alone does not certify foreign copper or drills on the whole board.
         if (any(not _leg_clear(pcb_data,
@@ -776,6 +786,8 @@ def seed_nominal(pcb_data, config, proof, identity, failures, *,
         vias.extend(new_vias)
         successes[endpoint['net']] = successes.get(endpoint['net'], 0) + 1
         receipt['accepted_seed'] = True
+    if captured_original(proof['original_fabrication']) != fabrication:
+        raise ProofRefusal('seed_original_fabrication_changed')
     return {'segments': segments, 'vias': vias, 'attempts': attempts}
 
 

@@ -30,7 +30,7 @@ def parser():
 def fixture(root):
     from routing_config import GridRouteConfig
     board = root/'input.kicad_pcb'
-    board.write_text('same immutable geometry')
+    board.write_text('(kicad_pcb (setup (capping no) (filling no)))')
     board.with_suffix('.kicad_pro').write_text('same original rules')
     argv = [str(board), str(root/'out.kicad_pcb'), '--nets', 'SIGNAL', '--layers', 'F.Cu', 'B.Cu']
     proof = {'schema': 1, 'input_files': escape.input_identity(board),
@@ -38,6 +38,8 @@ def fixture(root):
                  'nets': ['SIGNAL'], 'tasks_sha256': None, 'bus_groups': [], 'layers': ['F.Cu', 'B.Cu'],
                  'pair_owned_nets': [], 'obligations': [{'net': 'SIGNAL', 'from': {'ref': 'J1', 'pad': '1'},
                  'to': {'ref': 'U1', 'pad': '2'}, 'widths': {'F.Cu': .5, 'B.Cu': .5}}]},
+        'original_fabrication': {'path':str(board), 'sha256':escape.digest(board),
+                                 'custody_sha256':'f'*64},
         'nominal_policy': {'receipt_sha256': 'a'*64, 'sources_sha256': escape.source_fingerprint(),
                            'by_net': {'SIGNAL': {'F.Cu': .5, 'B.Cu': .5}}},
         'copper_work': [{'id': 'earlier', 'kind': 'pairs'}, {'id': 'last-call', 'kind': 'single'}],
@@ -202,6 +204,7 @@ def test_nominal_observer_reports_initial_result_and_cannot_change_success():
 
 
 def test_nominal_seed_retains_via_only_copper_and_does_not_call_ladder():
+    """Controlled via-only writer-channel retention; no physical join proof."""
     from types import SimpleNamespace
     from unittest.mock import patch
     from kicad_parser import Pad
@@ -211,9 +214,14 @@ def test_nominal_seed_retains_via_only_copper_and_does_not_call_ladder():
         _, _, proof, identity, failure = fixture(Path(directory))
         pad = Pad('J1','1',0,0,0,0,1,1,'rect',['F.Cu'],1,'SIGNAL')
         pcb = SimpleNamespace(nets={1:SimpleNamespace(name='SIGNAL')},
-                              pads_by_net={1:[pad]}, segments=[], vias=[])
+                              pads_by_net={1:[pad]}, segments=[], vias=[],
+                              footprints={'J1':SimpleNamespace(pads=[pad])},
+                              board_info=SimpleNamespace(copper_layers=['F.Cu','B.Cu']),
+                              paste_apertures=[])
         config = GridRouteConfig(track_width=.5, clearance=.25, via_size=.6, via_drill=.3)
-        result = TapResult(success=True, via={'x':0,'y':0,'size':.6,'drill':.3,
+        # Preserve nominal dimensions while the controlled seed uses a conventional
+        # off-pad site under the original no-fill/no-cap policy.
+        result = TapResult(success=True, via={'x':1,'y':0,'size':.6,'drill':.3,
                                              'layers':['F.Cu','B.Cu']})
         def actual_graph(pcb, net_id, graph_out):
             graph_out.update(graph=copy.deepcopy(failure['graph']),
