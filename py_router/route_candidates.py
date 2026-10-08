@@ -257,7 +257,7 @@ def frozen_factory_args(args, frozen_files):
     return resolved
 
 
-def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
+def maybe_run_candidates(args, argv, route_file, parser, requested_scope, actual_layers=None):
     if os.environ.get('KRT_INTERNAL_ROUTE_CANDIDATE'):
         return None
     unavailable = next((reason for active, reason in (
@@ -279,6 +279,35 @@ def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
     provenance = {'policy': 'legacy_then_one_pocket', 'budget_s': budget,
                   'max_candidates': 2, 'attempts': 0, 'selected': 'legacy',
                   'grades': {}}
+    final_context = None
+    if getattr(args, 'final_call_proof', None):
+        from final_escape import validate_proof, ProofRefusal, source_fingerprint
+        try:
+            if not getattr(args, 'candidate_artifacts', None):
+                raise ProofRefusal('candidate_artifacts_missing')
+            if os.path.lexists(args.candidate_artifacts):
+                raise ProofRefusal('candidate_artifacts_exist')
+            # Automatic/group bus ownership and mutable geometry require an
+            # authoritative endpoint descriptor not supplied by this first
+            # bounded implementation. Preserve the ordinary policy.
+            if any(getattr(args, field, None) for field in (
+                    'bus', 'bus_nets', 'swappable_nets', 'schematic_dir',
+                    'can_swap_to_top_layer', 'length_match_groups', 'time_matching')):
+                raise ProofRefusal('unsupported_final_call_geometry_or_scope')
+            proof = json.loads(Path(args.final_call_proof).read_text(encoding='utf-8'))
+            identity = validate_proof(proof, board=args.input_file, argv=argv,
+                parser=parser, scope=requested_scope,
+                kind='connections' if getattr(args, 'connections', None) else 'single',
+                layers=args.layers or actual_layers or [], tasks=getattr(args, 'connections', None),
+                pair_owned_nets=proof['call']['pair_owned_nets'])
+            if proof['nominal_policy']['sources_sha256'] != source_fingerprint():
+                raise ProofRefusal('nominal_source_identity')
+            deadline = min(deadline, time.monotonic() + proof['deadline_utc'] - time.time())
+            final_context = {'proof': proof, 'identity': identity}
+            provenance['final_call'] = {'proof_sha256': identity['proof_sha256'],
+                                         'adoption': 'external_full_standing_only'}
+        except (ProofRefusal, OSError, ValueError, TypeError, KeyError) as error:
+            provenance['final_call_refused'] = str(error)
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix='krt_candidates_') as root:
         root = Path(root)
@@ -317,7 +346,11 @@ def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
             if source.is_file():
                 shutil.copy2(source, output_seed / ('seed' + suffix))
         candidates = []
-        for name in ('legacy', 'pocket'):
+        escape_failures = []
+        for slot in range(2):
+            name = 'legacy' if slot == 0 else ('escape' if escape_failures else 'pocket')
+            if name == 'escape':
+                provenance['policy'] = 'legacy_then_one_escape_external_adoption'
             folder = root / name
             folder.mkdir()
             board = folder / Path(args.output_file).name
@@ -328,6 +361,25 @@ def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
             summary_file, log = folder / 'summary.json', folder / 'route.log'
             if name == 'pocket':
                 env['KRT_INTERNAL_POCKET_WALLS'] = '1'
+            for key in ('CONTEXT', 'KIND', 'PROOF', 'ID'):
+                env.pop('KRT_INTERNAL_FINAL_CALL_' + key, None)
+            if final_context is not None and name in ('legacy', 'escape'):
+                from final_escape import write_record
+                context_path = folder / 'context.json'
+                try:
+                    write_record(context_path, dict(final_context, candidate=name,
+                        evidence_file=str(folder / 'evidence.json'), failures=escape_failures))
+                except Exception as error:
+                    provenance['final_call_refused'] = 'context_write_' + type(error).__name__
+                    if name != 'legacy':
+                        break  # Discard this optional proposal, retain incumbent.
+                    final_context = None
+                    escape_failures = []
+                else:
+                    env['KRT_INTERNAL_FINAL_CALL_CONTEXT'] = str(context_path)
+                    env['KRT_INTERNAL_FINAL_CALL_KIND'] = name
+                    env['KRT_INTERNAL_FINAL_CALL_PROOF'] = final_context['identity']['proof_sha256']
+                    env['KRT_INTERNAL_FINAL_CALL_ID'] = final_context['identity']['call_id']
             command = [sys.executable, str(route_file)] + child_argv(
                 argv, args, original, board, summary_file, parser, frozen_files)
             provenance['attempts'] += 1
@@ -356,6 +408,53 @@ def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
                 break
             candidates.append(candidate)
             if name == 'legacy':
+                if final_context is not None:
+                    from final_escape import validate_failure, ProofRefusal
+                    raw_evidence = load_json(folder / 'evidence.json')
+                    evidence = raw_evidence if isinstance(raw_evidence, dict) else {}
+                    evidence_refused = not isinstance(raw_evidence, dict) or bool(evidence.get('disabled'))
+                    evidence_complete = False
+                    for line in log.read_text(encoding='utf-8', errors='replace').splitlines():
+                        if line.startswith('FINAL_CALL_EVIDENCE_REFUSED: '):
+                            try:
+                                refusal = json.loads(line.split(': ', 1)[1])
+                            except (ValueError, TypeError):
+                                evidence_refused = True
+                            else:
+                                if not isinstance(refusal, dict) or refusal.get('proof_sha256') == final_context['identity']['proof_sha256']:
+                                    evidence_refused = True
+                        if line.startswith('FINAL_CALL_EVIDENCE_COMPLETE: '):
+                            try:
+                                receipt = json.loads(line.split(': ', 1)[1])
+                                evidence_complete = (
+                                    receipt.get('schema') == 1 and
+                                    receipt.get('proof_sha256') == final_context['identity']['proof_sha256'] and
+                                    receipt.get('call_id') == final_context['identity']['call_id'] and
+                                    receipt.get('evidence_sha256') == hashlib.sha256(
+                                        (folder / 'evidence.json').read_bytes()).hexdigest())
+                            except (OSError, ValueError, TypeError, AttributeError):
+                                evidence_complete = False
+                    if evidence_refused:
+                        provenance['final_call_refused'] = 'legacy_evidence_failed'
+                    summary_record = summary if isinstance(summary, dict) else {}
+                    task_records = summary_record.get('connections', [])
+                    deferred = bool(summary_record.get('deferred_work') or
+                                    summary_record.get('deferred_nets') or
+                                    not isinstance(task_records, list) or
+                                    any(not isinstance(t, dict) or t.get('status') == 'deferred'
+                                        for t in task_records))
+                    if deferred:
+                        provenance['final_call_refused'] = 'actual_deferred_work'
+                    if not evidence_complete:
+                        provenance['final_call_refused'] = 'legacy_evidence_custody_unproved'
+                    failures = evidence.get('nominal_taps', [])
+                    for failure in ([] if deferred or evidence_refused or not evidence_complete or
+                                    not isinstance(failures, list) else failures):
+                        try:
+                            validate_failure(failure, final_context['proof'], final_context['identity'])
+                        except ProofRefusal:
+                            continue
+                        escape_failures.append(failure)
                 hint = closure_hint(summary)
                 if hint is None or hint == 0 or rc:
                     provenance['stopped'] = ('legacy_reported_scope_complete' if hint == 0
@@ -363,7 +462,7 @@ def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
                     break
         selected = candidates[0]
         supplied = explicit_fields(argv, parser)
-        if len(candidates) == 2:
+        if len(candidates) == 2 and candidates[1]['name'] == 'pocket':
             frozen_scope, scope_identity = freeze_scope(requested_scope, candidates,
                 load_json(task_file) if task_file else None)
             provenance['scope'] = scope_identity
@@ -394,6 +493,20 @@ def maybe_run_candidates(args, argv, route_file, parser, requested_scope):
             if prefer_pocket(provenance['grades'].get('legacy'),
                              provenance['grades'].get('pocket')):
                 selected = candidates[1]
+        if final_context is not None:
+            from final_escape import persist_artifacts, ProofRefusal
+            # Pocket is the ordinary fallback when no nominal failure is
+            # eligible. Its publication policy remains unchanged; only the
+            # proof-bound escape proposal goes to external whole-board grade.
+            if len(candidates) == 1 or candidates[1]['name'] == 'escape':
+                try:
+                    provenance['final_call_artifacts'] = persist_artifacts(
+                        args.candidate_artifacts, final_context['proof'], final_context['identity'],
+                        candidates, {'nominal_failures': escape_failures,
+                                     'candidate_evidence': {c['name']: load_json(
+                                         c['board'].parent / 'evidence.json') for c in candidates}})
+                except (ProofRefusal, OSError, ValueError) as error:
+                    provenance['final_call_artifacts_refused'] = str(error)
         provenance['selected'] = selected['name']
         provenance['elapsed_s'] = round(time.monotonic() - started, 3)
         publish(selected, args.output_file, args.json_out, provenance)

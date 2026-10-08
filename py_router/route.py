@@ -1003,7 +1003,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 # places and same-net SMD pads. None (default) -> auto-read
                 # the persisted .kicad_pro record; > 0 activates (and is
                 # persisted for later chain steps); 0 / -1 explicitly OFF.
-                same_net_pad_clearance: Optional[float] = None) -> Tuple[int, int, float]:
+                same_net_pad_clearance: Optional[float] = None,
+                # FORK DIVERGENCE: validated isolated final-call proposal only.
+                # None preserves direct/GUI routing and reconciliation paths.
+                final_escape_context: Optional[dict] = None) -> Tuple[int, int, float]:
     """
     Route single-ended nets using the Rust router.
 
@@ -1076,7 +1079,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # json_out joins them: the sub-run must not write the parent's file. The
     # OUTERMOST call owns it, and writes the MERGED tally after reconciliation.
     for _k in ('input_file', 'output_file', 'net_names', 'pcb_data',
-               'net_name_patterns', 'json_out',
+               'net_name_patterns', 'json_out', 'final_escape_context',
                # #572: links describe ONE board state; only the finalize
                # custody handoff may set them on a sub-run, never blanket
                # forwarding.
@@ -2016,6 +2019,18 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     install_layer_clearances(config, layer_clearances, input_file, pcb_data)
     install_track_clearances(config, track_clearances, input_file, pcb_data,
                              routed_net_ids=[nid for _, nid in net_ids])
+
+    _nominal_recorder = None
+    if final_escape_context is not None:
+        from final_escape import prepare_runtime
+        _nominal_recorder, _seed = prepare_runtime(
+            pcb_data, config, final_escape_context, cancel_check=cancel_check)
+        if _seed is not None:
+            # Via-only taps are valid seed topology. add_route_to_pcb_data
+            # discards these; retain exact objects in the existing writer and
+            # cleanup custody channels alongside their in-memory PCBData.
+            all_swap_segments.extend(_seed['segments'])
+            all_swap_vias.extend(_seed['vias'])
 
     # Apply target swaps for single-ended swappable-nets
     single_ended_target_swaps: Dict[str, str] = {}
@@ -3066,7 +3081,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     from net_rescue import rescue_failed_nets
     rescue_summary = None if _ckpt_stop else rescue_failed_nets(
         state, single_ended_nets, net_clearances=net_clearances,
-        progress_callback=progress_callback, cancel_check=cancel_check)
+        progress_callback=progress_callback, cancel_check=cancel_check,
+        nominal_recorder=_nominal_recorder)
 
     # Terminal geometry escalation ("better than shipping opens",
     # 2026-08-05): whole-net retry with track width + via size marching down
@@ -7376,6 +7392,11 @@ For differential pair routing, use route_diff.py:
                              "either one alone is wrong -- the first counts every recovery as a "
                              "failure, the second narrows the whole-board pad-pair denominator to "
                              "the retried subset. Prefer this over parsing stdout.")
+    parser.add_argument('--final-call-proof', metavar='FILE', default=None,
+                        help='Optional executor proof for a final-call escape proposal.')
+    parser.add_argument('--candidate-artifacts', metavar='DIR', default=None,
+                        help='New owned directory for immutable incumbent/proposal artifacts; '
+                             'escape adoption requires external full-board Standing.')
     parser.add_argument("--neckdown-length", type=float, default=defaults.NECKDOWN_LENGTH,
                         help="Length in mm of narrow track from the target pad on neck-down tap routes; the track "
                              "returns to the power width beyond this where clearance allows (default: 2.5)")
@@ -8107,9 +8128,24 @@ For differential pair routing, use route_diff.py:
 
     # FORK DIVERGENCE: file-isolated, bounded pocket repair candidate.
     from route_candidates import maybe_run_candidates
-    _candidate_rc = maybe_run_candidates(args, sys.argv[1:], __file__, parser, net_names)
+    _candidate_rc = maybe_run_candidates(args, sys.argv[1:], __file__, parser, net_names,
+                                         actual_layers=pcb_data.board_info.copper_layers)
     if _candidate_rc is not None:
         sys.exit(_candidate_rc)
+
+    _final_escape_context = None
+    if os.environ.get('KRT_INTERNAL_ROUTE_CANDIDATE') == '1' and os.environ.get('KRT_INTERNAL_FINAL_CALL_CONTEXT'):
+        from final_escape import optional_child_context
+        _final_escape_context = optional_child_context(
+            os.environ['KRT_INTERNAL_FINAL_CALL_CONTEXT'], args.input_file,
+            net_names, args.layers or pcb_data.board_info.copper_layers,
+            candidate=os.environ.get('KRT_INTERNAL_FINAL_CALL_KIND'),
+            identity={'proof_sha256': os.environ.get('KRT_INTERNAL_FINAL_CALL_PROOF'),
+                      'call_id': os.environ.get('KRT_INTERNAL_FINAL_CALL_ID')})
+        if _final_escape_context is not None:
+            import atexit
+            from final_escape import finish_context
+            atexit.register(finish_context, _final_escape_context)
 
     # --preview: the engine already supports this -- return_results=True with
     # an empty output_file routes fully, mutates only the in-memory PCBData
@@ -8117,6 +8153,7 @@ For differential pair routing, use route_diff.py:
     _preview_out = batch_route(args.input_file,
                 "" if args.preview else args.output_file, net_names,
                 return_results=args.preview,
+                final_escape_context=_final_escape_context,
                 direction_order=args.direction,
                 ordering_strategy=args.ordering,
                 disable_bga_zones=args.no_bga_zones,
@@ -8340,4 +8377,3 @@ For differential pair routing, use route_diff.py:
         if _es['count'] or _es['fab_tier_escalations']:
             print(f"  --strict-sizes: {escalation_report_line()}")
             sys.exit(3)
-

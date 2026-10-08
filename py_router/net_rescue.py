@@ -299,7 +299,7 @@ def _withdraw_unused_escapes(pcb_data, net_id, tap_results, config):
     return kept
 
 
-def _net_component_info(pcb_data, net_id):
+def _net_component_info(pcb_data, net_id, graph_out=None):
     """Connected components of a net's pads+copper on the REAL board.
 
     Uses the authoritative overlap-aware connectivity graph (cap overlap,
@@ -323,6 +323,17 @@ def _net_component_info(pcb_data, net_id):
                                  net_zones, return_graph=True,
                                  pcb_data=pcb_data)
     graph = res.get('graph') or {}
+    if graph_out is not None:
+        # Optional final-call evidence sink: keep the graph the actual rescue
+        # already used. Never recompute connectivity for its evidence.
+        import copy
+        from dataclasses import asdict
+        try:
+            graph_out.update(graph=copy.deepcopy(graph),
+                             net_pads=[asdict(pad) for pad in net_pads])
+        except Exception as error:
+            graph_out.clear()
+            graph_out['refusal'] = type(error).__name__
     uf = UnionFind()
     for a, b in graph.get('edges', []):
         uf.union(a, b)
@@ -966,7 +977,8 @@ def _cap_conflicts(pcb_data, fan_vias, net_id, config) -> dict:
 
 
 def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
-                       progress_callback=None, cancel_check=None):
+                       progress_callback=None, cancel_check=None,
+                       nominal_recorder=None):
     """Scoped fine-parameter rescue for every still-failed/partial net.
 
     Returns a summary dict ({'attempted', 'recovered', 'improved',
@@ -1025,7 +1037,18 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
             progress_callback(_cand_idx + 1, len(candidates),
                               f"Rescue: {net_name}")
         net_start = time.time()
-        num0, comp_points, comp_pads = _net_component_info(pcb_data, net_id)
+        _nominal_graph = {} if nominal_recorder is not None else None
+        num0, comp_points, comp_pads = (
+            _net_component_info(pcb_data, net_id) if nominal_recorder is None else
+            _net_component_info(pcb_data, net_id, graph_out=_nominal_graph))
+        _nominal_epoch = None
+        if nominal_recorder is not None:
+            try:
+                _nominal_epoch = nominal_recorder.epoch(net_name, _nominal_graph,
+                                                       config, net_id)
+            except Exception as _evidence_error:
+                nominal_recorder.invalidate(_evidence_error)
+                nominal_recorder = None
         if num0 <= 1:
             # Checker says connected (zone credit etc.) - nothing to rescue,
             # and accounting stays whatever the run already decided.
@@ -1079,13 +1102,27 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                 if not _bare:
                     continue
                 _cu = [l for l in _pad.layers if l.endswith('.Cu')]
+                _nominal_observer = None
+                if nominal_recorder is not None:
+                    try:
+                        _nominal_observer = nominal_recorder.observer(
+                            _nominal_epoch, _pad, config, _cu[0] if _cu else None)
+                    except Exception as _evidence_error:
+                        nominal_recorder.invalidate(_evidence_error)
+                        nominal_recorder = None
                 try:
                     _tr = tap_pad_with_escalation(
                         _pad, _cu[0] if _cu else None, net_id, pcb_data,
                         config, max_search_radius=1.5,
                         via_size=config.via_size,
                         via_drill=config.via_drill,
-                        verbose=False, fine_for_all=True)
+                        verbose=False, fine_for_all=True,
+                        nominal_observer=_nominal_observer)
+                    if nominal_recorder is not None and getattr(
+                            pcb_data, '_final_escape_evidence_refusal', None):
+                        nominal_recorder.invalidate(RuntimeError(
+                            pcb_data._final_escape_evidence_refusal))
+                        nominal_recorder = None
                 except Exception:
                     _tr = None
                 if not _tr or not _tr.success:

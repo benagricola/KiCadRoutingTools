@@ -1325,6 +1325,7 @@ def tap_pad_with_escalation(
     plane_oracle=None,
     corridor_ghosts=None,
     ghost_exclude_ids=(),
+    nominal_observer=None,
 ) -> TapResult:
     """Tap a pad, escalating to scoped fine parameters for fine-pitch pads.
 
@@ -1348,6 +1349,15 @@ def tap_pad_with_escalation(
             shared_via_maps=shared_via_maps, pour_trace_only=pour_trace_only,
             plane_oracle=plane_oracle, corridor_ghosts=corridor_ghosts,
             ghost_exclude_ids=ghost_exclude_ids)
+        if nominal_observer is not None:
+            # FORK DIVERGENCE: observe this actual initial nominal result,
+            # before any fine/clearance/via escalation changes its meaning.
+            # Evidence failure must not turn a successful tap into a different
+            # rescue branch; incomplete evidence withholds the proposal.
+            try:
+                nominal_observer(result)
+            except Exception as error:
+                pcb_data._final_escape_evidence_refusal = type(error).__name__
         if result.success:
             result.params_label = 'default'
             result.clearance_used = config.clearance
