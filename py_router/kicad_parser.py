@@ -292,6 +292,8 @@ class Pad:
     # but short of the drill is not connected there.
     # connectivity.pad_unflashed_layers reads it. Set by BOTH parse paths.
     unconnected_layer_mode: str = 'keep_all'
+    # Text-reader provenance only. Native/approximate custom shapes remain unproved.
+    exact_custom_source: Optional[Tuple[str, float]] = None
 
 
 _VIA_BIRTH_WATCH = None
@@ -1010,6 +1012,107 @@ def _adaptive_circle_n(r: float, eps: float = 0.001, lo: int = 16,
     return max(lo, min(hi, n))
 
 
+def _custom_anchor_circle_count(radius):
+    """Bound the existing 5 um inscribed anchor tessellation before allocation."""
+    if not math.isfinite(radius) or radius <= 0:
+        raise ValueError('custom_polygon_anchor_unproved')
+    count = 16
+    if radius > .005:
+        cosine = 1.0 - .005 / radius
+        if cosine >= 1:
+            raise ValueError('custom_polygon_anchor_unproved')
+        count = max(16, int(math.ceil(math.pi / math.acos(cosine))))
+    if count > 4096:
+        raise ValueError('custom_polygon_anchor_unproved')
+    return count
+
+
+def exact_custom_polygons(pad_text, global_x, global_y, rotation):
+    """Return source-exact straight primitives plus the source-bound anchor model.
+
+    Retained source text is rechecked by the manufacturing site consumer; this
+    does not credit fabrication permission or approximate curved primitives.
+    """
+    def children(block, head):
+        prefix = '(' + head
+        if not block.startswith(prefix) or not block.endswith(')'):
+            raise ValueError('custom_polygon_source_unproved')
+        pos = len(prefix)
+        result = []
+        while pos < len(block) - 1:
+            if block[pos].isspace():
+                pos += 1
+                continue
+            if block[pos] != '(':
+                raise ValueError('custom_polygon_source_unproved')
+            end = find_matching_paren(block, pos)
+            if end <= pos or end > len(block) - 1:
+                raise ValueError('custom_polygon_source_unproved')
+            result.append(block[pos:end])
+            pos = end
+        return result
+
+    matches = list(re.finditer(r'\(primitives\b', pad_text))
+    if len(matches) != 1 or re.search(r'\(padstack\b', pad_text):
+        raise ValueError('custom_polygon_source_unproved')
+    options = re.search(r'\(options\s+\(clearance\s+outline\)\s+\(anchor\s+(rect|circle)\)\s*\)', pad_text)
+    if options is None:
+        raise ValueError('custom_polygon_anchor_unproved')
+    decimal = r'-?(?:\d+(?:\.\d*)?|\.\d+)'
+    size = re.search(r'\(size\s+(' + decimal + r')\s+(' + decimal + r')\)', pad_text)
+    if size is None:
+        raise ValueError('custom_polygon_anchor_unproved')
+    ax, ay = map(float, size.groups())
+    if not all(math.isfinite(v) and v > 0 for v in (ax, ay)):
+        raise ValueError('custom_polygon_anchor_unproved')
+    if options[1] == 'circle':
+        _custom_anchor_circle_count(min(ax, ay) / 2)
+    start = matches[0].start()
+    primitives = children(pad_text[start:find_matching_paren(pad_text, start)], 'primitives')
+    if not primitives:
+        raise ValueError('custom_polygon_source_unproved')
+    for primitive in primitives:
+        parts = children(primitive, 'gr_poly')
+        if len(parts) != 3:
+            raise ValueError('custom_polygon_source_unproved')
+        pts = [part for part in parts if part.startswith('(pts')]
+        widths = [part for part in parts if part.startswith('(width ')]
+        fills = [part for part in parts if part == '(fill yes)']
+        if len(pts) != 1 or len(widths) != 1 or len(fills) != 1:
+            raise ValueError('custom_polygon_source_unproved')
+        width = re.fullmatch(r'\(width\s+([^\s()]+)\)', widths[0])
+        if width is None or float(width[1]) != 0:
+            raise ValueError('custom_polygon_stroke_unproved')
+        points = children(pts[0], 'pts')
+        if len(points) < 3:
+            raise ValueError('custom_polygon_source_unproved')
+        for point in points:
+            match = re.fullmatch(r'\(xy\s+([^\s()]+)\s+([^\s()]+)\)', point)
+            if match is None or not all(re.fullmatch(decimal, v) and math.isfinite(float(v)) for v in match.groups()):
+                raise ValueError('custom_polygon_source_unproved')
+    polygons = _custom_pad_global_polygons(pad_text, global_x, global_y, rotation)
+    if polygons is None or len(polygons) != len(primitives) + 1:
+        raise ValueError('custom_polygon_source_unproved')
+    # The general parser appends the anchor. Bind that output to the retained
+    # source size and transform; the consumer separately excludes a conservative
+    # anchor disk, so a tessellated circle is not credited as exact circular copper.
+    rad = math.radians(-rotation)
+    cos_r, sin_r = math.cos(rad), math.sin(rad)
+    if options[1] == 'rect':
+        local = [(-ax / 2, -ay / 2), (ax / 2, -ay / 2),
+                 (ax / 2, ay / 2), (-ax / 2, ay / 2)]
+    else:
+        radius = min(ax, ay) / 2
+        count = _custom_anchor_circle_count(radius)
+        local = [(radius * math.cos(2 * i * math.pi / count),
+                  radius * math.sin(2 * i * math.pi / count)) for i in range(count)]
+    anchor = [(global_x + (x * cos_r - y * sin_r),
+               global_y + (x * sin_r + y * cos_r)) for x, y in local]
+    if polygons[-1] != anchor or not all(math.isfinite(v) for point in anchor for v in point):
+        raise ValueError('custom_polygon_anchor_unproved')
+    return polygons
+
+
 def _custom_pad_global_polygons(pad_text: str, global_x: float, global_y: float,
                                 pad_abs_rotation_deg: float):
     """Real copper outline(s) of a custom pad in GLOBAL board mm (issue #188).
@@ -1228,10 +1331,7 @@ def _custom_pad_global_polygons(pad_text: str, global_x: float, global_y: float,
                 # polygon never exceeds the real copper -- no phantom grazes,
                 # no router over-block) but pick the vertex count for a <=5um
                 # sagitta.
-                _eps = 0.005
-                n = 16
-                if r > _eps:
-                    n = max(16, int(math.ceil(math.pi / math.acos(1.0 - _eps / r))))
+                n = _custom_anchor_circle_count(r)
                 anchor_local = [(r * math.cos(2.0 * i * math.pi / n),
                                  r * math.sin(2.0 * i * math.pi / n)) for i in range(n)]
             polys.append(to_global(anchor_local))
@@ -3808,6 +3908,8 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
                 rect_rotation=rect_rotation,
                 local_clearance=local_clearance,
                 polygons=pad_polygons,
+                exact_custom_source=((pad_text, pad_rotation)
+                                     if pad_shape == 'custom' else None),
                 hole_x=pad_hole_x,
                 hole_y=pad_hole_y,
                 castellated='pad_prop_castellated' in pad_text,

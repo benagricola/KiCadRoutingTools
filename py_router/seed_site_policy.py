@@ -42,6 +42,7 @@ def conventional_site_filter(pcb_data, via_size, layers):
     sides = set(layers) & {'F.Cu', 'B.Cu'}
     pads = [p for fp in pcb_data.footprints.values() for p in fp.pads]
     relevant = [p for p in pads if any(pad_on_copper_side(p, s) for s in sides)]
+    custom_anchors = []
     for pad in relevant:
         for field in ('global_x', 'global_y', 'size_x', 'size_y', 'rect_rotation'):
             value = getattr(pad, field, None)
@@ -53,9 +54,54 @@ def conventional_site_filter(pcb_data, via_size, layers):
             ratio = getattr(pad, 'roundrect_rratio', None)
             if type(ratio) not in (int, float) or not math.isfinite(ratio) or not 0 <= ratio <= .5:
                 raise SitePolicyRefusal('seed_fabrication_pad_geometry_unproved')
-        if getattr(pad, 'polygons', None):
+        if pad.shape == 'custom':
+            from kicad_parser import exact_custom_polygons
+            source = getattr(pad, 'exact_custom_source', None)
+            anchor = getattr(pad, 'anchor_size', None)
+            if (not isinstance(source, tuple) or len(source) != 2
+                    or not isinstance(source[0], str)
+                    or type(source[1]) not in (int, float)
+                    or not math.isfinite(source[1])
+                    or getattr(pad, 'geometry_approximations', ())
+                    or not isinstance(anchor, (tuple, list)) or len(anchor) != 2
+                    or any(type(v) not in (int, float) or not math.isfinite(v)
+                           or v <= 0 for v in anchor)):
+                raise SitePolicyRefusal('seed_fabrication_pad_shape_unproved')
+            try:
+                import re
+                size = re.search(r'\(size\s+([^\s()]+)\s+([^\s()]+)\)', source[0])
+                if (size is None or tuple(float(v) for v in size.groups()) != tuple(anchor)
+                        or re.match(r'\(pad\s+(?:"[^"]*"|[^\s()]+)\s+smd\s+custom\b', source[0]) is None):
+                    raise ValueError('custom_polygon_anchor_unproved')
+                polygons = exact_custom_polygons(
+                    source[0], pad.global_x, pad.global_y, source[1])
+                if (polygons != pad.polygons or any(
+                        not isinstance(ring, (tuple, list)) or len(ring) < 3
+                        or any(not isinstance(point, (tuple, list)) or len(point) != 2
+                               or any(type(v) not in (int, float) or not math.isfinite(v)
+                                      for v in point) for point in ring)
+                        for ring in polygons) or any(
+                        len({tuple(point) for point in ring}) != len(ring)
+                        for ring in polygons)):
+                    raise ValueError('custom_polygon_geometry_unproved')
+                from shapely.geometry import Polygon
+                from shapely.errors import ShapelyError
+                try:
+                    for ring in polygons:
+                        shape = Polygon(ring)
+                        if not shape.is_valid or not math.isfinite(shape.area) or shape.area <= 0:
+                            raise ValueError('custom_polygon_geometry_unproved')
+                except ShapelyError as exc:
+                    raise ValueError('custom_polygon_geometry_unproved') from exc
+            except (ValueError, TypeError, OverflowError) as exc:
+                raise SitePolicyRefusal('seed_fabrication_pad_shape_unproved') from exc
+            # Circumscribed anchor disk conservatively covers either supported
+            # anchor kind at every rotation; it cannot create a permissive site.
+            custom_anchors.append((pad.global_x, pad.global_y,
+                                   math.hypot(*anchor) / 2))
+        elif getattr(pad, 'polygons', None):
             raise SitePolicyRefusal('seed_fabrication_pad_shape_unproved')
-        if pad.shape not in ('rect', 'circle', 'oval', 'roundrect'):
+        elif pad.shape not in ('rect', 'circle', 'oval', 'roundrect'):
             raise SitePolicyRefusal('seed_fabrication_pad_shape_unproved')
     if any(a.layer not in ('F.Paste', 'B.Paste') for a in pcb_data.paste_apertures):
         raise SitePolicyRefusal('seed_fabrication_paste_layer_unproved')
@@ -105,6 +151,9 @@ def conventional_site_filter(pcb_data, via_size, layers):
         # Existing fab_notes uses radius-1e-6 to distinguish contact from overlap.
         # Restrict to strictly separated sites instead: boundary contact is refused.
         if any(point_to_pad_distance(x, y, p) <= via_size / 2 + 1e-9 for p in relevant):
+            return False
+        if any(math.hypot(x - px, y - py) <= radius + via_size / 2 + 1e-9
+               for px, py, radius in custom_anchors):
             return False
         return not any(via_paste_penetration(x, y, via_size, a) >= -1e-9
                        for a in apertures)

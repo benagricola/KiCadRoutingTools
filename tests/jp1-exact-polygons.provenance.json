@@ -1,0 +1,7 @@
+{
+  "original_board": "/home/ben/work/placemat-review-scratch-20261007/step1-targeted-connectivity-review-v1/pic-escape-selection-v2/qualification-current-v5/qualification-pic-current-v5/family/.placemat/runs/57c5d479/route/routed.kicad_pcb",
+  "original_board_sha256": "112b6c8ad76c7ac70169e27eaab60275df3d9f704bb8a17f9a0e96f8e72e5348",
+  "raw_footprint_sha256": "38004a6cfb259bfbd30ceea0034b0d2da6234fa6cbd992e94f76217add207978",
+  "fixture_sha256": "291b98f4a1208bb3f01991158c28cb8d0543b93806b5a8ec604f30f2029c1d33",
+  "changes": "wrap exact original JP1 footprint in minimal portable board header; original footprint source bytes unchanged"
+}
