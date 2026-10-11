@@ -59,7 +59,7 @@ REGRADE_RE = re.compile(r'JSON_REGRADE: (\{.*\})')
 SUMMARY_SINK: List[dict] = []
 RECONCILE_RAISED = [False]
 FINAL_REGRADE: List[Optional[dict]] = [None]
-# placemat fork (docs/connections.md, "Failure evidence"): set by the outermost
+# FORK DIVERGENCE (docs/connections.md, "Failure evidence"): set by the outermost
 # run that writes a summary (--json-out), so its reconcile and finalize sub-runs
 # record failed searches too.
 FAILURE_EVIDENCE = [False]
@@ -509,7 +509,7 @@ def regrade_record(summaries: List[Dict], grades: Dict[str, Dict],
 
 
 def _carry_net_evidence(merged: Dict, summaries: List[Dict], failing: set) -> None:
-    """`net_evidence` (placemat fork, docs/connections.md): each net's newest record across the summaries, for the
+    """`net_evidence` (FORK DIVERGENCE, docs/connections.md): each net's newest record across the summaries, for the
     nets in `failing`; the key is dropped when none is left."""
     if not any('net_evidence' in s for s in summaries):
         return

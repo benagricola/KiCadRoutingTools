@@ -145,7 +145,7 @@ class GridRouteConfig:
     min_turning_radius: float = 0.2  # mm - minimum turning radius for pose-based routing
     debug_lines: bool = False  # Output debug geometry on User.2/3/8/9 layers
     verbose: bool = False  # Print detailed diagnostic output
-    # placemat fork (docs/connections.md, "Failure evidence"): set when the call writes a summary; a failed search
+    # FORK DIVERGENCE (docs/connections.md, "Failure evidence"): set when the call writes a summary; a failed search
     # is then recorded as a `search_failed` net event for the summary's `net_evidence`.
     failure_evidence: bool = False
     max_rip_up_count: int = 3  # Maximum blockers to rip up at once during rip-up and retry (1 to N)

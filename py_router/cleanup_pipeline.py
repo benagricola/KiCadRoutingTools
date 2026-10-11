@@ -316,6 +316,8 @@ def run_post_route_cleanup(results, pcb_data, scope_net_ids, config, *,
 
     if graze:
         _prog("graze prune")
+        # FORK DIVERGENCE (docs/fork-divergences.md): graze necks floor at the
+        # net's track floor, the board's min_track_width included.
         from single_ended_routing import _fab_track_floor
         _fab = _fab_track_floor(pcb_data)
         _gz_segs, _gz_nets, _gz_strip = prune_grazing_segments(

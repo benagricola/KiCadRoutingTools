@@ -7402,6 +7402,7 @@ For differential pair routing, use route_diff.py:
                         help=f"Penalty for direction changes, encourages straighter paths (default: {defaults.TURN_COST})")
     parser.add_argument("--direction-preference-cost", type=int, default=defaults.DIRECTION_PREFERENCE_COST,
                         help=f"Penalty for non-preferred layer direction, 0=disabled (default: {defaults.DIRECTION_PREFERENCE_COST})")
+    # FORK DIVERGENCE (docs/connections.md): --connections and --bus-nets.
     parser.add_argument("--connections", metavar="FILE",
                         help="route only these pad pairs, each at its width per layer (placemat fork, docs/connections.md)")
     parser.add_argument("--bus-nets", nargs="+", action="append", metavar="NET",
@@ -8147,7 +8148,7 @@ For differential pair routing, use route_diff.py:
                 heuristic_weight=args.heuristic_weight,
                 turn_cost=args.turn_cost,
                 direction_preference_cost=args.direction_preference_cost,
-                bus_enabled=args.bus or bool(args.bus_nets),
+                bus_enabled=args.bus or bool(args.bus_nets),  # FORK DIVERGENCE: --bus-nets implies --bus
                 bus_nets=args.bus_nets,
                 bus_detection_radius=args.bus_detection_radius,
                 bus_attraction_radius=args.bus_attraction_radius,

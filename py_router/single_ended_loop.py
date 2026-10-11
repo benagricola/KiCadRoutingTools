@@ -623,6 +623,8 @@ def route_single_ended_nets(
                             bus_net_to_group.pop(_nid, None)
                     bus_groups = [b for b in bus_groups if b.name not in _dset]
 
+            # FORK DIVERGENCE (docs/connections.md): every bus group, stated or
+            # detected, as a record for the summary's `bus_groups`.
             _demoted_names = set(_demoted)
             state.bus_group_records = [
                 {'name': b.name,

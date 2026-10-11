@@ -1,5 +1,7 @@
 """Failure evidence: what the router knew when a net failed, as plain data (placemat fork, docs/connections.md).
 
+FORK DIVERGENCE (docs/fork-divergences.md, "Failure evidence as data"): upstream keeps no such record.
+
 Facts only: the net's last failed search (iterations and frontier size per direction), the copper its frontier met
 and the verdicts KRT's own diagnostics recorded (routing_diagnostics.py). `diagnosis` names a verdict only when
 exactly one was recorded; otherwise it is "unknown". Nothing here infers a cause the router did not record."""
