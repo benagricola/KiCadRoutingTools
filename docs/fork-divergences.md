@@ -49,7 +49,11 @@
   (`last_frontier`) is left as it was.
 - Flood semantics: track margins, corner guards, terminal exemptions, via
   rungs and forbidden destination layers follow rust_router/src/router.rs
-  GridSearch's neighbour loop. Direction and path-local via restrictions
+  GridSearch's neighbour loop. The margins are the narrowest the tap search
+  may neck down to (pocket_walls.py `search_margins`, mirroring the gate in
+  single_ended_routing.py `_route_main_connection`): a power-wide net floods
+  at its layer width, an impedance-width net at the nominal width when
+  KICAD_IMPEDANCE_NECKDOWN allows, otherwise the net's own width. Direction and path-local via restrictions
   are omitted, making reachability conservative: those omissions can miss
   a pocket but cannot create one. The flood runs on a clone of the map with
   the net's #908 own-pad lift applied, as the tap searches had it

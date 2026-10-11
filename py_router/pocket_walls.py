@@ -7,7 +7,7 @@ failed edge. When one target is walled into a small pocket and another edge
 failed in a larger region, the larger region's walls outrank the small
 pocket's, and the ladder can spend its rips without touching the copper round
 the boxed-in pad (splitflap_driver, U7 pin 10 of +3V3). This module floods each
-failed edge's target on the router's own obstacle map, at the net's track
+failed edge's target on the router's own obstacle map, at the search's track
 margins, and names the nets whose copper bounds the region when the flood
 closes; the ladder tries those nets first.
 
@@ -16,8 +16,9 @@ GridSearch neighbour loop): an 8-way step is open unless `segment_blocked` at
 the layer's track margin or `move_clips_corner` (steps onto or off a terminal
 cell exempt), and a layer change is open where `is_via_blocked_rung` is false
 or the cell is a free via, onto a layer whose cell passes `segment_blocked`.
-It leaves out the search's direction rules after a via, so its region is never
-smaller than what the search could reach.
+It leaves out the search's direction rules after a via, and it floods at the
+narrowest track margins the tap search may neck down to (`search_margins`), so
+its region is never smaller than what the search could reach.
 """
 from __future__ import annotations
 
@@ -153,6 +154,34 @@ def flood_pocket(obstacles, starts: Sequence[Cell], track_margin, max_cells: int
     return PocketFlood(cells=len(seen), wall=tuple(sorted(wall)))
 
 
+def search_margins(config, net_id: int):
+    """The narrowest per-layer track margins the tap search may use for
+    `net_id`. FORK DIVERGENCE: mirrors the neck-down gate of
+    single_ended_routing._route_main_connection, which the tap edges route
+    through (via _route_with_via_unblock): a POWER-wide net (wider than the
+    layer's routing width) retries down to the layer width, at
+    base_track_margins on a long trunk and at the layer width on a short edge;
+    an IMPEDANCE-width net retries at the nominal track width when
+    KICAD_IMPEDANCE_NECKDOWN allows. A flood at the full width could call a
+    pad boxed in that the search reaches at the neck floor."""
+    full = config.track_margins_for_net(net_id)
+    if not getattr(config, 'power_tap_neckdown', False):
+        return full
+    from single_ended_routing import _impedance_neckdown_allowed
+    net_w = config.get_net_track_width(net_id, config.layers[0])
+    layer_w = config.get_track_width(config.layers[0])
+    power_wide = net_w > layer_w + 1e-9
+    imp_wide = (not power_wide and net_w > config.track_width + 1e-9
+                and _impedance_neckdown_allowed())
+    if power_wide:
+        floors = [config.base_track_margins(), config.track_margins_for_width(layer_w)]
+    elif imp_wide:
+        floors = [config.track_margins_for_width(config.track_width)]
+    else:
+        return full
+    return [min(v) for v in zip(full, *floors)]
+
+
 def _rip_trial(trial, pcb_data, config, rip_ids, skip_object_ids,
                net_obstacles_cache) -> None:
     """Make map `trial` (a clone) what it would be after ripping: for each net
@@ -205,7 +234,8 @@ def pocket_wall_blockers(failed_edge_blocking: Dict, obstacles, pcb_data, config
     results). By default every wall net with all its copper. A pocket whose
     flood still closes on the map as the rip would leave it has `opens`
     False. `net_obstacles_cache` holds the entries the map has stamped (the
-    router's state.net_obstacles_cache); without it they are recomputed."""
+    router's state.net_obstacles_cache); without it they are recomputed.
+    The flood uses `search_margins`."""
     from blocking_analysis import analyze_frontier_blocking
     # Edges that can name a pocket: a recorded target and source. Gathered
     # first so a ladder entry with none of them costs no map clone.
@@ -222,7 +252,7 @@ def pocket_wall_blockers(failed_edge_blocking: Dict, obstacles, pcb_data, config
         edges.append((starts, sources, tuple(entry[1])))
     if not edges:
         return []
-    margins = config.track_margins_for_net(net_id)
+    margins = search_margins(config, net_id)
     rung = getattr(config, 'via_rung', 0)
     forbidden = [i for i, c in enumerate(config.get_layer_costs()) if c < 0]
     cap = int(config.max_probe_iterations)

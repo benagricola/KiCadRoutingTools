@@ -370,6 +370,40 @@ def test_pocket_sealed_by_a_stub_does_not_open():
     assert pocket(routed_ids | {id(t) for t in stub}).opens
 
 
+def test_flood_uses_the_neck_floor_margins():
+    """OURS is a 0.6 mm power net; its pad P sits in W's square with a 1 mm
+    gap that a 0.2 mm track passes and a 0.6 mm one does not. The tap search
+    necks down to the layer width, so P is not boxed in; with neck-down off
+    the full width is all the search has, and P is."""
+    from pocket_walls import pocket_wall_blockers, search_margins
+    gapped = []
+    for layer in LAYERS:
+        gapped += [make_seg(4.0, 4.0, 6.0, 4.0, layer=layer, net_id=W, width=0.2),
+                   make_seg(4.0, 6.0, 6.0, 6.0, layer=layer, net_id=W, width=0.2),
+                   make_seg(4.0, 4.0, 4.0, 6.0, layer=layer, net_id=W, width=0.2),
+                   make_seg(6.0, 4.0, 6.0, 4.5, layer=layer, net_id=W, width=0.2),
+                   make_seg(6.0, 5.5, 6.0, 6.0, layer=layer, net_id=W, width=0.2)]
+    pcb = _board()
+    pcb.segments = [g for g in pcb.segments if g.net_id != W] + gapped
+    cfg = _config()
+    cfg.power_net_widths = {OURS: 0.6}
+    obstacles = _map(pcb, cfg)
+    failed = {(0, 1): (
+        [], (5.0, 5.0), {'fwd': [], 'bwd': [], 'extra': [],
+                         'tgt_cells': [_cell(5.0, 5.0)],
+                         'src_cells': [_cell(12.0, 15.0)]})}
+
+    def walls():
+        return [b.net_id for p in pocket_wall_blockers(
+            failed, obstacles, pcb, cfg, OURS, {W: [], Z: []}, {OURS},
+            obstacle_cache={}) for b in p.walls]
+
+    assert max(search_margins(cfg, OURS)) < max(cfg.track_margins_for_net(OURS))
+    assert walls() == [], "reachable at the neck floor"
+    cfg.power_tap_neckdown = False
+    assert walls() == [W], "boxed in at the full width"
+
+
 def _static_box(obstacles, cx, cy, r):
     for layer in range(len(LAYERS)):
         for d in range(-r, r + 1):
