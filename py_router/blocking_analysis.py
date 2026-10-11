@@ -274,6 +274,7 @@ def analyze_frontier_blocking(
     source_xy: Optional[Tuple[float, float]] = None,
     obstacle_cache: Optional[Dict[int, Tuple[Set, Set]]] = None,
     known_blockers: Optional[List[Tuple[int, int]]] = None,
+    record_history: bool = True,
 ) -> List[BlockingInfo]:
     """
     Analyze which nets are blocking based on frontier data.
@@ -409,7 +410,9 @@ def analyze_frontier_blocking(
         # blocker's reroute sees its contested ground priced. No-op unless
         # KICAD_HISTORY_COST > 0.
         from history_congestion import history_enabled, record_contested
-        if history_enabled():
+        # FORK DIVERGENCE (pocket_walls.py): record_history=False lets the
+        # pocket-wall attribution name owners without charging the field.
+        if record_history and history_enabled():
             cgx, cgy = _unpack_xy(cells)
             record_contested(config, np.stack(
                 (cgx, cgy, cells & 0xFF), axis=1))

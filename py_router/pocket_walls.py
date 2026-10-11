@@ -159,7 +159,9 @@ def pocket_wall_blockers(failed_edge_blocking: Dict, obstacles, pcb_data, config
     flood closes within config.max_probe_iterations states (the router's own
     stuck test) is boxed in; its wall cells are attributed to routed nets by
     analyze_frontier_blocking and the nets ordered by how many wall cells each
-    owns."""
+    owns (the rip ladder reorders them by its own ranking). The flood runs on
+    a clone of `obstacles` with the net's #908 own-pad lift applied, as the
+    tap searches had it."""
     from blocking_analysis import analyze_frontier_blocking
     margins = config.track_margins_for_net(net_id)
     rung = getattr(config, 'via_rung', 0)
@@ -167,24 +169,43 @@ def pocket_wall_blockers(failed_edge_blocking: Dict, obstacles, pcb_data, config
     cap = int(config.max_probe_iterations)
     pockets = []
     done = set()
-    for _key, entry in failed_edge_blocking.items():
-        dirs = entry[2] if len(entry) > 2 else None
-        starts = tuple(sorted(set(tuple(c) for c in (dirs or {}).get('tgt_cells') or ())))
-        sources = tuple(sorted(set(tuple(c) for c in (dirs or {}).get('src_cells') or ())))
-        key = (starts, sources)
-        if not starts or not sources or key in done:
-            continue
-        done.add(key)
-        flood = flood_pocket(obstacles, starts, margins, cap, rung, forbidden, sources)
-        if flood is None or not flood.wall:
-            continue
-        walls = list(analyze_frontier_blocking(
-            list(flood.wall), pcb_data, config, routed_net_paths,
-            exclude_net_ids=exclude_net_ids, target_xy=entry[1],
-            obstacle_cache=obstacle_cache))
-        walls.sort(key=lambda b: (-b.blocked_count, -b.unique_cells, b.net_id))
-        if walls:
-            pockets.append(Pocket(target_xy=tuple(entry[1]), flood=flood,
-                                  walls=tuple(walls)))
+    # The taps searched with the #908 own-pad lift applied
+    # (single_ended_routing.route_multipoint_taps), and it is released before
+    # the rip ladder runs; without it a pad sealed only by its own
+    # footprint's copper floods as a 1-cell pocket with no rippable wall.
+    # A map that still holds the lift is cloned with it; lifting that clone
+    # again would open cells two obstacles block. Released below so the
+    # (map id, net) registry does not keep the clone.
+    from routing_context import (ensure_own_pad_lift, own_pad_lift_applied,
+                                 release_own_pad_lift)
+    _lifted = own_pad_lift_applied(obstacles, net_id)
+    obstacles = obstacles.clone()
+    _lift = None if _lifted else ensure_own_pad_lift(obstacles, pcb_data, net_id)
+    try:
+        for _key, entry in failed_edge_blocking.items():
+            dirs = entry[2] if len(entry) > 2 else None
+            starts = tuple(sorted(set(tuple(c) for c in (dirs or {}).get('tgt_cells') or ())))
+            sources = tuple(sorted(set(tuple(c) for c in (dirs or {}).get('src_cells') or ())))
+            key = (starts, sources)
+            if not starts or not sources or key in done:
+                continue
+            done.add(key)
+            flood = flood_pocket(obstacles, starts, margins, cap, rung, forbidden, sources)
+            if flood is None or not flood.wall:
+                continue
+            walls = list(analyze_frontier_blocking(
+                list(flood.wall), pcb_data, config, routed_net_paths,
+                exclude_net_ids=exclude_net_ids, target_xy=entry[1],
+                obstacle_cache=obstacle_cache,
+                # The wall is not a failed search's frontier: charging it to the
+                # #590 history field would change later routes' costs whenever a
+                # pocket is found, even when the rip order is unchanged.
+                record_history=False))
+            walls.sort(key=lambda b: (-b.blocked_count, -b.unique_cells, b.net_id))
+            if walls:
+                pockets.append(Pocket(target_xy=tuple(entry[1]), flood=flood,
+                                      walls=tuple(walls)))
+    finally:
+        release_own_pad_lift(obstacles, net_id, _lift)
     pockets.sort(key=lambda p: (p.flood.cells, p.target_xy))
     return pockets

@@ -131,7 +131,7 @@ def test_closed_region_with_a_search_source_is_not_a_trapped_target():
                         sources=[_cell(12.0, 15.0)]) is not None
 
 
-def _ladder_rips(pocket_enabled):
+def _ladder_rips(pocket_enabled, pockets=None):
     pcb, cfg = _board(), _config()
     obstacles = _map(pcb, cfg)
     src = _cell(12.0, 15.0)
@@ -159,7 +159,8 @@ def _ladder_rips(pocket_enabled):
                  'mst_edges': [(2, 0, 1.0), (2, 1, 1.0)]}
     with patch.object(phase3_routing, "rip_up_net", _record), \
             patch.object(phase3_routing, "LEG_RIP_ENABLED", False), \
-            patch.object(phase3_routing.env_knobs, "POCKET_WALLS", pocket_enabled):
+            patch.object(phase3_routing.env_knobs, "POCKET_WALLS", pocket_enabled), \
+            _pockets_patch(pockets):
         out = phase3_routing.try_phase3_ripup(
             OURS, completed, failed, [], [], pcb, cfg, state,
             [W, Z], [], [], {W: [], Z: []}, {W: {}, Z: {}}, {}, [], {},
@@ -167,6 +168,33 @@ def _ladder_rips(pocket_enabled):
             obstacle_cache={}, tap_obstacles=obstacles)
     assert out is None
     return ripped
+
+
+def _pockets_patch(pockets):
+    import contextlib
+    import pocket_walls
+    if pockets is None:
+        return contextlib.nullcontext()
+    return patch.object(pocket_walls, "pocket_wall_blockers",
+                        lambda *a, **kw: pockets)
+
+
+def _blocker(net_id, cells):
+    from blocking_analysis import BlockingInfo
+    return BlockingInfo(net_id=net_id, net_name={W: 'W', Z: 'Z'}[net_id],
+                        blocked_count=cells, track_cells=cells, via_cells=0,
+                        unique_cells=cells, near_target_cells=0,
+                        near_source_cells=0, details='')
+
+
+def test_pocket_walls_keep_the_ladders_ranking():
+    """One pocket walled by W (more wall cells) and Z. The ladder's ranking
+    puts Z first (Q's larger frontier), so Z is ripped first: a pocket's walls
+    are ordered by the ranking, not by wall cells."""
+    from pocket_walls import Pocket, PocketFlood
+    pocket = Pocket(target_xy=(5.0, 5.0), flood=PocketFlood(10, ((50, 50, 0),)),
+                    walls=(_blocker(W, 50), _blocker(Z, 10)))
+    assert _ladder_rips(True, [pocket]) == [Z]
 
 
 def test_ladder_rips_the_small_pockets_wall_first():

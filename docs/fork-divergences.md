@@ -10,15 +10,26 @@
   its boundary nets before the existing ladder ranking only when no actual
   search source is reachable within it. Both endpoint sets use their search
   terminal exemptions; missing recorded sources declines pocket priority.
-  Regions are ordered smallest first and then most boundary cells owned. The ladder's rip limits,
-  protection checks and acceptance rules remain unchanged.
+  Regions are ordered smallest first. Within a region its boundary nets keep
+  the order the ladder's own ranking gave them (after the mincut step); nets
+  the ranking did not name follow, most boundary cells first. The ladder's rip
+  limits, protection checks and acceptance rules remain unchanged.
+- The boundary attribution calls blocking_analysis.py
+  `analyze_frontier_blocking` with `record_history=False` (a fork keyword,
+  default True), so a pocket does not charge the #590 history field.
 - Flood semantics: track margins, corner guards, terminal exemptions, via
   rungs and forbidden destination layers follow rust_router/src/router.rs
   GridSearch's neighbour loop. Direction and path-local via restrictions
   are omitted, making reachability conservative: those omissions can miss
-  a pocket but cannot create one. The map is cloned and never mutated.
+  a pocket but cannot create one. The flood runs on a clone of the map with
+  the net's #908 own-pad lift applied, as the tap searches had it
+  (single_ended_routing.py `route_multipoint_taps` releases the lift before
+  the ladder runs); the caller's map is not mutated.
 - Why: bounded rip attempts should open a trapped endpoint before spending
-  their budget on unrelated copper.
+  their budget on unrelated copper. Ordering a pocket's nets by boundary cells
+  alone ripped a long net that only bounds a large pocket ahead of the
+  ranking's first pick, which often opens the pad by itself (esp_prog in
+  tests/test_703_predictor_regen.py, perturb-scatter-d1: 28 -> 32 vias).
 - Test: tests/test_rip_pocket_walls_first.py.
 
 The boundary attribution is advisory and incomplete: a corner-clipping refusal

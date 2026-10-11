@@ -990,6 +990,16 @@ def ensure_own_pad_lift(obstacles, pcb_data, net_id):
     return key if did else None
 
 
+def own_pad_lift_applied(obstacles, net_id) -> bool:
+    """True while `obstacles` holds the #908 own-pad lift for `net_id`.
+
+    FORK DIVERGENCE (pocket_walls.py): the pocket flood lifts a clone only
+    when the map it was given is not already lifted, since a clone of a lifted
+    map carries the lift but not this registry entry."""
+    key = (id(obstacles), net_id)
+    return key in _OWNPAD_LIFTED or key in _OWNPAD_VIA_LIFTED
+
+
 def release_own_pad_lift(obstacles, net_id, token):
     """Undo `ensure_own_pad_lift`. Safe to call with None."""
     if token is None:

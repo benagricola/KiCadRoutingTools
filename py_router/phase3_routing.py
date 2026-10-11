@@ -953,7 +953,7 @@ def try_phase3_ripup(
     # pocket walls first"): a failed edge whose target is boxed in names the
     # nets whose copper bounds its pocket (a flood from the target on the tap
     # map at the net's track margins); they go ahead of the ranking below,
-    # smallest pocket first, each pocket's nets by wall cells owned. The
+    # smallest pocket first, each pocket's nets in the ranking's order. The
     # merged ranking let a larger failure region's walls outrank a small
     # pocket's, and the ladder spent its rips without opening the pad.
     _pockets = []
@@ -1004,8 +1004,16 @@ def try_phase3_ripup(
                   f"copper soft-costed -- keeping per-edge ranking")
 
     # FORK DIVERGENCE (see the pocket flood above): pocket walls first.
+    # Smallest pocket first; within a pocket, its walls keep the order the
+    # ranking above gave them (walls the ranking did not name follow, most
+    # wall cells first). Ordering a pocket's walls by wall cells alone put a
+    # long net that merely bounds a large pocket ahead of the ranking's
+    # first pick, which often opens the pad by itself (esp_prog
+    # perturb-scatter-d1: /EN ripped ahead of /+3.3V, 28 -> 32 vias).
     if _pockets:
-        _pocket_list = [b for _p in _pockets for b in _p.walls]
+        _rank = {b.net_id: k for k, b in enumerate(rippable_blockers)}
+        _pocket_list = [b for _p in _pockets for b in sorted(
+            _p.walls, key=lambda w: _rank.get(w.net_id, len(_rank)))]
         _pocket_rippable, _ = filter_rippable_blockers(
             _pocket_list, routed_results, diff_pair_by_net_id,
             get_canonical_net_id, pcb_data=pcb_data,
