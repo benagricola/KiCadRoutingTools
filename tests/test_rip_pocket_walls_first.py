@@ -131,6 +131,32 @@ def test_closed_region_with_a_search_source_is_not_a_trapped_target():
                         sources=[_cell(12.0, 15.0)]) is not None
 
 
+def _failed_edge(target_xy, src_xy, obstacles):
+    tgt, src = _cell(*target_xy), _cell(*src_xy)
+    bwd = _backward_frontier(obstacles, tgt, src)
+    return (bwd, target_xy, {'fwd': [], 'bwd': bwd, 'extra': [],
+                             'tgt_cells': [tgt], 'src_cells': [src]})
+
+
+def test_pocket_analysis_writes_no_history():
+    """The pocket flood's wall attribution charges nothing to the #590 history
+    field: no frontier, no contest, and the frontier duplicate guard is left
+    alone (shipped default KICAD_HISTORY_COST > 0)."""
+    from history_congestion import history_enabled
+    from pocket_walls import pocket_wall_blockers
+    assert history_enabled(), "history is on by default"
+    pcb, cfg = _board(), _config()
+    obstacles = _map(pcb, cfg)
+    failed = {(0, 1): _failed_edge((5.0, 5.0), (12.0, 15.0), obstacles)}
+    pockets = pocket_wall_blockers(failed, obstacles, pcb, cfg, OURS,
+                                   {W: [], Z: []}, {OURS}, obstacle_cache={})
+    assert [b.net_id for p in pockets for b in p.walls] == [W]
+    field = getattr(cfg, '_history_cong', None)
+    assert field is None or (field.frontiers == 0 and field.contests == 0
+                             and field.last_frontier is None
+                             and len(field.keys) == 0), field
+
+
 def _ladder_rips(pockets=None):
     pcb, cfg = _board(), _config()
     obstacles = _map(pcb, cfg)

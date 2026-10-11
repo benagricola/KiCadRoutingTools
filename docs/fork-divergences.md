@@ -16,7 +16,10 @@
   limits, protection checks and acceptance rules remain unchanged.
 - The boundary attribution calls blocking_analysis.py
   `analyze_frontier_blocking` with `record_history=False` (a fork keyword,
-  default True), so a pocket does not charge the #590 history field.
+  default True). With it False the call charges nothing to the #590 history
+  field: neither the contest (`record_contested`) nor the failed-frontier
+  charge (`record_blocked_frontier`), and the frontier duplicate guard
+  (`last_frontier`) is left as it was.
 - Flood semantics: track margins, corner guards, terminal exemptions, via
   rungs and forbidden destination layers follow rust_router/src/router.rs
   GridSearch's neighbour loop. Direction and path-local via restrictions

@@ -307,8 +307,12 @@ def analyze_frontier_blocking(
     # carries a fractional weight. Hooked here so every caller (single-ended
     # ladder, reroute loop, phase 3, diff-pair loop, layer-swap fallback)
     # feeds it. No-op unless KICAD_HISTORY_COST > 0.
+    # FORK DIVERGENCE (pocket_walls.py): record_history=False skips this
+    # charge too, so a pocket-wall attribution writes nothing to the field
+    # (not even its consecutive-duplicate guard, last_frontier).
     from history_congestion import record_blocked_frontier
-    record_blocked_frontier(config, blocked_arr)
+    if record_history:
+        record_blocked_frontier(config, blocked_arr)
 
     # Compute source/target grid coords and proximity threshold
     coord = GridCoord(config.grid_step)
