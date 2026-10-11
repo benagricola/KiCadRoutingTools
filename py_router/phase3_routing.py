@@ -997,23 +997,31 @@ def try_phase3_ripup(
     if tap_obstacles is not None:
         from pocket_walls import pocket_wall_blockers
 
-        def _rip_ids(walls):
+        def _rip_plan(walls):
+            # What ripping the rippable walls takes off the map, as
+            # rip_up_net does it: each net (a pair rips both members) loses
+            # its routed result's segments and vias and keeps the rest.
             _r, _ = filter_rippable_blockers(
                 list(walls), routed_results, diff_pair_by_net_id,
                 get_canonical_net_id, pcb_data=pcb_data,
                 context="phase3 tap cascade")
-            ids = set()
+            ids, objs = set(), set()
             for b in _r:
-                ids.add(b.net_id)
+                members = [b.net_id]
                 if b.net_id in diff_pair_by_net_id:
                     _pair = diff_pair_by_net_id[b.net_id][1]
-                    ids.update((_pair.p_net_id, _pair.n_net_id))
-            return ids
+                    members = [_pair.p_net_id, _pair.n_net_id]
+                ids.update(members)
+                _saved = routed_results.get(b.net_id) or {}
+                objs.update(id(o) for o in (_saved.get('new_segments') or ()))
+                objs.update(id(o) for o in (_saved.get('new_vias') or ()))
+            return ids, objs
 
         _found = pocket_wall_blockers(
             failed_edge_blocking, tap_obstacles, pcb_data, config, net_id,
             routed_net_paths, exclude_ids, obstacle_cache=obstacle_cache,
-            rip_ids=_rip_ids)
+            rip_plan=_rip_plan,
+            net_obstacles_cache=getattr(state, 'net_obstacles_cache', None))
         for _p in _found:
             print(f"    Pocket at ({_p.target_xy[0]:.2f}, {_p.target_xy[1]:.2f}): "
                   f"{_p.flood.cells} cells, walled by "

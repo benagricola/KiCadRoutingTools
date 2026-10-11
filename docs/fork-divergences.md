@@ -15,14 +15,18 @@
   the ranking did not name follow, most boundary cells first. The ladder's rip
   limits, protection checks and acceptance rules remain unchanged.
 - A region's boundary nets are promoted only if the region opens without them:
-  the flood is run again on a clone with the tracks and vias of its rippable
-  boundary nets (diff pair partners included) taken off, their pads left, as
-  a rip leaves them (pocket_walls.py `_copper_only_cells`, using the fork
-  keyword `pads_only` of obstacle_cache.py `precompute_net_obstacles`). A
-  region that still closes keeps the ladder's own ranking. Measured on
-  watchy (placemat reference board): EN's pad was sealed by +3V3's copper
-  and its pads, the boundary named only BTN3, and ripping BTN3 first spent
-  the rung that ripping +3V3 would have used to join the pad.
+  the flood is run again on a clone made as ripping its rippable boundary nets
+  (diff pair partners included) would leave the map. For each such net the
+  entry the map holds (state.net_obstacles_cache) is unstamped and the entry a
+  rip recomputes is stamped: the board without the segments and vias of the
+  net's routed result, so its pads, stubs and input copper stay, as
+  rip_up_net leaves them (pocket_walls.py `_rip_trial`, phase3_routing.py
+  `_rip_plan`, and the fork keyword `skip_object_ids` of obstacle_cache.py
+  `precompute_net_obstacles`). A region that still closes keeps the ladder's
+  own ranking. Measured on watchy (placemat reference board): EN's pad was
+  sealed by +3V3's copper and its pads, the boundary named only BTN3, and
+  ripping BTN3 first spent the rung that ripping +3V3 would have used to join
+  the pad.
 - After a failed retry, a promoted region whose target no failed edge of
   that retry has left is open: its boundary nets not yet ripped are taken off
   the ladder (unless they also bound a region still failing), and the

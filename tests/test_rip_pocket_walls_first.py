@@ -51,13 +51,15 @@ def _square(cx, cy, half, net_id):
     return segs
 
 
-def _board():
+def _board(extra_segs=(), extra_nets=()):
     pads = {OURS: [make_pad(OURS, 5.0, 5.0, ref='U1', num='1'),
                    make_pad(OURS, 20.0, 5.0, ref='U2', num='1'),
                    make_pad(OURS, 12.0, 15.0, ref='U3', num='1')]}
     nets = {OURS: make_net(OURS, 'OURS'), W: make_net(W, 'W'),
             Z: make_net(Z, 'Z')}
-    segs = _square(5.0, 5.0, 1.0, W) + _square(20.0, 5.0, 3.0, Z)
+    for nid in extra_nets:
+        nets[nid] = make_net(nid, f'N{nid}')
+    segs = _square(5.0, 5.0, 1.0, W) + _square(20.0, 5.0, 3.0, Z) + list(extra_segs)
     return make_pcb(nets=nets, pads_by_net=pads, segments=segs)
 
 
@@ -197,14 +199,17 @@ def test_flood_applies_the_own_pad_lift_and_leaves_the_map_alone():
     assert not any(k[1] == OURS for k in _OWNPAD_LIFTED), "lift released"
 
 
-def _ladder_rips(pockets=None, pairs=None, extra_nets=(), retry=None):
+def _ladder_rips(pockets=None, pairs=None, extra_nets=(), retry=None,
+                 extra_segs=(), routed=None, analyze=None):
     """The nets the ladder asks to rip, in order. `retry` stands in for the
     tap re-route (route_multipoint_taps); without it the first rip is refused
-    and the ladder stops there."""
-    pcb, cfg = _board(), _config()
-    for nid in extra_nets:
-        pcb.nets[nid] = make_net(nid, f'N{nid}')
-    obstacles = _map(pcb, cfg)
+    and the ladder stops there. Each routed net's result holds all its
+    board copper unless `routed(pcb)` gives the results. `analyze(cells)` may
+    answer an analyze_frontier_blocking call (a list of BlockingInfo) or
+    return None to let the real one run."""
+    pcb, cfg = _board(extra_segs, extra_nets), _config()
+    nets = [W, Z, *extra_nets]
+    obstacles = _map(pcb, cfg, nets)
     src = _cell(12.0, 15.0)
     tp, tq = _cell(5.0, 5.0), _cell(20.0, 5.0)
     bwd_p = _backward_frontier(obstacles, tp, src)
@@ -224,7 +229,11 @@ def _ladder_rips(pockets=None, pairs=None, extra_nets=(), retry=None):
             return None, None, None
         return {'net_id': net_id}, [net_id], True
 
-    nets = [W, Z, *extra_nets]
+    if routed is None:
+        routed = {n: {'new_segments': [g for g in pcb.segments if g.net_id == n],
+                      'new_vias': []} for n in nets}
+    else:
+        routed = routed(pcb)
     state = SimpleNamespace(frontier_blocking={}, working_obstacles=None,
                             net_history={}, route_index=0,
                             collision_refused_net_ids=set(),
@@ -244,13 +253,21 @@ def _ladder_rips(pockets=None, pairs=None, extra_nets=(), retry=None):
                          lambda *a, **kw: (obstacles, None)),
             patch.object(phase3_routing, "restore_net", lambda *a, **kw: None),
         ]
+    if analyze is not None:
+        real = phase3_routing.analyze_frontier_blocking
+
+        def _analyze(cells, *a, **kw):
+            canned = analyze(list(cells))
+            return real(cells, *a, **kw) if canned is None else canned
+        patches.append(patch.object(phase3_routing, "analyze_frontier_blocking",
+                                    _analyze))
     import contextlib
     with contextlib.ExitStack() as stack:
         for p in patches:
             stack.enter_context(p)
         out = phase3_routing.try_phase3_ripup(
             OURS, completed, failed, [], [], pcb, cfg, state,
-            nets, [], [], {n: [] for n in nets}, {n: {} for n in nets},
+            nets, [], [], {n: [] for n in nets}, routed,
             pairs or {}, [], {},
             {'F.Cu': 0, 'B.Cu': 1}, None, None, [],
             obstacle_cache={}, tap_obstacles=obstacles)
@@ -298,24 +315,59 @@ def test_pocket_walls_rank_by_canonical_pair_id():
     assert _ladder_rips([pocket], pairs=pairs, extra_nets=(X,)) == [W]
 
 
-def test_copper_only_cells_keep_the_pads():
-    """Taking a net's copper off its own cache stamp leaves the cells its pad
-    stamps blocked and clears the cells only its track stamps."""
+def test_rip_trial_keeps_pads_and_stubs():
+    """The open check's map after a rip: the net keeps its pad and its stub
+    (copper that is not in its routed result) and loses its routed track, as
+    rip_up_net leaves it."""
     from obstacle_cache import add_net_obstacles_from_cache, precompute_net_obstacles
-    from pocket_walls import _copper_only_cells, _remove_copper
-    pads = {W: [make_pad(W, 5.0, 5.0, ref='U9', num='1')]}
-    nets = {W: make_net(W, 'W')}
-    pcb = make_pcb(nets=nets, pads_by_net=pads,
-                   segments=[make_seg(5.0, 5.0, 8.0, 5.0, layer='F.Cu',
-                                      net_id=W, width=0.2)])
+    from pocket_walls import _rip_trial
+    stub = make_seg(5.0, 5.0, 5.0, 7.0, layer='F.Cu', net_id=W, width=0.2)
+    routed = make_seg(5.0, 5.0, 8.0, 5.0, layer='F.Cu', net_id=W, width=0.2)
+    pcb = make_pcb(nets={W: make_net(W, 'W')},
+                   pads_by_net={W: [make_pad(W, 5.0, 5.0, ref='U9', num='1')]},
+                   segments=[stub, routed])
     cfg = _config()
     m = GridObstacleMap(len(LAYERS))
-    add_net_obstacles_from_cache(m, precompute_net_obstacles(pcb, W, cfg))
-    pad_cell, track_cell = _cell(5.0, 5.0), _cell(7.5, 5.0)
-    assert m.is_blocked(*pad_cell) and m.is_blocked(*track_cell)
-    _remove_copper(m, _copper_only_cells(pcb, W, cfg))
+    cache = {W: precompute_net_obstacles(pcb, W, cfg)}
+    add_net_obstacles_from_cache(m, cache[W])
+    pad_cell, stub_cell, track_cell = _cell(5.0, 5.0), _cell(5.0, 6.5), _cell(7.5, 5.0)
+    assert all(m.is_blocked(*c) for c in (pad_cell, stub_cell, track_cell))
+    _rip_trial(m, pcb, cfg, {W}, {id(routed)}, cache)
     assert m.is_blocked(*pad_cell), "the pad stays"
-    assert not m.is_blocked(*track_cell), "the track is gone"
+    assert m.is_blocked(*stub_cell), "the stub stays"
+    assert not m.is_blocked(*track_cell), "the routed track is gone"
+
+
+def _square_ring(cx, cy, half, net_id, layers=LAYERS):
+    pts = [(cx - half, cy - half), (cx + half, cy - half),
+           (cx + half, cy + half), (cx - half, cy + half)]
+    return [make_seg(*pts[i], *pts[(i + 1) % 4], layer=layer, net_id=net_id,
+                     width=0.2)
+            for layer in layers for i in range(4)]
+
+
+def test_pocket_sealed_by_a_stub_does_not_open():
+    """P sits in a small ring of W's stub (input copper, not in W's routed
+    result) inside W's routed square. A rip takes off only the routed square,
+    so the stub still seals P: the pocket does not open. Counting the stub as
+    ripped would open it."""
+    from pocket_walls import pocket_wall_blockers
+    stub = _square_ring(5.0, 5.0, 0.5, W)
+    pcb, cfg = _board(stub), _config()
+    obstacles = _map(pcb, cfg)
+    failed = {(0, 1): _failed_edge((5.0, 5.0), (12.0, 15.0), obstacles)}
+    routed_ids = {id(g) for g in pcb.segments if g.net_id == W
+                  and all(g is not t for t in stub)}
+
+    def pocket(objs):
+        [p] = pocket_wall_blockers(failed, obstacles, pcb, cfg, OURS,
+                                   {W: [], Z: []}, {OURS}, obstacle_cache={},
+                                   rip_plan=lambda walls: ({W}, objs))
+        assert [b.net_id for b in p.walls] == [W]
+        return p
+
+    assert not pocket(routed_ids).opens, "the stub stays after a rip"
+    assert pocket(routed_ids | {id(t) for t in stub}).opens
 
 
 def _static_box(obstacles, cx, cy, r):
@@ -374,6 +426,27 @@ def test_joined_pockets_other_walls_leave_the_ladder():
     rips = _ladder_rips([p_pocket, q_pocket], extra_nets=(X,), retry=retry)
     assert rips[:2] == [W, Z], rips
     assert X not in rips, rips
+
+
+
+def test_pair_partner_copper_counts_in_the_open_check():
+    """P sits in W's square inside a larger square of W2, W's diff pair
+    partner. Ripping the pair takes both off, so the pocket opens and W is
+    ripped first; were only W counted, W2 would still close it and the
+    ranking's first pick, Z, would go first."""
+    W2 = 5
+    pair = SimpleNamespace(p_net_id=W, n_net_id=W2)
+    outer = _square_ring(5.0, 5.0, 1.6, W2)
+
+    def routed(pcb):
+        pair_result = {'new_segments': [g for g in pcb.segments
+                                        if g.net_id in (W, W2)], 'new_vias': []}
+        return {W: pair_result, W2: pair_result,
+                Z: {'new_segments': [g for g in pcb.segments if g.net_id == Z],
+                    'new_vias': []}}
+    rips = _ladder_rips(pairs={W: ('PAIR', pair), W2: ('PAIR', pair)},
+                        extra_nets=(W2,), extra_segs=outer, routed=routed)
+    assert rips == [W], rips
 
 
 def test_ladder_rips_the_small_pockets_wall_first():

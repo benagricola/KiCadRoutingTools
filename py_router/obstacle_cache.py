@@ -672,12 +672,13 @@ def precompute_net_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
                               extra_clearance: float = 0.0,
                               diagonal_margin: float = defaults.DIAGONAL_MARGIN,
                               _small_pass: bool = False,
-                              pads_only: bool = False) -> NetObstacleData:
+                              skip_object_ids: Optional[frozenset] = None) -> NetObstacleData:
     """Pre-compute obstacle cells for a single net.
 
-    FORK DIVERGENCE (pocket_walls.py): `pads_only` leaves out the net's
-    tracks and vias, so a caller can tell the cells its pads stamp from the
-    cells only its copper stamps.
+    FORK DIVERGENCE (pocket_walls.py): `skip_object_ids` leaves out the
+    segments and vias whose id() is in it, so a caller can compute the entry a
+    rip would leave (rip_up_net removes a routed result's objects from
+    pcb_data by identity and recomputes the entry from what remains).
 
     Returns cached data that can be quickly added to obstacle maps via batch operations.
 
@@ -757,8 +758,10 @@ def precompute_net_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
     # (build_base_obstacle_map) already stamps foreign copper at seg.width;
     # this keeps the cache at parity. Normal tracks (seg.width == configured)
     # are unaffected - no blanket margin.
-    for seg in (() if pads_only else pcb_data.segments):
+    for seg in pcb_data.segments:
         if seg.net_id != net_id:
+            continue
+        if skip_object_ids and id(seg) in skip_object_ids:
             continue
         layer_idx = layer_map.get(seg.layer)
         if layer_idx is None:
@@ -804,8 +807,10 @@ def precompute_net_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
     # off-grid offset (off_cells) of those vias; at grid 0.05 the same vias land
     # on-grid (off_cells=0), exposing 74 track-via grazes. Matches the non-cache
     # add_net_vias_as_obstacles, which already uses via.size.
-    for via in (() if pads_only else pcb_data.vias):
+    for via in pcb_data.vias:
         if via.net_id != net_id:
+            continue
+        if skip_object_ids and id(via) in skip_object_ids:
             continue
         vs = via.size if (getattr(via, 'size', 0) and via.size > 0) else config.via_size
         # #498: the via meets each layer's copper ON that layer -> per-layer rule.
@@ -899,7 +904,7 @@ def precompute_net_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
                 pcb_data, net_id,
                 _dc_replace(config, via_size=_sp[0], via_drill=_sp[1]),
                 extra_clearance, diagonal_margin, _small_pass=True,
-                pads_only=pads_only)
+                skip_object_ids=skip_object_ids)
             # #568 small rung still stamps CELLS (add_blocked_vias_small_batch
             # has no span twin, and this path is off unless KICAD_VIA_RUNG=2),
             # so expand the segment spans back and merge with the cell part.
@@ -924,7 +929,7 @@ def precompute_net_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
                 pcb_data, net_id,
                 _dc_replace(config, via_size=_d, via_drill=_h),
                 extra_clearance, diagonal_margin, _small_pass=True,
-                pads_only=pads_only)
+                skip_object_ids=skip_object_ids)
             _cells = [_rd.blocked_vias]
             if len(_rd.blocked_via_spans):
                 _cells.append(expand_via_spans(_rd.blocked_via_spans))
