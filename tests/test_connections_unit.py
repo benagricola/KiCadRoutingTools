@@ -51,6 +51,32 @@ def t_refusals():
     check('a routed layer without a width is refused', miss[0].reason == 'layer_width_missing', miss[0])
 
 
+def t_fp():
+    from connections import resolve
+    from kicad_parser import Footprint
+    pads = {1: [make_pad(1, 0, 0, ref='TP4', num='1', net_name='PWR'),
+                make_pad(1, 30, 0, ref='TP4~2', num='1', net_name='PWR'),
+                make_pad(1, 10, 0, ref='U1', num='1', net_name='PWR')]}
+    fps = {k: Footprint(reference=k, footprint_name='X', x=0, y=0, rotation=0, layer='F.Cu', uuid=u)
+           for k, u in (('TP4', 'uuid-a'), ('TP4~2', 'uuid-b'), ('U1', 'uuid-u'))}
+    pcb = make_pcb(nets={1: Net(1, 'PWR')}, pads_by_net=pads, footprints=fps)
+    layers = ['F.Cu', 'B.Cu']
+
+    def with_fp(fp):
+        t = task(('TP4', '1'), ('U1', '1'))
+        t['from']['fp'] = fp
+        return t
+    got = resolve([with_fp('uuid-b'), with_fp('uuid-a'), with_fp('uuid-zz'), task(('TP4', '1'), ('U1', '1'))],
+                  pcb, layers, min_track=0.1)
+    check('an end with fp joins that footprint only', [p.global_x for p in got[0].start_pads] == [30], got[0])
+    check('the other footprint by its fp', [p.global_x for p in got[1].start_pads] == [0], got[1])
+    check('fp is echoed in the record', got[0].record()['from'] == {"ref": "TP4", "pad": "1", "fp": "uuid-b"}
+          and got[0].record()['to'] == {"ref": "U1", "pad": "1"}, got[0].record())
+    check('an fp naming no footprint is refused', got[2].status == 'refused' and got[2].reason == 'unknown_fp', got[2])
+    check('an end without fp is as before', got[3].status is None and [p.global_x for p in got[3].start_pads] == [0]
+          and got[3].record()['from'] == {"ref": "TP4", "pad": "1"}, got[3])
+
+
 def t_joined():
     from connections import resolve, judge_joined
     pcb = board()
@@ -134,6 +160,7 @@ def t_read_file():
 
 if __name__ == '__main__':
     t_refusals()
+    t_fp()
     t_joined()
     t_grouping()
     t_split()

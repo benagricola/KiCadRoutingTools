@@ -39,6 +39,8 @@ Deliberate differences between this fork and upstream. Each is marked in the cod
 - Fork: `--connections FILE` (py_router/connections.py, hooks in route.py marked `FORK DIVERGENCE
   (docs/connections.md)`), `pin_pair_path_length(..., return_path=True)` in net_queries.py, and the private nets'
   protection in protected_nets.py `protection_map`. Described in docs/connections.md.
+  An end is `{ref, pad}` and, when two footprints share a reference, also `fp`, the footprint's KiCad uuid: it then
+  matches only that footprint's pads, an `fp` naming no footprint is refused `unknown_fp`, and records echo `fp`.
 - Why: placemat's routing phases route chosen connections of a net at their own widths.
 - Test: tests/test_connections_unit.py, tests/test_connections_route.py.
 

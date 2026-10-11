@@ -67,7 +67,7 @@ has no track path: `joined` is true, `length_mm` null and `min_width_mm` empty.
 | `deferred` | another group of the same net was routed in this call; route it again in another call |
 | `refused` | not routed; `reason` says why |
 
-`reason` is null except for `refused`: `unknown_ref`, `unknown_pad`, `pad_not_on_net` (also a net absent from the
+`reason` is null except for `refused`: `unknown_ref`, `unknown_fp`, `unknown_pad`, `pad_not_on_net` (also a net absent from the
 board), `layer_not_routed` (a `widths` layer the call does not route), `layer_width_missing` (a layer the call routes
 that `widths` leaves out), `width_under_board_minimum` (a width under the board's `min_track_width`).
 

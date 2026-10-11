@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional
 
 STATUSES = ('routed', 'failed', 'joined_before', 'joined_narrow', 'deferred', 'refused')
-REASONS = ('unknown_ref', 'unknown_pad', 'pad_not_on_net', 'layer_not_routed', 'layer_width_missing',
+REASONS = ('unknown_ref', 'unknown_fp', 'unknown_pad', 'pad_not_on_net', 'layer_not_routed', 'layer_width_missing',
            'width_under_board_minimum')
 PRIVATE_PREFIX = '__connections_private_'
 _UNDER = 1e-3            # KRT's own width tolerance (routing_common.py power_width_report)
@@ -37,7 +37,7 @@ class ConnectionsError(ValueError):
 class Task:
     index: int
     net: str
-    start: dict          # {"ref", "pad"}
+    start: dict          # {"ref", "pad"} and, when the input end had one, "fp"
     end: dict
     widths: Dict[str, float]
     net_id: Optional[int] = None
@@ -66,7 +66,8 @@ class Task:
 
 
 def read_file(path) -> list:
-    """The parsed connections file: a JSON list of {net, from: {ref, pad}, to: {ref, pad}, widths: {layer: mm}}."""
+    """The parsed connections file: a JSON list of {net, from: {ref, pad[, fp]}, to: {ref, pad[, fp]},
+    widths: {layer: mm}}."""
     with open(path, encoding='utf-8') as f:
         doc = json.load(f)
     if not isinstance(doc, list):
@@ -77,10 +78,21 @@ def read_file(path) -> list:
               and all(isinstance(k, str) and isinstance(v, (int, float)) and not isinstance(v, bool)
                       for k, v in t['widths'].items())
               and all(isinstance(t.get(k), dict) and isinstance(t[k].get('ref'), str)
-                      and isinstance(t[k].get('pad'), str) for k in ('from', 'to')))
+                      and isinstance(t[k].get('pad'), str)
+                      and (t[k].get('fp') is None or isinstance(t[k]['fp'], str)) for k in ('from', 'to')))
         if not ok:
             raise ConnectionsError('bad_task', index=i)
     return doc
+
+
+def _end(e: dict) -> dict:
+    """An end as echoed in records: ref and pad, and fp when the input end named one.
+    FORK DIVERGENCE (docs/fork-divergences.md, --connections): "fp" is the footprint's KiCad uuid, written by placemat
+    only when two footprints on the board share a reference; upstream has no connections file."""
+    out = {"ref": e['ref'], "pad": e['pad']}
+    if e.get('fp') is not None:
+        out["fp"] = e['fp']
+    return out
 
 
 def resolve(raw: list, pcb_data, routing_layers, min_track: float) -> List[Task]:
@@ -89,10 +101,15 @@ def resolve(raw: list, pcb_data, routing_layers, min_track: float) -> List[Task]
     by_name = {n.name: nid for nid, n in pcb_data.nets.items()}
     all_pads = [p for ps in pcb_data.pads_by_net.values() for p in ps]
     refs = {p.component_ref for p in all_pads} | set(getattr(pcb_data, 'footprints', None) or {})
+    # FORK DIVERGENCE: an end with "fp" matches only pads of the footprint(s) with that uuid. The parser keys a repeated
+    # reference by file order ("TP4", "TP4~2", kicad_parser.py disambiguate_references) and pads carry that key.
+    fp_keys: Dict[str, set] = {}
+    for key, fp in (getattr(pcb_data, 'footprints', None) or {}).items():
+        if getattr(fp, 'uuid', ''):
+            fp_keys.setdefault(fp.uuid, set()).add(key)
     out = []
     for i, t in enumerate(raw):
-        task = Task(i, t['net'], {"ref": t['from']['ref'], "pad": t['from']['pad']},
-                    {"ref": t['to']['ref'], "pad": t['to']['pad']},
+        task = Task(i, t['net'], _end(t['from']), _end(t['to']),
                     {k: float(v) for k, v in t['widths'].items()})
         task.layers = list(routing_layers)
         out.append(task)
@@ -102,7 +119,14 @@ def resolve(raw: list, pcb_data, routing_layers, min_track: float) -> List[Task]
             if end['ref'] not in refs:
                 task.status, task.reason = 'refused', 'unknown_ref'
                 break
-            numbered = [p for p in all_pads if p.component_ref == end['ref'] and p.pad_number == end['pad']]
+            keys = None
+            if end.get('fp') is not None:
+                keys = fp_keys.get(end['fp'])
+                if not keys:
+                    task.status, task.reason = 'refused', 'unknown_fp'
+                    break
+            numbered = [p for p in all_pads if p.pad_number == end['pad']
+                        and (p.component_ref == end['ref'] if keys is None else p.component_ref in keys)]
             if not numbered:
                 task.status, task.reason = 'refused', 'unknown_pad'
                 break
