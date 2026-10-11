@@ -1011,9 +1011,14 @@ def try_phase3_ripup(
     # first pick, which often opens the pad by itself (esp_prog
     # perturb-scatter-d1: /EN ripped ahead of /+3.3V, 28 -> 32 vias).
     if _pockets:
-        _rank = {b.net_id: k for k, b in enumerate(rippable_blockers)}
+        # Keyed by canonical id: the ranking keeps one member per diff
+        # pair, and a wall naming the other member must sort with it.
+        _rank = {get_canonical_net_id(b.net_id, diff_pair_by_net_id): k
+                 for k, b in enumerate(rippable_blockers)}
         _pocket_list = [b for _p in _pockets for b in sorted(
-            _p.walls, key=lambda w: _rank.get(w.net_id, len(_rank)))]
+            _p.walls, key=lambda w: _rank.get(
+                get_canonical_net_id(w.net_id, diff_pair_by_net_id),
+                len(_rank)))]
         _pocket_rippable, _ = filter_rippable_blockers(
             _pocket_list, routed_results, diff_pair_by_net_id,
             get_canonical_net_id, pcb_data=pcb_data,

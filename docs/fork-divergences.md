@@ -27,7 +27,10 @@
   a pocket but cannot create one. The flood runs on a clone of the map with
   the net's #908 own-pad lift applied, as the tap searches had it
   (single_ended_routing.py `route_multipoint_taps` releases the lift before
-  the ladder runs); the caller's map is not mutated.
+  the ladder runs); the caller's map is not mutated. A ladder entry whose
+  failed edges recorded no target and source cells clones nothing. Pocket
+  walls are ranked by canonical net id, so a wall naming one half of a diff
+  pair sorts where the ranking put the pair.
 - Why: bounded rip attempts should open a trapped endpoint before spending
   their budget on unrelated copper. Ordering a pocket's nets by boundary cells
   alone ripped a long net that only bounds a large pocket ahead of the

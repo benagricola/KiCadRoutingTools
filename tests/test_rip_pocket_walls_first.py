@@ -157,8 +157,55 @@ def test_pocket_analysis_writes_no_history():
                              and len(field.keys) == 0), field
 
 
-def _ladder_rips(pockets=None):
+def _ring_spans(cx, cy, r, layers=(0, 1)):
+    """Cell spans [gx, gy_lo, gy_hi, layer] of the square ring at Chebyshev
+    distance r round (cx, cy)."""
+    rows = []
+    for layer in layers:
+        rows.append((cx - r, cy - r, cy + r, layer))
+        rows.append((cx + r, cy - r, cy + r, layer))
+        for gx in range(cx - r + 1, cx + r):
+            rows.append((gx, cy - r, cy - r, layer))
+            rows.append((gx, cy + r, cy + r, layer))
+    return np.array(rows, dtype=np.int32)
+
+
+def test_flood_applies_the_own_pad_lift_and_leaves_the_map_alone():
+    """P sits in a ring of its own footprint's copper (the #908 lift rows)
+    inside W's square. With the lift the flood reaches W and names it; with
+    no lift rows the ring seals the pad and no rippable wall is found. The
+    caller's map keeps the ring either way."""
+    from pocket_walls import pocket_wall_blockers
     pcb, cfg = _board(), _config()
+    obstacles = _map(pcb, cfg)
+    cx, cy, _l = _cell(5.0, 5.0)
+    ring = _ring_spans(cx, cy, 2)
+    obstacles.add_blocked_cell_spans_batch(ring)
+    failed = {(0, 1): (
+        [], (5.0, 5.0), {'fwd': [], 'bwd': [], 'extra': [],
+                         'tgt_cells': [(cx, cy, 0)],
+                         'src_cells': [_cell(12.0, 15.0)]})}
+
+    def walls():
+        return [b.net_id for p in pocket_wall_blockers(
+            failed, obstacles, pcb, cfg, OURS, {W: [], Z: []}, {OURS},
+            obstacle_cache={}) for b in p.walls]
+
+    assert walls() == [], "sealed by its own pad copper: no rippable wall"
+    pcb._graphic_own_pad_lift = {OURS: ring}
+    assert walls() == [W]
+    assert obstacles.is_blocked(cx + 2, cy, 0), "the caller's map is not lifted"
+    from routing_context import _OWNPAD_LIFTED
+    assert not any(k[1] == OURS for k in _OWNPAD_LIFTED), "lift released"
+
+
+def _ladder_rips(pockets=None, pairs=None, extra_nets=(), retry=None):
+    """The nets the ladder asks to rip, in order. `retry` stands in for the
+    tap re-route (route_multipoint_taps); without it the first rip is refused
+    and the ladder stops there."""
+    pcb, cfg = _board(), _config()
+    for nid in extra_nets:
+        pcb.nets[nid] = make_net(nid, f'N{nid}')
     obstacles = _map(pcb, cfg)
     src = _cell(12.0, 15.0)
     tp, tq = _cell(5.0, 5.0), _cell(20.0, 5.0)
@@ -175,20 +222,36 @@ def _ladder_rips(pockets=None):
 
     def _record(net_id, *a, **kw):
         ripped.append(net_id)
-        return None, None, None
+        if retry is None:
+            return None, None, None
+        return {'net_id': net_id}, [net_id], True
 
+    nets = [W, Z, *extra_nets]
     state = SimpleNamespace(frontier_blocking={}, working_obstacles=None,
                             net_obstacles_cache=None,
                             ripped_route_layer_costs={},
                             ripped_route_via_positions={})
     completed = {'tap_edges_failed': 2, 'new_segments': [], 'new_vias': [],
                  'mst_edges': [(2, 0, 1.0), (2, 1, 1.0)]}
-    with patch.object(phase3_routing, "rip_up_net", _record), \
-            patch.object(phase3_routing, "LEG_RIP_ENABLED", False), \
-            _pockets_patch(pockets):
+    patches = [patch.object(phase3_routing, "rip_up_net", _record),
+               patch.object(phase3_routing, "LEG_RIP_ENABLED", False),
+               _pockets_patch(pockets)]
+    if retry is not None:
+        patches += [
+            patch.object(phase3_routing, "route_multipoint_taps",
+                         lambda *a, **kw: retry(failed)),
+            patch.object(phase3_routing, "build_single_ended_obstacles",
+                         lambda *a, **kw: (obstacles, None)),
+            patch.object(phase3_routing, "restore_net", lambda *a, **kw: None),
+        ]
+    import contextlib
+    with contextlib.ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
         out = phase3_routing.try_phase3_ripup(
             OURS, completed, failed, [], [], pcb, cfg, state,
-            [W, Z], [], [], {W: [], Z: []}, {W: {}, Z: {}}, {}, [], {},
+            nets, [], [], {n: [] for n in nets}, {n: {} for n in nets},
+            pairs or {}, [], {},
             {'F.Cu': 0, 'B.Cu': 1}, None, None, [],
             obstacle_cache={}, tap_obstacles=obstacles)
     assert out is None
@@ -206,7 +269,7 @@ def _pockets_patch(pockets):
 
 def _blocker(net_id, cells):
     from blocking_analysis import BlockingInfo
-    return BlockingInfo(net_id=net_id, net_name={W: 'W', Z: 'Z'}[net_id],
+    return BlockingInfo(net_id=net_id, net_name={W: 'W', Z: 'Z'}.get(net_id, f'N{net_id}'),
                         blocked_count=cells, track_cells=cells, via_cells=0,
                         unique_cells=cells, near_target_cells=0,
                         near_source_cells=0, details='')
@@ -220,6 +283,19 @@ def test_pocket_walls_keep_the_ladders_ranking():
     pocket = Pocket(target_xy=(5.0, 5.0), flood=PocketFlood(10, ((50, 50, 0),)),
                     walls=(_blocker(W, 50), _blocker(Z, 10)))
     assert _ladder_rips([pocket]) == [Z]
+
+
+def test_pocket_walls_rank_by_canonical_pair_id():
+    """W is the N half of a pair whose P half is Z. The ranking keeps one
+    member per pair (Z, ranked first); a pocket wall naming W sorts with
+    the pair, ahead of X, which has more wall cells but no rank."""
+    from pocket_walls import Pocket, PocketFlood
+    X = 4
+    pair = SimpleNamespace(p_net_id=Z, n_net_id=W)
+    pairs = {Z: ('PAIR', pair), W: ('PAIR', pair)}
+    pocket = Pocket(target_xy=(5.0, 5.0), flood=PocketFlood(10, ((50, 50, 0),)),
+                    walls=(_blocker(X, 50), _blocker(W, 10)))
+    assert _ladder_rips([pocket], pairs=pairs, extra_nets=(X,)) == [W]
 
 
 def test_ladder_rips_the_small_pockets_wall_first():
