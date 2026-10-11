@@ -7935,12 +7935,6 @@ For differential pair routing, use route_diff.py:
             print(f"Netclass clearances for {len(_net_clearances_map)} net(s), {_mode} "
                   f"(mm: {_classes}); cross-class max(A,B) respected.")
 
-    # FORK DIVERGENCE: file-isolated, bounded pocket repair candidate.
-    from route_candidates import maybe_run_candidates
-    _candidate_rc = maybe_run_candidates(args, sys.argv[1:], __file__, parser, net_names)
-    if _candidate_rc is not None:
-        sys.exit(_candidate_rc)
-
     # --preview: the engine already supports this -- return_results=True with
     # an empty output_file routes fully, mutates only the in-memory PCBData
     # and writes nothing. This just exposes it on the CLI (#459 follow-on).

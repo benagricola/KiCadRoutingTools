@@ -456,10 +456,9 @@ EXPECTED = {
         # rescue unchanged). Upstream 364b4572 alone and the fork through its
         # filled-copper commits route it whole; the corner-guard commits on
         # the new base leave the pad open.
-        # 2026-10-07 isolated pocket fallback: complete instead of one open,
-        # zero DRC/undersized/assembly errors; closure wins over +66.52 mm.
-        # ESP pins are unchanged. Floorplan/impedance/length/net_widths
-        # remain ungraded, not certified by this comparison.
+        # headline 1 -> 0 (2026-10-11): the pocket-walls-first rip ladder,
+        # always on, with each pocket's walls in the ladder's ranking order,
+        # rips GND first and U7's +3V3 pad joins. The ESP rows are unchanged.
         truth={'headline': 0,
                # 2026-09-14 (#958 phase 2): segs 1422 -> 1155, copper
                # 2915.15 -> 2913.82 (-0.05%); vias unmoved. The only row whose
@@ -471,8 +470,12 @@ EXPECTED = {
                # single-file revert; the fanout and plane-fill roundings of
                # the same change leave this row alone.
                # 2026-10-07 (fork rebased, as above): 165/2864.97/845 -> 171/2772.98/916
-               'quality': {'vias': 169, 'copper_mm': 2839.50,
-                           'segments': 848}},
+               # 2026-10-11 (pocket walls in ranking order, the two-run
+               # supervisor removed): 169/2839.50/848 (the supervisor's pocket
+               # run) -> 165/2805.55/804. Against the last single run with no
+               # pocket rule: 171/2772.98/916 with one pad open.
+               'quality': {'vias': 165, 'copper_mm': 2805.55,
+                           'segments': 804}},
         predictors={
             'crossings': 300, 'hpwl': 2504.4400000000014,
             'halo': 297.4273114820511, 'overlap_area': 1.7621459846850488e-13,
