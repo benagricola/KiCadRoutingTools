@@ -72,9 +72,45 @@ def t_fp():
     check('the other footprint by its fp', [p.global_x for p in got[1].start_pads] == [0], got[1])
     check('fp is echoed in the record', got[0].record()['from'] == {"ref": "TP4", "pad": "1", "fp": "uuid-b"}
           and got[0].record()['to'] == {"ref": "U1", "pad": "1"}, got[0].record())
+    mm = with_fp('uuid-u')
+    check('an fp of another reference is refused', resolve([mm], pcb, layers, min_track=0.1)[0].reason ==
+          'fp_ref_mismatch')
     check('an fp naming no footprint is refused', got[2].status == 'refused' and got[2].reason == 'unknown_fp', got[2])
     check('an end without fp is as before', got[3].status is None and [p.global_x for p in got[3].start_pads] == [0]
           and got[3].record()['from'] == {"ref": "TP4", "pad": "1"}, got[3])
+
+
+def t_fp_parsed():
+    """Two footprints both referenced TP4 in a real board text, through the router's own parser."""
+    from connections import resolve
+    from kicad_parser import parse_kicad_pcb
+    from synth import board_text, footprint_text, write_board
+    text = board_text(footprint_text('TP4', 10, 10, uuid='uuid-first', pad_net=1)
+                      + footprint_text('TP4', 40, 10, uuid='uuid-second', pad_net=1)
+                      + footprint_text('U1', 70, 10, uuid='uuid-u1', pad_net=1), nets=(0, 1))
+    path = write_board(text)
+    try:
+        pcb = parse_kicad_pcb(path)
+    finally:
+        os.remove(path)
+
+    def end_task(ref, fp=None):
+        t = task((ref, '1'), ('U1', '1'), net='N1')
+        if fp is not None:
+            t['from']['fp'] = fp
+        return t
+    got = resolve([end_task('TP4', 'uuid-first'), end_task('TP4', 'uuid-second'), end_task('TP4'),
+                   end_task('TP4', 'uuid-nope'), end_task('TP4', 'uuid-u1'), end_task('U1', 'uuid-second')],
+                  pcb, ['F.Cu', 'B.Cu'], min_track=0.1)
+    xs = [[p.global_x for p in g.start_pads] for g in got]
+    check('parsed: fp of the first footprint', xs[0] == [10.5], got[0])
+    check('parsed: fp of the second footprint', xs[1] == [40.5], got[1])
+    check('parsed: the second footprint is echoed with the ref it was given',
+          got[1].record()['from'] == {"ref": "TP4", "pad": "1", "fp": "uuid-second"}, got[1].record())
+    check('parsed: no fp is as before (first footprint)', xs[2] == [10.5] and got[2].status is None, got[2])
+    check('parsed: an unknown fp is refused', got[3].reason == 'unknown_fp', got[3])
+    check('parsed: an fp of a footprint with another reference is refused', got[4].reason == 'fp_ref_mismatch', got[4])
+    check('parsed: the mismatch is both ways', got[5].reason == 'fp_ref_mismatch', got[5])
 
 
 def t_joined():
@@ -161,6 +197,7 @@ def t_read_file():
 if __name__ == '__main__':
     t_refusals()
     t_fp()
+    t_fp_parsed()
     t_joined()
     t_grouping()
     t_split()

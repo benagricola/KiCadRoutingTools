@@ -15,11 +15,12 @@ joining path so the caller can judge and report it.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional
 
 STATUSES = ('routed', 'failed', 'joined_before', 'joined_narrow', 'deferred', 'refused')
-REASONS = ('unknown_ref', 'unknown_fp', 'unknown_pad', 'pad_not_on_net', 'layer_not_routed', 'layer_width_missing',
+REASONS = ('unknown_ref', 'unknown_fp', 'fp_ref_mismatch', 'unknown_pad', 'pad_not_on_net', 'layer_not_routed', 'layer_width_missing',
            'width_under_board_minimum')
 PRIVATE_PREFIX = '__connections_private_'
 _UNDER = 1e-3            # KRT's own width tolerance (routing_common.py power_width_report)
@@ -95,6 +96,11 @@ def _end(e: dict) -> dict:
     return out
 
 
+def _base_ref(ref: str) -> str:
+    """A reference without the parser's repeat suffix ("TP4~2" -> "TP4", kicad_parser.py DUP_REF_SEP)."""
+    return re.sub(r'~\d+$', '', ref)
+
+
 def resolve(raw: list, pcb_data, routing_layers, min_track: float) -> List[Task]:
     """Each task with its net id and the pads of each end (every pad of that footprint with that number on the net:
     a number may repeat, kicad_parser.py:219-240), or refused with a reason."""
@@ -124,6 +130,10 @@ def resolve(raw: list, pcb_data, routing_layers, min_track: float) -> List[Task]
                 keys = fp_keys.get(end['fp'])
                 if not keys:
                     task.status, task.reason = 'refused', 'unknown_fp'
+                    break
+                keys = {k for k in keys if _base_ref(k) == _base_ref(end['ref'])}
+                if not keys:
+                    task.status, task.reason = 'refused', 'fp_ref_mismatch'
                     break
             numbered = [p for p in all_pads if p.pad_number == end['pad']
                         and (p.component_ref == end['ref'] if keys is None else p.component_ref in keys)]
