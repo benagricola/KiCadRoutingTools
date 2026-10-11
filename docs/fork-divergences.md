@@ -14,6 +14,15 @@
   the order the ladder's own ranking gave them (after the mincut step); nets
   the ranking did not name follow, most boundary cells first. The ladder's rip
   limits, protection checks and acceptance rules remain unchanged.
+- A region's boundary nets are promoted only if the region opens without them:
+  the flood is run again on a clone with the tracks and vias of its rippable
+  boundary nets (diff pair partners included) taken off, their pads left, as
+  a rip leaves them (pocket_walls.py `_copper_only_cells`, using the fork
+  keyword `pads_only` of obstacle_cache.py `precompute_net_obstacles`). A
+  region that still closes keeps the ladder's own ranking. Measured on
+  watchy (placemat reference board): EN's pad was sealed by +3V3's copper
+  and its pads, the boundary named only BTN3, and ripping BTN3 first spent
+  the rung that ripping +3V3 would have used to join the pad.
 - The boundary attribution calls blocking_analysis.py
   `analyze_frontier_blocking` with `record_history=False` (a fork keyword,
   default True). With it False the call charges nothing to the #590 history

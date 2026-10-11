@@ -956,16 +956,37 @@ def try_phase3_ripup(
     # smallest pocket first, each pocket's nets in the ranking's order. The
     # merged ranking let a larger failure region's walls outrank a small
     # pocket's, and the ladder spent its rips without opening the pad.
+    # Only a pocket that the flood leaves once its rippable walls' tracks and
+    # vias are off the map is promoted: a wall that cannot open the pocket
+    # by itself took the rung the ranking's first pick would have used
+    # (watchy, EN's pad sealed by +3V3 and named only BTN3).
     _pockets = []
     if tap_obstacles is not None:
         from pocket_walls import pocket_wall_blockers
-        _pockets = pocket_wall_blockers(
+
+        def _rip_ids(walls):
+            _r, _ = filter_rippable_blockers(
+                list(walls), routed_results, diff_pair_by_net_id,
+                get_canonical_net_id, pcb_data=pcb_data,
+                context="phase3 tap cascade")
+            ids = set()
+            for b in _r:
+                ids.add(b.net_id)
+                if b.net_id in diff_pair_by_net_id:
+                    _pair = diff_pair_by_net_id[b.net_id][1]
+                    ids.update((_pair.p_net_id, _pair.n_net_id))
+            return ids
+
+        _found = pocket_wall_blockers(
             failed_edge_blocking, tap_obstacles, pcb_data, config, net_id,
-            routed_net_paths, exclude_ids, obstacle_cache=obstacle_cache)
-        for _p in _pockets:
+            routed_net_paths, exclude_ids, obstacle_cache=obstacle_cache,
+            rip_ids=_rip_ids)
+        for _p in _found:
             print(f"    Pocket at ({_p.target_xy[0]:.2f}, {_p.target_xy[1]:.2f}): "
                   f"{_p.flood.cells} cells, walled by "
-                  f"{[b.net_name for b in _p.walls]}")
+                  f"{[b.net_name for b in _p.walls]}"
+                  + ("" if _p.opens else "; stays closed without them, not promoted"))
+        _pockets = [_p for _p in _found if _p.opens]
 
     if not blockers and not _pockets:
         return None

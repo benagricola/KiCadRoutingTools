@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+
+import numpy as np
 
 Cell = Tuple[int, int, int]
 
@@ -45,10 +47,14 @@ class PocketFlood:
 @dataclass(frozen=True)
 class Pocket:
     """One failed edge's boxed-in target: where it is, its flood, and the
-    nets on its wall as BlockingInfo, most wall cells first."""
+    nets on its wall as BlockingInfo, most wall cells first. `opens` is
+    whether the flood leaves the pocket once the walls' tracks and vias
+    are off the map (their pads stay, as a rip leaves them); only a pocket
+    that opens has its walls promoted by the rip ladder."""
     target_xy: Tuple[float, float]
     flood: PocketFlood
     walls: Tuple  # BlockingInfo, ordered
+    opens: bool = True
 
 
 def _margin_at(track_margin, layer: int) -> float:
@@ -149,9 +155,63 @@ def flood_pocket(obstacles, starts: Sequence[Cell], track_margin, max_cells: int
     return PocketFlood(cells=len(seen), wall=tuple(sorted(wall)))
 
 
+def _rows_minus(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """The rows of integer array `a` that are not rows of `b`."""
+    if len(a) == 0 or len(b) == 0:
+        return a
+    a = np.ascontiguousarray(a)
+    b = np.ascontiguousarray(b, dtype=a.dtype)
+    view = np.dtype((np.void, a.dtype.itemsize * a.shape[1]))
+    return a[~np.isin(a.view(view).ravel(), b.view(view).ravel())]
+
+
+def _copper_only_cells(pcb_data, net_id: int, config) -> Dict:
+    """What taking a net's tracks and vias off the map would unstamp, as
+    arrays for the map's remove batches. The net's obstacle-cache entry
+    stamps its pads and its copper as one deduplicated set; a cell its pads
+    also stamp stays blocked after a rip, so those cells are left out."""
+    from obstacle_cache import precompute_net_obstacles
+    full = precompute_net_obstacles(pcb_data, net_id, config)
+    pads = precompute_net_obstacles(pcb_data, net_id, config, pads_only=True)
+    rungs = {}
+    for r, cells in (getattr(full, 'blocked_vias_rungs', None) or {}).items():
+        rungs[r] = _rows_minus(cells, (getattr(pads, 'blocked_vias_rungs', None)
+                                       or {}).get(r, np.empty((0, 2), np.int32)))
+    return {
+        'cells': _rows_minus(full.blocked_cells, pads.blocked_cells),
+        'vias': _rows_minus(full.blocked_vias, pads.blocked_vias),
+        # Spans are segment keep-outs only (pads stamp cells), refcounted
+        # apart from the cells, so all of them come off.
+        'cell_spans': full.blocked_cell_spans,
+        'via_spans': full.blocked_via_spans,
+        'vias_small': (None if 1 in rungs else _rows_minus(
+            full.blocked_vias_small, pads.blocked_vias_small)),
+        'rungs': rungs,
+    }
+
+
+def _remove_copper(m, cells: Dict) -> None:
+    """Unstamp `_copper_only_cells` from map `m` (a clone)."""
+    if len(cells['cells']):
+        m.remove_blocked_cells_batch(np.ascontiguousarray(cells['cells'], dtype=np.int32))
+    if len(cells['vias']):
+        m.remove_blocked_vias_batch(np.ascontiguousarray(cells['vias'], dtype=np.int32))
+    if len(cells['cell_spans']):
+        m.remove_blocked_cell_spans_batch(cells['cell_spans'])
+    if len(cells['via_spans']):
+        m.remove_blocked_via_spans_batch(cells['via_spans'])
+    small = cells['vias_small']
+    if small is not None and len(small):
+        m.remove_blocked_vias_small_batch(np.ascontiguousarray(small, dtype=np.int32))
+    for r, c in sorted(cells['rungs'].items()):
+        if len(c):
+            m.remove_blocked_vias_rung_batch(r, np.ascontiguousarray(c, dtype=np.int32))
+
+
 def pocket_wall_blockers(failed_edge_blocking: Dict, obstacles, pcb_data, config,
                          net_id: int, routed_net_paths: Dict, exclude_net_ids,
-                         obstacle_cache=None) -> List[Pocket]:
+                         obstacle_cache=None,
+                         rip_ids: Optional[Callable] = None) -> List[Pocket]:
     """The boxed-in targets of a net's failed tap edges, smallest pocket first.
 
     Each failed edge's entry carries its target cells ('tgt_cells' in the
@@ -162,7 +222,12 @@ def pocket_wall_blockers(failed_edge_blocking: Dict, obstacles, pcb_data, config
     owns (the rip ladder reorders them by its own ranking). The flood runs on
     a clone of `obstacles` with the net's #908 own-pad lift applied, as the
     tap searches had it; `obstacles` must not hold that lift already (a clone
-    of a lifted map would be lifted twice)."""
+    of a lifted map would be lifted twice).
+
+    `rip_ids(walls)` gives the net ids whose tracks and vias ripping the
+    walls would take off the map (the rippable walls, each with its diff
+    pair partner); by default every wall net. A pocket whose flood still
+    closes with that copper off has `opens` False."""
     from blocking_analysis import analyze_frontier_blocking
     # Edges that can name a pocket: a recorded target and source. Gathered
     # first so a ladder entry with none of them costs no map clone.
@@ -184,6 +249,7 @@ def pocket_wall_blockers(failed_edge_blocking: Dict, obstacles, pcb_data, config
     forbidden = [i for i, c in enumerate(config.get_layer_costs()) if c < 0]
     cap = int(config.max_probe_iterations)
     pockets = []
+    copper = {}  # net id -> _copper_only_cells, shared by this call's pockets
     # The taps searched with the #908 own-pad lift applied
     # (single_ended_routing.route_multipoint_taps), and it is released before
     # the rip ladder runs; without it a pad sealed only by its own
@@ -210,9 +276,21 @@ def pocket_wall_blockers(failed_edge_blocking: Dict, obstacles, pcb_data, config
                 # pocket is found, even when the rip order is unchanged.
                 record_history=False))
             walls.sort(key=lambda b: (-b.blocked_count, -b.unique_cells, b.net_id))
-            if walls:
-                pockets.append(Pocket(target_xy=target_xy, flood=flood,
-                                      walls=tuple(walls)))
+            if not walls:
+                continue
+            ids = (set(rip_ids(walls)) if rip_ids is not None
+                   else {b.net_id for b in walls})
+            opens = False
+            if ids:
+                trial = lifted.clone()
+                for nid in sorted(ids):
+                    if nid not in copper:
+                        copper[nid] = _copper_only_cells(pcb_data, nid, config)
+                    _remove_copper(trial, copper[nid])
+                opens = flood_pocket(trial, starts, margins, cap, rung,
+                                     forbidden, sources) is None
+            pockets.append(Pocket(target_xy=target_xy, flood=flood,
+                                  walls=tuple(walls), opens=opens))
     finally:
         if lifted is not None:
             release_own_pad_lift(lifted, net_id, _lift)

@@ -32,7 +32,6 @@ sys.path.insert(0, os.path.join(ROOT, 'rust_router'))
 
 from synth import make_pad, make_seg, make_net, make_pcb  # noqa: E402
 from routing_config import GridRouteConfig  # noqa: E402
-from blocking_analysis import compute_net_obstacle_cells, _unpack_xy  # noqa: E402
 from grid_router import GridObstacleMap, GridRouter  # noqa: E402
 import phase3_routing  # noqa: E402
 
@@ -67,14 +66,13 @@ def _config():
                            clearance=0.15, grid_step=0.1)
 
 
-def _map(pcb, cfg):
+def _map(pcb, cfg, nets=(W, Z)):
+    """The routed nets stamped as the router stamps them (their obstacle-cache
+    entries), so taking a net's copper off can be measured on it."""
+    from obstacle_cache import add_net_obstacles_from_cache, precompute_net_obstacles
     obstacles = GridObstacleMap(len(LAYERS))
-    for nid in (W, Z):
-        tk, vk = compute_net_obstacle_cells(pcb, nid, None, cfg)
-        keys = np.concatenate([tk, vk])
-        gx, gy = _unpack_xy(keys)
-        cells = np.stack([gx, gy, keys & 0xFF], axis=1).astype(np.int32)
-        obstacles.add_blocked_cells_batch(cells)
+    for nid in nets:
+        add_net_obstacles_from_cache(obstacles, precompute_net_obstacles(pcb, nid, cfg))
     return obstacles
 
 
@@ -228,6 +226,8 @@ def _ladder_rips(pockets=None, pairs=None, extra_nets=(), retry=None):
 
     nets = [W, Z, *extra_nets]
     state = SimpleNamespace(frontier_blocking={}, working_obstacles=None,
+                            net_history={}, route_index=0,
+                            collision_refused_net_ids=set(),
                             net_obstacles_cache=None,
                             ripped_route_layer_costs={},
                             ripped_route_via_positions={})
@@ -296,6 +296,64 @@ def test_pocket_walls_rank_by_canonical_pair_id():
     pocket = Pocket(target_xy=(5.0, 5.0), flood=PocketFlood(10, ((50, 50, 0),)),
                     walls=(_blocker(X, 50), _blocker(W, 10)))
     assert _ladder_rips([pocket], pairs=pairs, extra_nets=(X,)) == [W]
+
+
+def test_copper_only_cells_keep_the_pads():
+    """Taking a net's copper off its own cache stamp leaves the cells its pad
+    stamps blocked and clears the cells only its track stamps."""
+    from obstacle_cache import add_net_obstacles_from_cache, precompute_net_obstacles
+    from pocket_walls import _copper_only_cells, _remove_copper
+    pads = {W: [make_pad(W, 5.0, 5.0, ref='U9', num='1')]}
+    nets = {W: make_net(W, 'W')}
+    pcb = make_pcb(nets=nets, pads_by_net=pads,
+                   segments=[make_seg(5.0, 5.0, 8.0, 5.0, layer='F.Cu',
+                                      net_id=W, width=0.2)])
+    cfg = _config()
+    m = GridObstacleMap(len(LAYERS))
+    add_net_obstacles_from_cache(m, precompute_net_obstacles(pcb, W, cfg))
+    pad_cell, track_cell = _cell(5.0, 5.0), _cell(7.5, 5.0)
+    assert m.is_blocked(*pad_cell) and m.is_blocked(*track_cell)
+    _remove_copper(m, _copper_only_cells(pcb, W, cfg))
+    assert m.is_blocked(*pad_cell), "the pad stays"
+    assert not m.is_blocked(*track_cell), "the track is gone"
+
+
+def _static_box(obstacles, cx, cy, r):
+    for layer in range(len(LAYERS)):
+        for d in range(-r, r + 1):
+            for gx, gy in ((cx + d, cy - r), (cx + d, cy + r),
+                           (cx - r, cy + d), (cx + r, cy + d)):
+                obstacles.add_static_blocked_cell(gx, gy, layer)
+
+
+def test_pocket_that_its_walls_cannot_open_is_marked_closed():
+    """P is walled by W's square; around the square a static box (no routed
+    net's copper) also closes the region. Ripping W cannot let P out, so the
+    pocket does not open; without the box it does."""
+    from pocket_walls import pocket_wall_blockers
+    pcb, cfg = _board(), _config()
+
+    def pockets(boxed):
+        obstacles = _map(pcb, cfg)
+        if boxed:
+            _static_box(obstacles, *_cell(5.0, 5.0)[:2], 20)
+        failed = {(0, 1): _failed_edge((5.0, 5.0), (12.0, 15.0), obstacles)}
+        return pocket_wall_blockers(failed, obstacles, pcb, cfg, OURS,
+                                    {W: [], Z: []}, {OURS}, obstacle_cache={})
+
+    [open_p] = pockets(False)
+    assert [b.net_id for b in open_p.walls] == [W] and open_p.opens
+    [boxed_p] = pockets(True)
+    assert [b.net_id for b in boxed_p.walls] == [W] and not boxed_p.opens
+
+
+def test_ladder_does_not_promote_a_pocket_that_stays_closed():
+    """The same pocket as the ranking test, marked as not opening: the ladder
+    keeps its ranking (Z first) instead of ripping W first."""
+    from pocket_walls import Pocket, PocketFlood
+    closed = Pocket(target_xy=(5.0, 5.0), flood=PocketFlood(10, ((50, 50, 0),)),
+                    walls=(_blocker(W, 50),), opens=False)
+    assert _ladder_rips([closed]) == [Z]
 
 
 def test_ladder_rips_the_small_pockets_wall_first():
