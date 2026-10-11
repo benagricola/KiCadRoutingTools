@@ -27,20 +27,26 @@
   sealed by +3V3's copper and its pads, the boundary named only BTN3, and
   ripping BTN3 first spent the rung that ripping +3V3 would have used to join
   the pad.
-- After a failed retry, a promoted region whose target pad is no longer among
-  the retry's unconnected pads (`failed_pads_info`; an edge that fails with an
-  empty frontier records no blocking entry) is open. Its boundary nets not yet
-  ripped are taken off the ladder, and the re-analysis does not bring them
-  back (phase3_routing.py `_drop_joined_pocket_walls`), unless a net still
-  blocks an edge that failed: it bounds any region (promoted or not) whose
-  target still fails, or the per-edge attribution of a failed edge of the
-  retry (the tighter probe side, as the ladder's first ranking attributes it)
-  names it. The ladder judges a retry by its failed-edge count, which can
-  stay put when a joined pad brings a new failed edge with it. Measured on
-  watchy: ripping /32K_P joined +3V3's U4 pad 20, the joined pad's next edge
-  failed, and the ladder ripped ACC_INT_1, the pocket's second wall; with the
-  BGA's other escape net ripped too, the victims could not re-route and the
-  tap was abandoned (open pairs 6 -> 9 at human widths).
+- Once a region is open, its boundary nets are not ripped further. After a
+  failed retry each promoted region is flooded again from its recorded target
+  and source cells, on the map the ladder rebuilt after its latest rip, with
+  the own-pad lift and the same margins (pocket_walls.py
+  `pocket_still_closed`). A region that no longer closes is open: its boundary
+  nets not yet ripped are taken off the ladder, and the re-analysis does not
+  bring them back (phase3_routing.py `_drop_opened_pocket_walls`), unless a
+  net still blocks: it bounds any region (promoted or not) that still floods
+  closed, or the per-edge attribution of a failed edge of the retry (the
+  tighter probe side, as the ladder's first ranking attributes it) names it.
+  Openness is judged by the flood, not by the retry's edges: the ladder judges
+  a retry by its failed-edge count, which can stay put when a joined pad brings
+  a new failed edge with it, and an edge may not be tried at all (its MST
+  source did not join) or fail with an empty frontier and record no entry.
+  Measured on watchy: ripping /32K_P joined +3V3's U4 pad 20, the joined pad's
+  next edge failed, and the ladder ripped ACC_INT_1, the pocket's second wall;
+  with the BGA's other escape net ripped too, the victims could not re-route
+  and the tap was abandoned (open pairs 6 -> 9 at human widths). Judging
+  "joined" by the retry's unconnected pads instead read a pad whose edge was
+  never tried as still trapped and cost one pair at class widths.
 - The boundary attribution calls blocking_analysis.py
   `analyze_frontier_blocking` with `record_history=False` (a fork keyword,
   default True). With it False the call charges nothing to the #590 history
