@@ -109,5 +109,9 @@ Tests: test_route_candidates.py and test_rip_pocket_walls_first.py.
   `pair_class_width`); route.py and route_diff.py call them (marked `FORK DIVERGENCE`). `nominal_policy` and the
   module's `__main__` (JSON on stdin, a `PLACEMAT_WIDTH_POLICY` line on stdout) answer which widths a call with given
   arguments would draw, without routing. An upstream change to either block must be carried into this module.
+  The call's arguments are parsed by route.py's or route_diff.py's own argparse parser, taken by running the
+  script's `__main__` up to its `parse_args()` (upstream builds the parser inline, with no function to call). A
+  width the policy cannot answer has `status: unknown` and a `reason` record (`code` plus fields); a refused call
+  raises `WidthPolicyRefusal` with a `code` and fields.
 - Why: placemat asks KRT for the effective widths of the nets it routes rather than re-deriving KRT's precedence.
 - Test: tests/test_nominal_width_policy.py.

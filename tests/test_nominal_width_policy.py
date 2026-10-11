@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'py_router'))
 sys.path.insert(0, str(ROOT / 'tests' / 'oracle'))
 from constraint_agreement import write_board
-from nominal_width_policy import nominal_policy, options
+from nominal_width_policy import WidthPolicyRefusal, nominal_policy, options
 
 
 class WidthPolicyTests(unittest.TestCase):
@@ -69,12 +69,27 @@ class WidthPolicyTests(unittest.TestCase):
         self.assertIsNone(got['B']['widths'])
 
     def test_argparse_vocabulary_abbreviation_separator_and_owned_raw_widths(self):
-        self.assertEqual(options(['--track-w', '0.4'], 'route.py')['--track-width'], '0.4')
+        self.assertEqual(options(['--track-w', '0.4'], 'route.py')['--track-width'], 0.4)
         self.assertEqual(options(['--', '--track-width', '0.4'], 'route.py'), {})
-        with self.assertRaises(ValueError):
+        self.assertEqual(options(['--diff-pair-gap=0.15'], 'route_diff.py'), {'--diff-pair-gap': 0.15})
+        with self.assertRaises(WidthPolicyRefusal) as refused:
             options(['--track', '0.4'], 'route.py')
-        with self.assertRaises(ValueError):
+        self.assertEqual(refused.exception.code, 'router_arguments_rejected')
+        self.assertEqual(refused.exception.fields['exit_code'], 2)
+        with self.assertRaises(WidthPolicyRefusal) as refused:
             options(['--power-nets-widths', '0.4'], 'route.py')
+        self.assertEqual((refused.exception.code, refused.exception.fields),
+                         ('structured_request_field_required', {'option': '--power-nets-widths'}))
+
+    def test_unknown_widths_are_codes_with_fields(self):
+        got = self.policy(args=['--impedance', '50'])
+        self.assertEqual(got['A']['reason'], {'code': 'impedance_width'})
+        self.assertIsNone(self.policy()['A']['reason'])
+        self.board.with_suffix('.kicad_dru').write_text('(version 1)\n'
+            '(rule "odd" (condition "A.NetName == \'A\'") (constraint track_width (opt "wide")))\n')
+        reason = self.policy()['A']['reason']
+        self.assertEqual(reason['code'], 'design_rules_unknown')
+        self.assertEqual([(r['code'], r['rule']) for r in reason['rules']], [('rule_unsupported', 'odd')])
 
     def test_fab_override_is_consumed_and_hashed(self):
         override = Path(self.tmp.name) / 'floors.json'

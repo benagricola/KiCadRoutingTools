@@ -55,9 +55,10 @@ def class_width_inputs(pcb_data, input_file, layers, *, track_width_from_class,
                     fab_floor=fab_floors(_ncl),
                     copper_layers=list(getattr(pcb_data.board_info, 'copper_layers', None)
                                        or (layers or [])))
-                unknown += [r.name + ': ' + r.unsupported for r in _dr.rules
-                            if r.unsupported and 'track_width' in r.constraints]
-                unknown += [str(n) for n in _dr.notes if 'could not' in str(n) or 'parse' in str(n)]
+                unknown += [{'code': 'rule_unsupported', 'rule': r.name, 'detail': r.unsupported}
+                            for r in _dr.rules if r.unsupported and 'track_width' in r.constraints]
+                unknown += [{'code': 'rules_unread', 'detail': str(n)} for n in _dr.notes
+                            if 'could not' in str(n) or 'parse' in str(n)]
                 _dflt_w = _dr.classes.get('Default', {}).get('track_width')
                 _cu = [l for l in (getattr(pcb_data.board_info, 'copper_layers', None)
                                    or (layers or [])) if str(l).endswith('.Cu')]
@@ -83,7 +84,8 @@ def class_width_inputs(pcb_data, input_file, layers, *, track_width_from_class,
                                 abs(_vd - via_size) > 1e-9 or abs(_vh - via_drill) > 1e-9):
                             _per_net_via[nid] = (round(_vd, 4), round(_vh, 4))
             except Exception as _dre:                          # noqa: BLE001
-                unknown.append('design-rule widths unavailable: ' + str(_dre))
+                unknown.append({'code': 'design_rules_unavailable', 'error': type(_dre).__name__,
+                                'detail': str(_dre)})
                 print(f"Warning: design-rule widths unavailable ({_dre}); "
                       f"falling back to the net-class map.")
                 _per_net = dict(net_track_width_map_by_id(
@@ -106,7 +108,8 @@ def class_width_inputs(pcb_data, input_file, layers, *, track_width_from_class,
                 print(f"Auto-read netclass track widths for {len(net_track_widths)} "
                       f"non-Default net(s) (#435 single-ended companion).")
         except Exception as _e:
-            unknown.append('class widths unavailable: ' + str(_e))
+            unknown.append({'code': 'class_widths_unavailable', 'error': type(_e).__name__,
+                            'detail': str(_e)})
             print(f"Warning: could not auto-read netclass track widths ({_e}).")
             net_track_widths = {}
 
@@ -124,34 +127,100 @@ def pair_class_width(classes, rules, p_net_name, base, from_class, floor):
     return max(width if width is not None else base, floor)
 
 
+class WidthPolicyRefusal(ValueError):
+    """The width policy cannot answer for these arguments: `code` and `fields` say why."""
+
+    def __init__(self, code, **fields):
+        super().__init__(code, fields)
+        self.code = code
+        self.fields = fields
+
+
+class _ParserCaptured(Exception):
+    def __init__(self, parser):
+        super().__init__()
+        self.parser = parser
+
+
+_PARSERS = {}
+
+
+def router_parser(module):
+    """The argparse parser `py_router/<module>` builds in its `__main__`.
+
+    route.py and route_diff.py build their parser inline under `__main__`
+    (upstream has no build_parser()), so the script is run up to its
+    parse_args() call, which is intercepted before it parses anything. What
+    runs before that point is imports, the CMD banner (suppressed here with
+    KRT_NO_BANNER) and parser construction.
+    """
+    if module not in _PARSERS:
+        import argparse
+        import contextlib
+        import io
+        import runpy
+        import sys
+        from pathlib import Path
+        script = str(Path(__file__).resolve().parent / module)
+        real = argparse.ArgumentParser.parse_args
+
+        def capture(self, *args, **kwargs):
+            raise _ParserCaptured(self)
+
+        saved_argv, saved_banner = sys.argv, os.environ.get('KRT_NO_BANNER')
+        sys.argv = [script]
+        os.environ['KRT_NO_BANNER'] = '1'
+        argparse.ArgumentParser.parse_args = capture
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                runpy.run_path(script, run_name='__main__')
+        except _ParserCaptured as got:
+            _PARSERS[module] = got.parser
+        finally:
+            argparse.ArgumentParser.parse_args = real
+            sys.argv = saved_argv
+            if saved_banner is None:
+                os.environ.pop('KRT_NO_BANNER', None)
+            else:
+                os.environ['KRT_NO_BANNER'] = saved_banner
+        if module not in _PARSERS:
+            raise WidthPolicyRefusal('router_parser_unavailable', module=module)
+    return _PARSERS[module]
+
+
+#: The options the width policy reads, by argparse dest.
+_WANTED = {'track_width': '--track-width', 'diff_pair_gap': '--diff-pair-gap', 'impedance': '--impedance',
+           'fab_tier': '--fab-tier', 'fab_overrides': '--fab-overrides'}
+#: Options whose widths the policy needs as structured request fields, not as arguments.
+_STRUCTURED = {'power_nets': '--power-nets', 'power_nets_widths': '--power-nets-widths',
+               'connections': '--connections'}
+
+
 def options(args, module):
-    """Interpret width-policy options with the real tool's option vocabulary."""
-    import sys
-    from pathlib import Path
-    root = Path(__file__).resolve().parents[1]
-    sys.path.insert(0, str(root))
-    from krt_capabilities import script_flags
-    flags = script_flags(root / 'py_router' / module)
-    wanted = {'--track-width', '--diff-pair-gap', '--impedance', '--fab-tier', '--fab-overrides'}
-    found = {}
-    for i, item in enumerate(args):
-        if item == '--':
-            break
-        key, equals, value = item.partition('=')
-        if key not in flags:
-            matches = [flag for flag in flags if key.startswith('--') and len(key) > 2 and flag.startswith(key)]
-            if len(matches) > 1:
-                raise ValueError('ambiguous router option: ' + key)
-            key = matches[0] if len(matches) == 1 else None
-        if key in ('--power-nets', '--power-nets-widths', '--connections'):
-            raise ValueError('width policy requires structured ' + key)
-        if key in wanted:
-            if not equals:
-                if i + 1 >= len(args):
-                    raise ValueError('missing value for ' + key)
-                value = args[i + 1]
-            found[key] = value
-    return found
+    """The width options `args` give, parsed by the router script's own parser.
+
+    Returns {flag: parsed value} for the options given; an option left out is
+    absent. `args` are option arguments of one call; the board is supplied
+    here as the script's positional input file.
+    """
+    import argparse
+    import contextlib
+    import io
+    parser = router_parser(module)
+    unset = object()
+    namespace = argparse.Namespace(**{dest: unset for dest in list(_WANTED) + list(_STRUCTURED)})
+    errors = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(errors), contextlib.redirect_stdout(io.StringIO()):
+            parsed = parser.parse_args(['board.kicad_pcb'] + list(args), namespace=namespace)
+    except SystemExit as stop:
+        raise WidthPolicyRefusal('router_arguments_rejected', module=module, args=list(args),
+                                 exit_code=stop.code, error=errors.getvalue().strip()) from None
+    for dest, flag in _STRUCTURED.items():
+        if getattr(parsed, dest) is not unset:
+            raise WidthPolicyRefusal('structured_request_field_required', option=flag)
+    return {flag: getattr(parsed, dest) for dest, flag in _WANTED.items()
+            if getattr(parsed, dest) is not unset}
 
 
 def nominal_policy(board, requests):
@@ -198,7 +267,7 @@ def nominal_policy(board, requests):
         fab_args = []
         for flag in ('--fab-tier', '--fab-overrides'):
             if flag in parsed:
-                fab_args += [flag, parsed[flag]]
+                fab_args += [flag, str(parsed[flag])]
         fab_args += ['--escalation', 'off']
         fab = fab_parser.parse_args(fab_args)
         if fab.fab_overrides:
@@ -232,12 +301,12 @@ def nominal_policy(board, requests):
         by_net = {}
         for name in request['nets']:
             nid = names[name]
-            reason = ''
+            reason = None
             dominant = nid in task_widths or nid in config.power_net_widths
             if not dominant and ('--impedance' in parsed or name in stored):
-                reason = 'impedance-derived width is not proved by the nominal policy'
+                reason = {'code': 'impedance_width'}
             elif not dominant and not explicit and resolved['unknown']:
-                reason = '; '.join(resolved['unknown'])
+                reason = {'code': 'design_rules_unknown', 'rules': resolved['unknown']}
             widths = {layer: config.get_net_track_width(nid, layer) for layer in layers}
             if kind == 'pairs':
                 width = pair_class_width(classes, rules, paired[name], base, not explicit, floor)
@@ -245,7 +314,7 @@ def nominal_policy(board, requests):
                 # With both geometry flags explicit the global branch can
                 # remain unrounded; refuse to guess which branch will win.
                 if explicit and '--diff-pair-gap' in parsed and round(width, 4) != width:
-                    reason = 'explicit pair geometry rounding branch is not proved'
+                    reason = {'code': 'pair_geometry_rounding', 'width': width}
                 widths = {layer: round(width, 4) for layer in layers}
             by_net[name] = {'status': 'unknown' if reason else 'known',
                             'widths': None if reason else widths, 'reason': reason}
@@ -256,8 +325,6 @@ def nominal_policy(board, requests):
             'inputs': {str(p): digest(p) for p in (path, path.with_suffix('.kicad_pro'), path.with_suffix('.kicad_dru'))},
             'config_sha256': hashlib.sha256(json.dumps(requests, sort_keys=True).encode()).hexdigest(),
             'external_inputs': external,
-            'sources': {str(p.relative_to(Path(__file__).resolve().parents[1])): digest(p) for p in sorted(
-                set(Path(__file__).resolve().parents[1].glob('*.py')) | set(Path(__file__).parent.rglob('*.py')))},
             'policies': out}
 
 
