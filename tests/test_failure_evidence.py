@@ -59,8 +59,8 @@ def t_blockers_keep_where_they_were_found():
     from failure_evidence import evidence_of
     static = {"kind": "pad", "net": "N3", "ref": "U1", "pad": "3", "layer": None, "at": [15.0, 6.0], "cells": 4,
               "seen_from": "forward"}
-    search = {"forward": {"iterations": 900, "frontier_cells": 40, "at": [3.0, 6.0]},
-              "backward": {"iterations": 950, "frontier_cells": 38, "at": [27.0, 6.0]}, "static": [static]}
+    search = {"forward": {"iterations": 900, "frontier_cells": 40},
+              "backward": {"iterations": 950, "frontier_cells": 38}, "static": [static]}
     frontier = {1: {"stage": "single_ended", "blocked_by": [
         {"net": "SIG", "blocked_count": 30, "unique_cells": 30, "track_cells": 30, "via_cells": 0,
          "near_target_cells": 5, "near_source_cells": 0}]}}
@@ -83,8 +83,8 @@ def t_blockers_keep_where_they_were_found():
 
 def t_a_search_a_later_route_superseded_is_dropped():
     from failure_evidence import evidence_of
-    search = {"forward": {"iterations": 9, "frontier_cells": 4, "at": [3.0, 6.0]},
-              "backward": {"iterations": 7, "frontier_cells": 3, "at": [27.0, 6.0]}, "static": []}
+    search = {"forward": {"iterations": 9, "frontier_cells": 4},
+              "backward": {"iterations": 7, "frontier_cells": 3}, "static": []}
     e = evidence_of(state({1: [{"event": "search_failed", "details": search},
                                {"event": "initial_route", "details": {}}]}), 1)
     check('a search the net later routed past is not its failure', e["search"] is None, e["search"])
@@ -95,8 +95,8 @@ def t_a_search_a_later_route_superseded_is_dropped():
 
 def t_old_failure_facts_do_not_survive_success_or_a_new_search():
     from failure_evidence import evidence_of
-    search = {'forward': {'iterations': 5, 'frontier_cells': 1, 'at': None},
-              'backward': {'iterations': 6, 'frontier_cells': 1, 'at': None}, 'static': []}
+    search = {'forward': {'iterations': 5, 'frontier_cells': 1},
+              'backward': {'iterations': 6, 'frontier_cells': 1}, 'static': []}
     frontier = {'blocked_by': [{'net': 'OLD', 'blocked_count': 9}]}
     old = [{'event': 'search_failed', 'details': search},
            {'event': 'boxed_in_static', 'details': BOXED},
@@ -115,8 +115,7 @@ def t_unrecorded_search_start_is_unknown():
     pcb = make_pcb(nets={1: Net(1, 'SIG')})
     cfg = GridRouteConfig(layers=['F.Cu', 'B.Cu'])
     facts = search_facts({'iterations_forward': 1, 'iterations_backward': 2}, pcb, cfg, 1, {1})
-    check('unrecorded starts are not inferred from endpoints',
-          facts['forward']['at'] is None and facts['backward']['at'] is None, facts)
+    check('a search records no start', set(facts['forward']) == {'iterations', 'frontier_cells'}, facts)
     missing = search_facts({}, pcb, cfg, 1, {1})
     check('unrecorded counts stay unknown',
           missing['forward']['iterations'] is None and missing['forward']['frontier_cells'] is None, missing)
@@ -200,8 +199,8 @@ def t_private_nets_are_named_by_their_net():
     pad = make_pad(1, 3.0, 6.0, ref='J1', num='1', net_name='VB', size_x=1.7, size_y=1.7)
     f = Task(index=0, net="VB", start={"ref": "J1", "pad": "1"}, end={"ref": "J2", "pad": "1"}, widths={"F.Cu": 1.0})
     f.status, f.start_pads = 'failed', [pad]
-    ev = {"scope": "net", "search": {"forward": {"iterations": 5, "frontier_cells": 2, "at": [3.0, 6.0]},
-                                     "backward": {"iterations": 4, "frontier_cells": 2, "at": [27.0, 6.0]}},
+    ev = {"scope": "net", "search": {"forward": {"iterations": 5, "frontier_cells": 2},
+                                     "backward": {"iterations": 4, "frontier_cells": 2}},
           "blocked_by": [{"found_by": "static", "kind": "pad", "net": "__connections_private_1", "ref": "J3",
                           "pad": "1", "layer": None, "at": [9, 6], "cells": 2, "seen_from": "forward",
                           "near_source_cells": None, "near_target_cells": None}],
@@ -209,20 +208,8 @@ def t_private_nets_are_named_by_their_net():
     attach_evidence([f], {"VB": ev}, names={"__connections_private_1": "VB"})
     check('copper of a private obstacle net is named by its net', f.evidence["blocked_by"][0]["net"] == "VB",
           f.evidence["blocked_by"])
-    check('the search from a pad of the task is named by its end',
-          f.evidence["search"]["forward"]["end"] == {"ref": "J1", "pad": "1"}
-          and f.evidence["search"]["backward"]["end"] is None, f.evidence["search"])
-    check('the run\'s record is left as it was', ev["blocked_by"][0]["net"] == "__connections_private_1"
-          and "end" not in ev["search"]["forward"])
-
-
-def t_search_end_uses_pad_copper_shape():
-    from connections import Task, _end_at
-    pad = make_pad(1, 0, 0, ref='J1', num='1', size_x=4.0, size_y=0.5, shape='rect')
-    task = Task(0, 'SIG', {'ref': 'J1', 'pad': '1'}, {'ref': 'J2', 'pad': '1'}, {})
-    task.start_pads = [pad]
-    check('point on long pad belongs to endpoint', _end_at(task, [1, 0]) == task.start)
-    check('point outside thin pad stays unknown', _end_at(task, [0, 1]) is None)
+    check('the search is carried as recorded', f.evidence["search"] == ev["search"], f.evidence["search"])
+    check('the run\'s record is left as it was', ev["blocked_by"][0]["net"] == "__connections_private_1")
 
 
 def t_merged_summaries_keep_newest_evidence_of_failing_nets():
@@ -251,7 +238,6 @@ if __name__ == '__main__':
     t_static_tracks_per_net_and_layer()
     t_static_evidence_rejects_diagonal_bbox_and_preserves_legacy_pad_layers()
     t_private_nets_are_named_by_their_net()
-    t_search_end_uses_pad_copper_shape()
     t_merged_summaries_keep_newest_evidence_of_failing_nets()
     t_joined_narrow_names_its_narrow_segments()
     if fails:

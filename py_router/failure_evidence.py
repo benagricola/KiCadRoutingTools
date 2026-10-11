@@ -50,8 +50,8 @@ def _blocker(**kw) -> dict:
 def search_facts(result, pcb_data, config, net_id, nets_to_route) -> dict:
     """A failed search's recorded iterations and frontier attribution.
 
-    Starts stay unknown unless explicitly supplied by the search result.
-    Net endpoints are not necessarily the searched endpoints.
+    The search is multi-source and multi-target and reports no start, so the
+    record carries none.
     """
     from blocking_analysis import static_blocker_records
     out, static = {}, []
@@ -59,8 +59,7 @@ def search_facts(result, pcb_data, config, net_id, nets_to_route) -> dict:
         cells = list(result.get('blocked_cells_' + d) or [])
         iterations = result.get("iterations_" + d)
         out[d] = {"iterations": int(iterations) if iterations is not None else None,
-                  "frontier_cells": len(cells) if "blocked_cells_" + d in result else None,
-                  "at": result.get("search_start_" + d)}
+                  "frontier_cells": len(cells) if "blocked_cells_" + d in result else None}
         recs = static_blocker_records(cells, pcb_data, config, set(nets_to_route), net_id=net_id)
         static += [dict(r, seen_from=d) for r in recs]
     out["static"] = static

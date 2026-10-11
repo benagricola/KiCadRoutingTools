@@ -112,8 +112,8 @@ def t_an_end_boxed_in_by_pads_says_so(tmp):
     check('within its iteration bound', all(v.get('iterations', 0) < 20000 for v in ev.get('verdicts') or ()),
           ev.get('verdicts'))
     directions = list((ev.get('search') or {}).values())
-    check('unrecorded search starts and ends remain unknown',
-          len(directions) == 2 and all(d.get('at') is None and d.get('end') is None for d in directions),
+    check('a search records iterations and frontier only',
+          len(directions) == 2 and all(set(d) == {'iterations', 'frontier_cells'} for d in directions),
           ev.get('search'))
     check('the ring is named by its pads', {b['pad'] for b in ev.get('blocked_by') or ()
                                             if b['found_by'] == 'static' and b['ref'] == 'U2'}

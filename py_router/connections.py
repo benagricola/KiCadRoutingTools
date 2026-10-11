@@ -348,17 +348,6 @@ def records(tasks: List[Task]) -> list:
     return [t.record() for t in tasks]
 
 
-def _end_at(t: Task, at) -> Optional[dict]:
-    """The task end whose pad copper contains `at`, else None."""
-    if at is None:
-        return None
-    from check_drc import point_to_pad_distance
-    for end, pads in ((t.start, t.start_pads), (t.end, t.end_pads)):
-        if any(point_to_pad_distance(at[0], at[1], p) <= 1e-6 for p in pads):
-            return dict(end)
-    return None
-
-
 def attach_evidence(tasks: List[Task], net_evidence: dict, names: Optional[dict] = None) -> None:
     """Each failed task carries its net's evidence (failure_evidence.EMPTY when the run recorded none); a joined_narrow
     task carries the segments of its joining path under their layer's asked width. `names` maps a private obstacle
@@ -371,8 +360,6 @@ def attach_evidence(tasks: List[Task], net_evidence: dict, names: Optional[dict]
             t.evidence = copy.deepcopy(net_evidence.get(t.net) or EMPTY)
             for b in t.evidence.get("blocked_by") or ():
                 b["net"] = names.get(b.get("net"), b.get("net"))
-            for d in (t.evidence.get("search") or {}).values():
-                d["end"] = _end_at(t, d.get("at"))
         elif t.status == 'joined_narrow':
             narrow = [{"layer": s.layer, "start": [s.start_x, s.start_y], "end": [s.end_x, s.end_y],
                        "width": s.width, "need": t.widths[s.layer]}

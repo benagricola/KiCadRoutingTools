@@ -87,7 +87,7 @@ A `failed` or `joined_narrow` record's `evidence` holds what the router recorded
 
 ```
 {"scope": "net" | "task",
- "search": {"forward":  {"iterations": int | null, "frontier_cells": int | null, "at": [x, y], "end": {"ref", "pad"} | null},
+ "search": {"forward":  {"iterations": int | null, "frontier_cells": int | null},
             "backward": {...}} | null,
  "blocked_by": [{"found_by": "frontier" | "static" | "preexisting",
                  "kind": "routed_copper" | "pad" | "track" | "copper",
@@ -104,10 +104,8 @@ A `failed` or `joined_narrow` record's `evidence` holds what the router recorded
 - `search`: the net's last recorded failed A* search (single_ended_loop.py,
   event `search_failed`), per direction: its iterations and blocked frontier
   cell count (`iterations_forward/backward`, `blocked_cells_forward/backward`).
-  `at` is null unless the search result explicitly records its actual start;
-  KRT currently does not. It is never reconstructed from net endpoints,
-  which may differ from the searched edge on multipoint nets. `end` is the
-  task end whose pad copper contains a recorded `at`, else null.
+  It has no start point: each direction searches from a set of source
+  cells to a set of target cells and reports no single start.
   Search, verdict and blocker events are limited to the current recorded
   failure epoch: after the latest successful route and from the latest
   recorded failed search. Null when no failed search is on record.
@@ -158,7 +156,7 @@ no search: such a failure has `search: null`, with whatever `frontier_blocking` 
 phase3_routing.py:944) and the verdict events hold.
 
 The summary gains `net_evidence`, `{net name: evidence}` for every net still failed at the end of the run (the same
-population as `blockers`), in whole-net calls too, with `scope: "net"` and no `end` keys. Merged across reconcile
+population as `blockers`), in whole-net calls too, with `scope: "net"`. Merged across reconcile
 passes, each net's newest record is kept while the net is still failing.
 
 ## Joined by narrower copper (D3)
