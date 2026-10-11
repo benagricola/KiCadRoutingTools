@@ -356,6 +356,26 @@ def test_ladder_does_not_promote_a_pocket_that_stays_closed():
     assert _ladder_rips([closed]) == [Z]
 
 
+def test_joined_pockets_other_walls_leave_the_ladder():
+    """Two pockets: P's walled by W and X, Q's by Z. Ripping W joins P (the
+    retry's only failed edge is Q's, and the failed-edge count stays put),
+    so X, P's other wall, is not ripped next: Z is."""
+    from pocket_walls import Pocket, PocketFlood
+    X = 4
+    p_pocket = Pocket(target_xy=(5.0, 5.0), flood=PocketFlood(10, ((50, 50, 0),)),
+                      walls=(_blocker(W, 20), _blocker(X, 10)))
+    q_pocket = Pocket(target_xy=(20.0, 5.0), flood=PocketFlood(40, ((200, 50, 0),)),
+                      walls=(_blocker(Z, 30),))
+
+    def retry(failed):
+        return {'tap_edges_failed': 2, 'new_segments': [], 'new_vias': [],
+                'failed_edge_blocking': {(0, 2): failed[(0, 2)]}}
+
+    rips = _ladder_rips([p_pocket, q_pocket], extra_nets=(X,), retry=retry)
+    assert rips[:2] == [W, Z], rips
+    assert X not in rips, rips
+
+
 def test_ladder_rips_the_small_pockets_wall_first():
     assert _ladder_rips() == [W]
 

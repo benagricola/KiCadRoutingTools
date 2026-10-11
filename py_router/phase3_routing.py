@@ -829,6 +829,39 @@ def run_phase3_tap_routing(
     return stats
 
 
+def _drop_joined_pocket_walls(pockets, retry_blocking, rippable_blockers, n_ripped,
+                              ripped_canonical_ids, diff_pair_by_net_id):
+    """FORK DIVERGENCE (pocket walls first, docs/fork-divergences.md): take
+    the walls of pockets whose target no failed edge of the last retry has
+    off the ladder's unripped tail (rippable_blockers[n_ripped:], in place).
+    A wall that also bounds a pocket still failing stays. Returns the
+    canonical ids dropped."""
+    def _key(xy):
+        return (round(float(xy[0]), 4), round(float(xy[1]), 4))
+
+    failing = {_key(entry[1]) for entry in retry_blocking.values()}
+    joined = [p for p in pockets if _key(p.target_xy) not in failing]
+    if not joined:
+        return set()
+    open_ids = {get_canonical_net_id(b.net_id, diff_pair_by_net_id)
+                for p in pockets if p not in joined for b in p.walls}
+    drop = ({get_canonical_net_id(b.net_id, diff_pair_by_net_id)
+             for p in joined for b in p.walls}
+            - open_ids - set(ripped_canonical_ids))
+    tail = rippable_blockers[n_ripped:]
+    names = [b.net_name for b in tail
+             if get_canonical_net_id(b.net_id, diff_pair_by_net_id) in drop]
+    if not names:
+        return set()
+    rippable_blockers[n_ripped:] = [
+        b for b in tail
+        if get_canonical_net_id(b.net_id, diff_pair_by_net_id) not in drop]
+    for p in joined:
+        print(f"    Pocket at ({p.target_xy[0]:.2f}, {p.target_xy[1]:.2f}) joined")
+    print(f"    Joined pocket walls leave the ladder: {names}")
+    return drop
+
+
 def try_phase3_ripup(
     net_id, completed_result, failed_edge_blocking, lm_segments, lm_vias,
     pcb_data, config, state, routed_net_ids, remaining_net_ids,
@@ -1065,6 +1098,9 @@ def try_phase3_ripup(
     ripped_canonical_ids = set()
     last_retry_blocked_cells = all_blocked_cells
     original_failed_count = completed_result.get('tap_edges_failed', 0)
+    # FORK DIVERGENCE (pocket walls first): canonical ids of pocket walls
+    # dropped from the ladder because their pocket's target joined.
+    pocket_walls_dropped = set()
 
     for N in range(1, config.max_rip_up_count + 1):
         # For N > 1, re-analyze from the last retry's blocked cells
@@ -1084,7 +1120,8 @@ def try_phase3_ripup(
             for b in fresh_blockers:
                 if b.net_id in routed_results:
                     canonical = get_canonical_net_id(b.net_id, diff_pair_by_net_id)
-                    if canonical not in ripped_canonical_ids:
+                    if (canonical not in ripped_canonical_ids
+                            and canonical not in pocket_walls_dropped):
                         next_blocker = b
                         break
 
@@ -1402,6 +1439,17 @@ def try_phase3_ripup(
                 print(f"    {net_name}: Retry FAILED (N={N}): still {retry_failed} failed edges")
                 # Store blocked cells from retry for next iteration's analysis
                 retry_blocking = retry_result.get('failed_edge_blocking', {})
+                # FORK DIVERGENCE (pocket walls first): a pocket whose target
+                # has no failed edge left was opened by the rips so far, so
+                # its walls not yet ripped leave the ladder. The failed-edge
+                # count alone can stay put when a joined pad brings a new
+                # failed edge with it, and the ladder went on ripping the
+                # opened pocket's other walls (watchy: /32K_P joined U4 pad
+                # 20, then ACC_INT_1, its second wall, was ripped too).
+                if _pockets and retry_blocking:
+                    pocket_walls_dropped |= _drop_joined_pocket_walls(
+                        _pockets, retry_blocking, rippable_blockers, N,
+                        ripped_canonical_ids, diff_pair_by_net_id)
                 if retry_blocking:
                     last_retry_blocked_cells = []
                     for edge_key, entry in retry_blocking.items():

@@ -23,6 +23,16 @@
   watchy (placemat reference board): EN's pad was sealed by +3V3's copper
   and its pads, the boundary named only BTN3, and ripping BTN3 first spent
   the rung that ripping +3V3 would have used to join the pad.
+- After a failed retry, a promoted region whose target no failed edge of
+  that retry has left is open: its boundary nets not yet ripped are taken off
+  the ladder (unless they also bound a region still failing), and the
+  re-analysis does not bring them back (phase3_routing.py
+  `_drop_joined_pocket_walls`). The ladder judges a retry by its failed-edge
+  count, which can stay put when a joined pad brings a new failed edge with
+  it. Measured on watchy: ripping /32K_P joined +3V3's U4 pad 20, the joined
+  pad's next edge failed, and the ladder ripped ACC_INT_1, the pocket's
+  second wall; with the BGA's other escape net ripped too, the victims could
+  not re-route and the tap was abandoned (open pairs 6 -> 9 at human widths).
 - The boundary attribution calls blocking_analysis.py
   `analyze_frontier_blocking` with `record_history=False` (a fork keyword,
   default True). With it False the call charges nothing to the #590 history
