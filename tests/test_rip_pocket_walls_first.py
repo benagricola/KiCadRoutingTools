@@ -419,14 +419,101 @@ def test_joined_pockets_other_walls_leave_the_ladder():
     q_pocket = Pocket(target_xy=(20.0, 5.0), flood=PocketFlood(40, ((200, 50, 0),)),
                       walls=(_blocker(Z, 30),))
 
-    def retry(failed):
-        return {'tap_edges_failed': 2, 'new_segments': [], 'new_vias': [],
-                'failed_edge_blocking': {(0, 2): failed[(0, 2)]}}
-
-    rips = _ladder_rips([p_pocket, q_pocket], extra_nets=(X,), retry=retry)
+    rips = _ladder_rips([p_pocket, q_pocket], extra_nets=(X,), retry=_q_still_fails)
     assert rips[:2] == [W, Z], rips
     assert X not in rips, rips
 
+
+Q_PAD = {'x': 20.0, 'y': 5.0}
+P_PAD = {'x': 5.0, 'y': 5.0}
+TAG_ALL, TAG_TIGHT = (9001, 9001, 0), (9002, 9002, 0)
+
+
+def _q_still_fails(failed, pads=(Q_PAD,), entry=None):
+    return {'tap_edges_failed': 2, 'new_segments': [], 'new_vias': [],
+            'failed_pads_info': list(pads),
+            'failed_edge_blocking': {(0, 2): entry or failed[(0, 2)]}}
+
+
+def _tagged_q_entry(failed):
+    """Q's failed edge with tagged cells: the tight probe side carries
+    TAG_TIGHT, the whole frontier also TAG_ALL, so a stubbed attribution can
+    answer the per-edge analysis and the merged re-analysis differently."""
+    _cells, xy, dirs = failed[(0, 2)]
+    return ([TAG_ALL, TAG_TIGHT, TAG_ALL], xy,
+            dict(dirs, fwd=[TAG_ALL, TAG_ALL], bwd=[TAG_TIGHT], extra=[]))
+
+
+def _answers(tight=(), merged=()):
+    def analyze(cells):
+        if TAG_ALL in cells:
+            return list(merged)
+        if TAG_TIGHT in cells:
+            return list(tight)
+        return None
+    return analyze
+
+
+def test_joined_pocket_wall_named_again_by_the_reanalysis_is_skipped():
+    """X, the joined pocket's other wall, is dropped; the merged re-analysis
+    of the retry still names X first, then Y. The ladder skips X and rips Y
+    after Z."""
+    from pocket_walls import Pocket, PocketFlood
+    X, Y = 4, 5
+    p_pocket = Pocket(target_xy=(5.0, 5.0), flood=PocketFlood(10, ((50, 50, 0),)),
+                      walls=(_blocker(W, 20), _blocker(X, 10)))
+    q_pocket = Pocket(target_xy=(20.0, 5.0), flood=PocketFlood(40, ((200, 50, 0),)),
+                      walls=(_blocker(Z, 30),))
+    rips = _ladder_rips(
+        [p_pocket, q_pocket], extra_nets=(X, Y),
+        retry=lambda f: _q_still_fails(f, entry=_tagged_q_entry(f)),
+        analyze=_answers(merged=[_blocker(X, 50), _blocker(Y, 10)]))
+    assert rips == [W, Z, Y], rips
+
+
+def test_wall_of_a_failing_unpromoted_pocket_stays():
+    """P (walls W, X) joins after W is ripped. X also walls Q, which is not
+    promoted (it does not open) and still fails: X stays and is ripped next."""
+    from pocket_walls import Pocket, PocketFlood
+    X = 4
+    p_pocket = Pocket(target_xy=(5.0, 5.0), flood=PocketFlood(10, ((50, 50, 0),)),
+                      walls=(_blocker(W, 20), _blocker(X, 10)))
+    q_closed = Pocket(target_xy=(20.0, 5.0), flood=PocketFlood(40, ((200, 50, 0),)),
+                      walls=(_blocker(X, 30),), opens=False)
+    rips = _ladder_rips(
+        [p_pocket, q_closed], extra_nets=(X,),
+        retry=lambda f: _q_still_fails(f, entry=_tagged_q_entry(f)),
+        analyze=_answers(merged=[_blocker(X, 30)]))
+    assert rips[:2] == [W, X], rips
+
+
+def test_wall_named_for_a_failing_edge_stays():
+    """P (walls W, X) joins after W is ripped; Q's edge, which has no pocket,
+    still fails and its attribution names X: X stays and is ripped next."""
+    from pocket_walls import Pocket, PocketFlood
+    X = 4
+    p_pocket = Pocket(target_xy=(5.0, 5.0), flood=PocketFlood(10, ((50, 50, 0),)),
+                      walls=(_blocker(W, 20), _blocker(X, 10)))
+    rips = _ladder_rips(
+        [p_pocket], extra_nets=(X,),
+        retry=lambda f: _q_still_fails(f, entry=_tagged_q_entry(f)),
+        analyze=_answers(tight=[_blocker(X, 5)], merged=[_blocker(X, 30)]))
+    assert rips[:2] == [W, X], rips
+
+
+def test_failed_edge_with_no_frontier_does_not_read_as_joined():
+    """The retry's edge to P fails with no blocked cells, so it records no
+    failed_edge_blocking entry; P's pad is still unconnected. P is not
+    joined, and X, its other wall, is ripped next."""
+    from pocket_walls import Pocket, PocketFlood
+    X = 4
+    p_pocket = Pocket(target_xy=(5.0, 5.0), flood=PocketFlood(10, ((50, 50, 0),)),
+                      walls=(_blocker(W, 20), _blocker(X, 10)))
+    q_pocket = Pocket(target_xy=(20.0, 5.0), flood=PocketFlood(40, ((200, 50, 0),)),
+                      walls=(_blocker(Z, 30),))
+    rips = _ladder_rips([p_pocket, q_pocket], extra_nets=(X,),
+                        retry=lambda f: _q_still_fails(f, pads=(P_PAD, Q_PAD)))
+    assert rips[:2] == [W, X], rips
 
 
 def test_pair_partner_copper_counts_in_the_open_check():
