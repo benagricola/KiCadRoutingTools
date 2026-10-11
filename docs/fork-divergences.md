@@ -28,6 +28,15 @@ nets. Open or unattributed regions use the existing frontier-ranked ladder.
 
 ## Isolated pocket repair candidate
 
+- Upstream: route.py routes once.
+- Fork: route_candidates.py `maybe_run_candidates`, called from route.py `__main__` (marked `FORK DIVERGENCE`), runs
+  the legacy router as a child and, when that result is incomplete, a second full child run with pocket walls on;
+  it grades both final files and keeps the better one. Pending a user decision (2026-10-11): it doubles routing
+  time on every incomplete CLI call, and its fate waits on the cause of the predictor change below.
+- Why: with pocket walls always on, one fixture board's scattered-routing predictor rows in
+  tests/test_703_predictor_regen.py got worse (vias 28 -> 32, copper 305 -> 338 mm).
+- Test: tests/test_route_candidates.py.
+
 Pocket priority is disabled for direct `batch_route` calls. The full CLI first
 runs the legacy router from an isolated copy of the input board and its project
 and rule sidecars. A reported complete legacy result is preserved exactly;
@@ -91,3 +100,14 @@ Quick routing (`KRT_ROUTE_QUICK`), preview, skip-routing and schematic-mutating
 calls retain the legacy path and report fallback unavailable. The quick wrapper
 can continue rewriting its existing top-level `batch_route` anchors unchanged.
 Tests: test_route_candidates.py and test_rip_pocket_walls_first.py.
+
+## Nominal width policy
+
+- Upstream: route.py `batch_route` resolves per-net and per-layer draw widths (net class, `.kicad_dru` opt, fab
+  floor) inline, and route_diff.py resolves a pair's class width inline.
+- Fork: both blocks are moved unchanged into py_router/nominal_width_policy.py (`class_width_inputs`,
+  `pair_class_width`); route.py and route_diff.py call them (marked `FORK DIVERGENCE`). `nominal_policy` and the
+  module's `__main__` (JSON on stdin, a `PLACEMAT_WIDTH_POLICY` line on stdout) answer which widths a call with given
+  arguments would draw, without routing. An upstream change to either block must be carried into this module.
+- Why: placemat asks KRT for the effective widths of the nets it routes rather than re-deriving KRT's precedence.
+- Test: tests/test_nominal_width_policy.py.

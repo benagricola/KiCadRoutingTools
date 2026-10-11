@@ -1,7 +1,9 @@
 """Router-authoritative nominal widths, shared with read-only consumers.
 
-The class resolver is extracted unchanged from route.py initialization. This
-module imports no routing CLI or mutable router engine state.
+FORK DIVERGENCE (docs/fork-divergences.md, "Nominal width policy"): the class
+resolver is extracted unchanged from route.py initialization so placemat can
+ask for the widths a call would draw. This module imports no routing CLI or
+mutable router engine state.
 """
 from __future__ import annotations
 

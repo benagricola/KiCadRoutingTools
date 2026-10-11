@@ -1171,6 +1171,8 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                 # not override it (#610: from_class now purely means "the flag
                 # was omitted", the impedance guard lives here).
                 _g = _c.get('diff_pair_gap') if diff_pair_gap_from_class else None
+                # FORK DIVERGENCE (docs/fork-divergences.md, "Nominal width
+                # policy"): upstream's class pair width, moved unchanged.
                 from nominal_width_policy import pair_class_width
                 _ew = pair_class_width(_classes, _rules, _pair.p_net_name, config.track_width,
                                        diff_pair_width_from_class and impedance is None, _wfloor)

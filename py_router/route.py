@@ -1225,7 +1225,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # each with a different width), not the single Default-class width. Explicit
     # --track-width is honored verbatim for all nets (this stays empty). Floored at
     # the fab track minimum; a manual --power-nets-widths override still wins.
-    # Shared nominal-policy resolver; read-only consumers use this exact
+    # FORK DIVERGENCE (docs/fork-divergences.md, "Nominal width policy"):
+    # upstream's netclass-width block, moved unchanged to
+    # nominal_width_policy.py so read-only consumers use this exact
     # class/rule/fabrication resolution rather than reconstructing it.
     from nominal_width_policy import class_width_inputs
     _width_inputs = class_width_inputs(
