@@ -403,7 +403,7 @@ def identify_target_pads(
 
 
 def via_reach(config: GridRouteConfig, clearance: float, hole_clearance: float) -> float:
-    """How far from a new via's centre foreign copper must keep its edge: the via's copper ring at `clearance`, and
+    """How far from a new via's centre a foreign track or pad must keep its edge: the via's copper ring at `clearance`, and
     its drilled hole at `hole_clearance`, the board's copper-to-hole floor (KiCad's hole_clearance, which it grades on
     a layer where the via has no copper of its own as well).
 
@@ -490,7 +490,7 @@ def build_via_obstacle_map(
         _clr = config.stack_clearance(_clr)  # #498: barrels meet on every layer
         centers_by_size.setdefault((via.size, _clr), []).append(coord.to_grid(via.x, via.y))
     for (vsize, _clr), via_centers in centers_by_size.items():
-        via_via_expansion_mm = vsize / 2 + via_reach(config, _clr, hole_clr) + grid_cushion
+        via_via_expansion_mm = vsize / 2 + config.via_size / 2 + _clr + grid_cushion
         circle_offsets = _precompute_circle_offsets((via_via_expansion_mm / config.grid_step) ** 2)
         _batch_block_circles_via(obstacles, via_centers, circle_offsets)
     if verbose:

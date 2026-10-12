@@ -218,9 +218,10 @@ nets. Open or unattributed regions use the existing frontier-ranked ladder.
   antenna, a tab) stops blocking the nets of the pads it touches (`check_drc.graphic_own_pad_nets`), so a route
   may cross it to reach such a pad.
 - Fork:
-  - `plane_obstacle_builder.via_reach`: in the via map, foreign tracks, pads and vias are kept off a new via by the
+  - `plane_obstacle_builder.via_reach`: in the via map, foreign tracks and pads are kept off a new via by the
     larger of its ring at the clearance and its hole at the board's hole clearance (`resolve_hole_clearance`).
-    This applies to every caller of `build_via_obstacle_map`, the in-run plane finalize included.
+    This applies to every caller of `build_via_obstacle_map`, the in-run plane finalize included. The via-to-via
+    disc stays at upstream's ring plus clearance, as in "Via hole floor" below.
   - `repair_planes.py --net-clearances JSON` takes a {net name: mm} map as route.py does, floored at the board's
     `min_clearance` (`named_clearances`).
   - `--pads JSON` lists the pads pad repair may tap, as `{ref, pad[, fp]}` connection ends (`named_pads`).
@@ -250,10 +251,13 @@ nets. Open or unattributed regions use the existing frontier-ranked ladder.
   `GridRouteConfig.via_hole_raise(clearance)`, so the hole's edge is max(clearance, floor) from the copper's edge.
   This applies in the base map, the per-net caches and their removal twins, the plane via map, and its sync twin.
   The raise is exactly 0.0 when the floor is not above the clearance, so a board declaring nothing is unchanged to
-  the bit. Via-to-via keep-outs are not changed.
+  the bit. Via-to-via keep-outs are not changed, in either map: vias keep ring plus clearance and the hole-to-hole
+  clearance between them, as upstream.
 - Why: placemat judges each phase on KiCad's DRC, and KiCad grades hole_clearance.
 - Test: tests/test_fork_plane_repair.py (`test_a_routed_via_keeps_its_hole_off_a_foreign_track...`,
-  `test_via_hole_raise_is_exactly_nothing...`, `test_a_board_declaring_no_hole_floor_gets_the_same_route_map`).
+  `test_via_hole_raise_is_exactly_nothing...`, `test_a_board_declaring_no_hole_floor_gets_the_same_route_map`);
+  tests/test_plane_via_map_sync.py's hole floor runs, where the floor is above clearance plus ring and the plane via
+  map's incremental removal must still equal a fresh rebuild.
 
 ## --connections "apart"
 

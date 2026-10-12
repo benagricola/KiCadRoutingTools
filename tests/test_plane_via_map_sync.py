@@ -108,16 +108,26 @@ def _routing_map_mismatch(inc, fresh, bbox):
     return over, under
 
 
-def run(verbose=False, cross_class=False):
+def _hole_floor(config):
+    """FORK DIVERGENCE (docs/fork-divergences.md, via hole floor): a board whose copper-to-hole floor (0.3 mm) is
+    above the clearance plus the via's annular ring (0.1 + 0.1), so every via keep-out against a track or pad is
+    raised. The via-to-via disc is not, on the build side and the removal side alike."""
+    config.hole_clearance = 0.3
+    config.via_hole_floor = 0.3
+    assert config.via_hole_raise(config.clearance) > 0
+    return config
+
+
+def run(verbose=False, cross_class=False, hole_floor=False):
     """cross_class=True (#543): give each rip net a netclass clearance above the
     run clearance and add a .kicad_dru-style layer rule, so the builders price
     its copper at obstacle_clearance under layer/stack rules -- the incremental
     remove must still be byte-identical (pre-#543 it removed the plain-clearance
     multiset and left the class ring stale/under-removed)."""
-    config = _config()
+    config = _hole_floor(_config()) if hole_floor else _config()
     coord = GridCoord(config.grid_step)
     fails = []
-    tag = " [cross-class]" if cross_class else ""
+    tag = (" [cross-class]" if cross_class else "") + (" [hole floor]" if hole_floor else "")
 
     base = parse_kicad_pcb(FIXTURE)
     excl = _net_id(base, EXCLUDE_NET)
@@ -171,7 +181,7 @@ def run(verbose=False, cross_class=False):
     return fails
 
 
-def run_own_via_add(verbose=False):
+def run_own_via_add(verbose=False, hole_floor=False):
     """#543 add-side: SharedViaMaps stamps the EXCLUDE net's OWN new tap vias
     through precompute_via_placement_obstacles. The via-map builder prices
     same-net vias at the plain run clearance even when the net carries a
@@ -179,7 +189,7 @@ def run_own_via_add(verbose=False):
     updated for a committed tap diverges from the next fresh rebuild
     (TAP_MAP_VERIFY's assert, unusable on class boards pre-#543)."""
     from kicad_parser import Via
-    config = _config()
+    config = _hole_floor(_config()) if hole_floor else _config()
     fails = []
     pcb = parse_kicad_pcb(FIXTURE)
     excl = _net_id(pcb, EXCLUDE_NET)
@@ -247,6 +257,10 @@ def main():
     print("=== cross-class + dru layer rules (#543) ===")
     fails += run(args.verbose, cross_class=True)
     fails += run_own_via_add(args.verbose)
+    print("=== a hole floor above clearance plus ring (fork: via hole floor) ===")
+    fails += run(args.verbose, hole_floor=True)
+    fails += run(args.verbose, cross_class=True, hole_floor=True)
+    fails += run_own_via_add(args.verbose, hole_floor=True)
     if fails:
         print("\nFAIL:\n  " + "\n  ".join(fails))
         return 1
