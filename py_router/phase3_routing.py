@@ -830,9 +830,12 @@ def run_phase3_tap_routing(
 
 
 def _edge_cells(entry):
-    """The cells the ladder attributes a failed edge with: the tighter probe
-    side when both directions reported walls (audit #2ii), plus the synthetic
-    via-conflict cells; else all of them."""
+    """The cells the ladder attributes a failed edge with (audit #2ii): when
+    both probe directions reported walls, the TIGHTER side is the
+    drained-pocket perimeter (the walled-in pad's wall, hugging track
+    included); the broad side is the far flood that used to swamp it. The
+    synthetic via-conflict cells ride along either way. Otherwise all the
+    edge's blocked cells."""
     cells = entry[0]
     dirs = entry[2] if len(entry) > 2 else None
     if dirs:
@@ -858,13 +861,14 @@ def _drop_opened_pocket_walls(pockets, all_pockets, still_closed, retry_blocking
     def _canon(nid):
         return get_canonical_net_id(nid, diff_pair_by_net_id)
 
-    closed = {id(p): still_closed(p) for p in all_pockets}
-    for p in pockets:
-        if id(p) not in closed:
-            closed[id(p)] = still_closed(p)
+    # The promoted pockets first: when none is open, nothing else is flooded.
+    closed = {id(p): still_closed(p) for p in pockets}
     opened = [p for p in pockets if not closed[id(p)]]
     if not opened:
         return set()
+    for p in all_pockets:
+        if id(p) not in closed:
+            closed[id(p)] = still_closed(p)
     still_blocking = {_canon(b.net_id) for p in all_pockets
                       if closed[id(p)] for b in p.walls}
     for entry in retry_blocking.values():
@@ -926,19 +930,10 @@ def try_phase3_ripup(
         all_blocked_cells.extend(blocked_cells)
         if _tgt_for_rank is None:
             _tgt_for_rank = tgt_xy
-        # Direction-separated attribution (audit #2ii): when both probe
-        # directions reported walls, the TIGHTER side is the drained-pocket
-        # perimeter (the walled-in pad's wall, hugging track included); the
-        # broad side is the far flood that used to swamp it. The synthetic
-        # via-conflict cells ride along either way.
-        cells = blocked_cells
-        dirs = entry[2] if len(entry) > 2 else None
-        if dirs:
-            fwd, bwd = dirs.get('fwd') or [], dirs.get('bwd') or []
-            if fwd and bwd:
-                side = fwd if len(fwd) <= len(bwd) else bwd
-                cells = list(side) + list(dirs.get('extra') or [])
-        _edge_entries.append((cells, tgt_xy))
+        # Direction-separated attribution (audit #2ii), in _edge_cells (FORK
+        # DIVERGENCE: moved there so the pocket-wall drop attributes a failed
+        # edge the same way).
+        _edge_entries.append((_edge_cells(entry), tgt_xy))
 
     if not all_blocked_cells:
         return None
@@ -1005,14 +1000,16 @@ def try_phase3_ripup(
     # FORK DIVERGENCE (placemat fork, docs/fork-divergences.md "Rip ladder:
     # pocket walls first"): a failed edge whose target is boxed in names the
     # nets whose copper bounds its pocket (a flood from the target on the tap
-    # map at the net's track margins); they go ahead of the ranking below,
-    # smallest pocket first, each pocket's nets in the ranking's order. The
-    # merged ranking let a larger failure region's walls outrank a small
-    # pocket's, and the ladder spent its rips without opening the pad.
-    # Only a pocket that the flood leaves once its rippable walls' tracks and
-    # vias are off the map is promoted: a wall that cannot open the pocket
-    # by itself took the rung the ranking's first pick would have used
-    # (watchy, EN's pad sealed by +3V3 and named only BTN3).
+    # map at the margins the tap search may neck down to, search_margins);
+    # they go ahead of the ranking below, smallest pocket first, each
+    # pocket's nets in the ranking's order. The merged ranking let a larger
+    # failure region's walls outrank a small pocket's, and the ladder spent
+    # its rips without opening the pad. Only a pocket that the flood leaves
+    # on the map as ripping its rippable walls would leave it (their routed
+    # results off; pads, stubs and input copper kept) is promoted: a wall
+    # that cannot open the pocket by itself took the rung the ranking's
+    # first pick would have used (watchy, EN's pad sealed by +3V3 and named
+    # only BTN3).
     _pockets = []
     _found = []
     if tap_obstacles is not None:
@@ -1486,14 +1483,15 @@ def try_phase3_ripup(
                             target_xy=entry[1], obstacle_cache=obstacle_cache,
                             record_history=False)]
 
-                    def _still_closed(pocket):
-                        from pocket_walls import pocket_still_closed
-                        return pocket_still_closed(pocket, obstacles, pcb_data,
-                                                   config, net_id)
-                    pocket_walls_dropped |= _drop_opened_pocket_walls(
-                        _pockets, _found, _still_closed, retry_blocking,
-                        rippable_blockers, N, ripped_canonical_ids,
-                        diff_pair_by_net_id, _edge_blockers)
+                    from pocket_walls import LiftedMap, pocket_still_closed
+                    with LiftedMap(obstacles, pcb_data, net_id) as _lifted:
+                        pocket_walls_dropped |= _drop_opened_pocket_walls(
+                            _pockets, _found,
+                            lambda _p: pocket_still_closed(_p, _lifted, config,
+                                                           net_id),
+                            retry_blocking, rippable_blockers, N,
+                            ripped_canonical_ids, diff_pair_by_net_id,
+                            _edge_blockers)
                 if retry_blocking:
                     last_retry_blocked_cells = []
                     for edge_key, entry in retry_blocking.items():

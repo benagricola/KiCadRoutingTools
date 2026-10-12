@@ -347,6 +347,23 @@ def test_rip_trial_keeps_pads_and_stubs():
     assert not m.is_blocked(*track_cell), "the routed track is gone"
 
 
+def test_rip_trial_with_a_cache_lacking_the_net_unstamps_nothing():
+    """As rip_up_net does when the cache has no entry for the net: nothing is
+    unstamped, only the recomputed entry is stamped, so the routed track the
+    map holds stays blocked."""
+    from obstacle_cache import add_net_obstacles_from_cache, precompute_net_obstacles
+    from pocket_walls import _rip_trial
+    routed = make_seg(5.0, 5.0, 8.0, 5.0, layer='F.Cu', net_id=W, width=0.2)
+    pcb = make_pcb(nets={W: make_net(W, 'W')}, segments=[routed])
+    cfg = _config()
+    m = GridObstacleMap(len(LAYERS))
+    add_net_obstacles_from_cache(m, precompute_net_obstacles(pcb, W, cfg))
+    _rip_trial(m, pcb, cfg, {W}, {id(routed)}, {})
+    assert m.is_blocked(*_cell(7.5, 5.0))
+    _rip_trial(m, pcb, cfg, {W}, {id(routed)}, None)
+    assert not m.is_blocked(*_cell(7.5, 5.0)), "no cache: a fresh entry comes off"
+
+
 def _square_ring(cx, cy, half, net_id, layers=LAYERS):
     pts = [(cx - half, cy - half), (cx + half, cy - half),
            (cx + half, cy + half), (cx - half, cy + half)]
@@ -563,14 +580,106 @@ def test_wall_named_for_a_failing_edge_stays():
     assert rips[:2] == [W, X], rips
 
 
+def _still_closed(p, obstacles, pcb, cfg):
+    from pocket_walls import LiftedMap, pocket_still_closed
+    with LiftedMap(obstacles, pcb, OURS) as lifted:
+        return pocket_still_closed(p, lifted, cfg, OURS)
+
+
 def test_pocket_still_closed_follows_the_map():
     """The re-flood a pocket's openness is judged by: closed on the map with
     W's square, open once W's copper is off it."""
-    from pocket_walls import pocket_still_closed
     pcb, cfg = _board(), _config()
     p = _pocket((5.0, 5.0), (_blocker(W, 20),), 10)
-    assert pocket_still_closed(p, _map(pcb, cfg), pcb, cfg, OURS)
-    assert not pocket_still_closed(p, _map(pcb, cfg, (Z,)), pcb, cfg, OURS)
+    assert _still_closed(p, _map(pcb, cfg), pcb, cfg)
+    assert not _still_closed(p, _map(pcb, cfg, (Z,)), pcb, cfg)
+
+
+def test_pocket_still_closed_applies_the_own_pad_lift():
+    """P is sealed only by a ring of its own footprint's copper (the #908
+    lift rows): the re-flood lifts it, as the tap search did, so P is open;
+    without the lift rows it is closed. The map itself is not lifted."""
+    pcb, cfg = _board(), _config()
+    obstacles = _map(pcb, cfg, (Z,))
+    cx, cy, _l = _cell(5.0, 5.0)
+    ring = _ring_spans(cx, cy, 2)
+    obstacles.add_blocked_cell_spans_batch(ring)
+    p = _pocket((5.0, 5.0), (), 10)
+    assert _still_closed(p, obstacles, pcb, cfg), "no lift rows: sealed"
+    pcb._graphic_own_pad_lift = {OURS: ring}
+    assert not _still_closed(p, obstacles, pcb, cfg), "lifted: open"
+    assert obstacles.is_blocked(cx + 2, cy, 0)
+
+
+def _gapped_w_board():
+    """W's square round P with a 1 mm gap on its right side: a 0.2 mm track
+    passes it, a 0.6 mm one does not."""
+    gapped = []
+    for layer in LAYERS:
+        gapped += [make_seg(4.0, 4.0, 6.0, 4.0, layer=layer, net_id=W, width=0.2),
+                   make_seg(4.0, 6.0, 6.0, 6.0, layer=layer, net_id=W, width=0.2),
+                   make_seg(4.0, 4.0, 4.0, 6.0, layer=layer, net_id=W, width=0.2),
+                   make_seg(6.0, 4.0, 6.0, 4.5, layer=layer, net_id=W, width=0.2),
+                   make_seg(6.0, 5.5, 6.0, 6.0, layer=layer, net_id=W, width=0.2)]
+    pcb = _board()
+    pcb.segments = [g for g in pcb.segments if g.net_id != W] + gapped
+    return pcb
+
+
+def test_pocket_still_closed_floods_at_the_neck_floor():
+    """A 0.6 mm power net's P behind the 1 mm gap: open at the neck floor the
+    tap search may use, closed at the full width (neck-down off)."""
+    pcb, cfg = _gapped_w_board(), _config()
+    cfg.power_net_widths = {OURS: 0.6}
+    obstacles = _map(pcb, cfg)
+    p = _pocket((5.0, 5.0), (_blocker(W, 20),), 10)
+    assert not _still_closed(p, obstacles, pcb, cfg)
+    cfg.power_tap_neckdown = False
+    assert _still_closed(p, obstacles, pcb, cfg)
+
+
+def test_search_margins_neck_an_impedance_net_to_the_nominal_width():
+    """An impedance-width layer (0.6 mm) necks to the nominal track width
+    when KICAD_IMPEDANCE_NECKDOWN allows (the default): the flood margins are
+    the nominal width's, not the layer width's."""
+    from pocket_walls import search_margins
+    pcb, cfg = _gapped_w_board(), _config()
+    cfg.layer_widths = {layer: 0.6 for layer in LAYERS}
+    assert search_margins(cfg, OURS) == cfg.track_margins_for_width(cfg.track_width)
+    assert search_margins(cfg, OURS) != cfg.track_margins_for_net(OURS)
+
+
+def test_open_check_unstamps_the_entry_the_map_holds():
+    """The map holds W's cache entry, stamped when W also had a small ring
+    round P that is no longer on the board. A rip unstamps that entry, so
+    the ring's cells clear and P's pocket opens; recomputing the entry from
+    the board instead would leave the ring stamped and P closed."""
+    from obstacle_cache import add_net_obstacles_from_cache, precompute_net_obstacles
+    from pocket_walls import pocket_wall_blockers
+    ring = _square_ring(5.0, 5.0, 0.5, W)
+    pcb, cfg = _board(), _config()
+    stale = _board(ring)
+    obstacles = GridObstacleMap(len(LAYERS))
+    cache = {W: precompute_net_obstacles(stale, W, cfg),
+             Z: precompute_net_obstacles(pcb, Z, cfg)}
+    for e in cache.values():
+        add_net_obstacles_from_cache(obstacles, e)
+    failed = {(0, 1): _failed_edge((5.0, 5.0), (12.0, 15.0), obstacles)}
+    routed = {id(g) for g in pcb.segments if g.net_id == W}
+    # The wall attribution's cell cache holds W's cells as stamped, too.
+    from blocking_analysis import compute_net_obstacle_cells
+    tk, vk = compute_net_obstacle_cells(stale, W, None, cfg)
+    held = {(W, 0.0): (frozenset(tk.tolist()), frozenset(vk.tolist()))}
+
+    def opens(cache_arg):
+        [p] = pocket_wall_blockers(failed, obstacles, pcb, cfg, OURS,
+                                   {W: [], Z: []}, {OURS}, obstacle_cache=dict(held),
+                                   rip_plan=lambda walls: ({W}, routed),
+                                   net_obstacles_cache=cache_arg)
+        return p.opens
+
+    assert opens(cache), "the held entry comes off"
+    assert not opens(None), "a fresh entry leaves the stale ring stamped"
 
 
 def test_pair_partner_copper_counts_in_the_open_check():

@@ -47,11 +47,11 @@ class PocketFlood:
 class Pocket:
     """One failed edge's boxed-in target: where it is, its flood, and the
     nets on its wall as BlockingInfo, most wall cells first. `opens` is
-    whether the flood leaves the pocket once the walls' tracks and vias
-    are off the map (their pads stay, as a rip leaves them); only a pocket
-    that opens has its walls promoted by the rip ladder. `starts` and
-    `sources` let the ladder flood it again after a rip
-    (`pocket_still_closed`)."""
+    whether the flood leaves the pocket on the map as ripping its rippable
+    walls would leave it (each loses its routed result's tracks and vias;
+    its pads, stubs and input copper stay); only a pocket that opens has
+    its walls promoted by the rip ladder. `starts` and `sources` let the
+    ladder flood it again after a rip (`pocket_still_closed`)."""
     target_xy: Tuple[float, float]
     flood: PocketFlood
     walls: Tuple  # BlockingInfo, ordered
@@ -198,10 +198,13 @@ def _rip_trial(trial, pcb_data, config, rip_ids, skip_object_ids,
                                 remove_net_obstacles_from_cache)
     skip = frozenset(skip_object_ids)
     for nid in sorted(rip_ids):
-        current = (net_obstacles_cache or {}).get(nid)
-        if current is None:
-            current = precompute_net_obstacles(pcb_data, nid, config)
-        remove_net_obstacles_from_cache(trial, current)
+        if net_obstacles_cache is None:
+            # No cache (a direct call): the map is taken to hold a fresh entry.
+            remove_net_obstacles_from_cache(
+                trial, precompute_net_obstacles(pcb_data, nid, config))
+        elif nid in net_obstacles_cache:
+            remove_net_obstacles_from_cache(trial, net_obstacles_cache[nid])
+        # (a cache without the net: rip_up_net unstamps nothing either)
         add_net_obstacles_from_cache(
             trial, precompute_net_obstacles(pcb_data, nid, config,
                                             skip_object_ids=skip))
@@ -308,26 +311,45 @@ def pocket_wall_blockers(failed_edge_blocking: Dict, obstacles, pcb_data, config
     return pockets
 
 
-def pocket_still_closed(pocket: Pocket, obstacles, pcb_data, config,
+class LiftedMap:
+    """A clone of the ladder's post-rip map with the net's own-pad lift
+    applied, made on first use and shared by every re-flood after one failed
+    retry. Use as a context manager; the lift is released on exit."""
+
+    def __init__(self, obstacles, pcb_data, net_id: int):
+        self._src, self._pcb, self._net = obstacles, pcb_data, net_id
+        self._map = None
+        self._lift = None
+
+    def get(self):
+        if self._map is None:
+            from routing_context import ensure_own_pad_lift
+            self._map = self._src.clone()
+            self._lift = ensure_own_pad_lift(self._map, self._pcb, self._net)
+        return self._map
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        if self._map is not None:
+            from routing_context import release_own_pad_lift
+            release_own_pad_lift(self._map, self._net, self._lift)
+            self._map = None
+        return False
+
+
+def pocket_still_closed(pocket: Pocket, lifted: LiftedMap, config,
                         net_id: int) -> bool:
-    """Whether `pocket`'s target still floods closed on `obstacles` (the map
-    the rip ladder rebuilt after its latest rip), as pocket_wall_blockers
-    floods it: on a clone with the net's own-pad lift, at `search_margins`.
-    FORK DIVERGENCE (docs/fork-divergences.md, "Rip ladder: pocket walls
-    first"): the ladder stops ripping an opened pocket's walls."""
+    """Whether `pocket`'s target still floods closed on the ladder's post-rip
+    map, as pocket_wall_blockers floods it: with the net's own-pad lift
+    (`lifted`) and at `search_margins`. FORK DIVERGENCE
+    (docs/fork-divergences.md, "Rip ladder: pocket walls first"): the ladder
+    stops ripping an opened pocket's walls."""
     if not pocket.starts:
         return False
-    from routing_context import ensure_own_pad_lift, release_own_pad_lift
     forbidden = [i for i, c in enumerate(config.get_layer_costs()) if c < 0]
-    lifted = None
-    lift = None
-    try:
-        lifted = obstacles.clone()
-        lift = ensure_own_pad_lift(lifted, pcb_data, net_id)
-        return flood_pocket(lifted, pocket.starts, search_margins(config, net_id),
-                            int(config.max_probe_iterations),
-                            getattr(config, 'via_rung', 0), forbidden,
-                            pocket.sources) is not None
-    finally:
-        if lifted is not None:
-            release_own_pad_lift(lifted, net_id, lift)
+    return flood_pocket(lifted.get(), pocket.starts, search_margins(config, net_id),
+                        int(config.max_probe_iterations),
+                        getattr(config, 'via_rung', 0), forbidden,
+                        pocket.sources) is not None

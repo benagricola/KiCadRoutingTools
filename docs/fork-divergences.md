@@ -31,22 +31,24 @@
   failed retry each promoted region is flooded again from its recorded target
   and source cells, on the map the ladder rebuilt after its latest rip, with
   the own-pad lift and the same margins (pocket_walls.py
-  `pocket_still_closed`). A region that no longer closes is open: its boundary
-  nets not yet ripped are taken off the ladder, and the re-analysis does not
-  bring them back (phase3_routing.py `_drop_opened_pocket_walls`), unless a
-  net still blocks: it bounds any region (promoted or not) that still floods
-  closed, or the per-edge attribution of a failed edge of the retry (the
-  tighter probe side, as the ladder's first ranking attributes it) names it.
-  Openness is judged by the flood, not by the retry's edges: the ladder judges
-  a retry by its failed-edge count, which can stay put when a joined pad brings
-  a new failed edge with it, and an edge may not be tried at all (its MST
-  source did not join) or fail with an empty frontier and record no entry.
-  Measured on watchy: ripping /32K_P joined +3V3's U4 pad 20, the joined pad's
-  next edge failed, and the ladder ripped ACC_INT_1, the pocket's second wall;
-  with the BGA's other escape net ripped too, the victims could not re-route
-  and the tap was abandoned (open pairs 6 -> 9 at human widths). Judging
-  "joined" by the retry's unconnected pads instead read a pad whose edge was
-  never tried as still trapped and cost one pair at class widths.
+  `pocket_still_closed`; one lifted clone of that map serves every re-flood
+  after a retry, promoted regions first). A region that no longer closes is
+  open: its boundary nets not yet ripped are taken off the ladder, and the
+  re-analysis does not bring them back (phase3_routing.py
+  `_drop_opened_pocket_walls`), unless a net still blocks: it bounds any
+  region (promoted or not) that still floods closed, or the per-edge
+  attribution of a failed edge of the retry (the tighter probe side, as the
+  ladder's first ranking attributes it) names it. Openness is judged by the
+  flood, not by the retry's edges: the ladder judges a retry by its
+  failed-edge count, which can stay put when a joined pad brings a new failed
+  edge with it, and an edge may not be tried at all (its MST source did not
+  join) or fail with an empty frontier and record no entry. Measured on
+  watchy: ripping /32K_P joined +3V3's U4 pad 20, the joined pad's next edge
+  failed, and the ladder ripped ACC_INT_1, the pocket's second wall; with the
+  BGA's other escape net ripped too, the victims could not re-route and the
+  tap was abandoned (open pairs 6 -> 9 at human widths). Judging "joined" by
+  the retry's unconnected pads instead read a pad whose edge was never tried
+  as still trapped and cost one pair at class widths.
 - The boundary attribution calls blocking_analysis.py
   `analyze_frontier_blocking` with `record_history=False` (a fork keyword,
   default True). With it False the call charges nothing to the #590 history
@@ -59,9 +61,10 @@
   may neck down to (pocket_walls.py `search_margins`, mirroring the gate in
   single_ended_routing.py `_route_main_connection`): a power-wide net floods
   at its layer width, an impedance-width net at the nominal width when
-  KICAD_IMPEDANCE_NECKDOWN allows, otherwise the net's own width. Direction and path-local via restrictions
-  are omitted, making reachability conservative: those omissions can miss
-  a pocket but cannot create one. The flood runs on a clone of the map with
+  KICAD_IMPEDANCE_NECKDOWN allows, otherwise the net's own width.
+  Direction and path-local via restrictions are omitted, making
+  reachability conservative: those omissions can miss a pocket but cannot
+  create one. The flood runs on a clone of the map with
   the net's #908 own-pad lift applied, as the tap searches had it
   (single_ended_routing.py `route_multipoint_taps` releases the lift before
   the ladder runs); the caller's map is not mutated. A ladder entry whose
