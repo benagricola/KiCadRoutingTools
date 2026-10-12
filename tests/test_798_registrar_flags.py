@@ -151,7 +151,7 @@ def t_a_script_still_does_NOT_inherit_another_CLIs_flags():
     caps = k.capabilities()
     for token in ('route_planes.py:--net-clearances',
                   'route_planes.py:--track-width-floor',
-                  'repair_planes.py:--net-clearances',
+                  'repair_planes.py:--track-width-floor',
                   'route_diff.py:--track-width-floor'):
         assert k.missing(caps, [token]), \
             f'{token} does not exist on that CLI and must be reported missing'

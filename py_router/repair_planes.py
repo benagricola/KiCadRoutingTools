@@ -751,6 +751,37 @@ def auto_detect_zones(
 
 
 
+def named_clearances(pcb_data, by_name: dict, input_file: str, clearance: float) -> dict:
+    """{net id: mm} from a {net name: mm} map, each floored at the board's min_clearance as route.py floors its
+    --net-clearances (route.resolve_floored_clearances). FORK DIVERGENCE (docs/fork-divergences.md, plane repair for
+    a caller that tracks)."""
+    from list_nets import resolve_floored_clearances
+    by_id = {nid: float(by_name[n.name]) for nid, n in pcb_data.nets.items() if n.name in by_name}
+    return resolve_floored_clearances(input_file, clearance, by_id)[1]
+
+
+def named_pads(pcb_data, ends) -> set:
+    """id()s of the pads `ends` name, each {ref, pad} with "fp" (the footprint's KiCad uuid) when two footprints share
+    the reference, as connection ends name them (connections.resolve); an end naming no pad names none.
+    FORK DIVERGENCE (docs/fork-divergences.md, plane repair for a caller that tracks)."""
+    from connections import _base_ref
+    fp_keys: Dict[str, set] = {}
+    for key, fp in (getattr(pcb_data, 'footprints', None) or {}).items():
+        if getattr(fp, 'uuid', ''):
+            fp_keys.setdefault(fp.uuid, set()).add(key)
+    out = set()
+    for e in ends:
+        keys = None
+        if e.get('fp') is not None:
+            keys = {k for k in fp_keys.get(e['fp'], ()) if _base_ref(k) == _base_ref(e['ref'])}
+        for ps in pcb_data.pads_by_net.values():
+            for p in ps:
+                if p.pad_number == str(e['pad']) and (p.component_ref == e['ref'] if keys is None
+                                                      else p.component_ref in keys):
+                    out.add(id(p))
+    return out
+
+
 def repair_planes(
     input_file: str,
     output_file: str,
@@ -807,6 +838,13 @@ def repair_planes(
     # sub-run's own explicit settings. The #562 finalize passes its run's;
     # None (the standalone CLI) = batch_route's defaults.
     route_knobs: Optional[dict] = None,
+    # FORK DIVERGENCE (docs/fork-divergences.md, plane repair for a caller that tracks): a {net name: mm} clearance
+    # map as route.py's --net-clearances takes it (floored at the board's min_clearance the same way); the pads
+    # pad repair may tap, as connection ends ({ref, pad[, fp]}), None for every pad; and whether the guaranteed-join
+    # gate routes what is still split as a multipoint net (the caller routes it instead when False).
+    net_clearances_by_name: Optional[dict] = None,
+    pads: Optional[List[dict]] = None,
+    join_gate: bool = True,
 ) -> Tuple[int, int]:
     """
     Route between disconnected regions in power plane zones.
@@ -1013,6 +1051,11 @@ def repair_planes(
     # repair config, and forward the map to the reconnect sub-runs below --
     # those route from the OUTPUT file, whose sibling .kicad_pro may not exist
     # yet (same hazard as the #338 edge resolution).
+    if net_clearances is None and net_clearances_by_name is not None:
+        # FORK DIVERGENCE (docs/fork-divergences.md, plane repair for a caller that tracks): the caller's map, by
+        # name, floored at the board's min_clearance as route.py floors its --net-clearances.
+        net_clearances = named_clearances(pcb_data, net_clearances_by_name, input_file, clearance)
+        print(f"Loaded per-net clearances for {len(net_clearances)}/{len(pcb_data.nets)} nets.")
     if net_clearances is None and input_file and os.path.isfile(input_file):
         try:
             from list_nets import net_clearance_map_by_id
@@ -1443,6 +1486,11 @@ def repair_planes(
             if progress_callback:
                 progress_callback(0, 0, f"{net_name}: checking pad-plane connections...")
             unconnected = find_unconnected_plane_pads(pcb_data, net_id, net_zone_layers)
+            if pads is not None:
+                # FORK DIVERGENCE (docs/fork-divergences.md, plane repair for a caller that tracks): only the pads
+                # the caller names may be tapped.
+                _named = named_pads(pcb_data, pads)
+                unconnected = [u for u in unconnected if id(u[0]) in _named]
             total_pads_unconnected += len(unconnected)
             if not unconnected:
                 print(f"  Pad repair: all {net_name} pads reach the plane")
@@ -2345,7 +2393,7 @@ def repair_planes(
     # in-memory batch_route -- existing copper (fill, straps, barrels) is
     # terminal credit, so only the true gaps get MST edges. Then re-check
     # and report honestly.
-    if repair_pads and (return_results or not dry_run):
+    if repair_pads and join_gate and (return_results or not dry_run):
         try:
             from plane_fill_model import _CACHE_ATTR as _PFM_CACHE3
             if hasattr(pcb_data, _PFM_CACHE3):
@@ -3471,6 +3519,19 @@ Examples:
     # #489 §9: this step lays tap traces INTO pads and places repair vias, so it
     # needs the same teardrop switch route.py / route_diff.py / route_planes.py
     # have. GUI: the existing "Add teardrops" checkbox feeds it.
+    # FORK DIVERGENCE (docs/fork-divergences.md, plane repair for a caller that tracks)
+    parser.add_argument("--net-clearances", metavar="JSON", default=None,
+                        help="Per-net clearances, a JSON object net name -> mm, as route.py's --net-clearances "
+                             "takes them (floored at the board's min_clearance). Default: the board's net classes.")
+    parser.add_argument("--pads", metavar="JSON", default=None,
+                        help="Only these pads may be tapped: a JSON list of {ref, pad} (with fp, the footprint's "
+                             "uuid, when two footprints share the reference). Default: every pad of the net.")
+    parser.add_argument("--no-join-gate", action="store_true",
+                        help="Do not route what is still split after the taps and region joins as a multipoint "
+                             "net (the guaranteed-join gate); the caller routes it.")
+    parser.add_argument("--no-own-pad-lift", action="store_true",
+                        help="A footprint's own copper blocks every net, its own pads' nets included (route.py's "
+                             "--no-own-pad-lift).")
     parser.add_argument("--add-teardrops", action="store_true",
                         help="Add teardrop settings to all pads and vias in output file")
 
@@ -3608,6 +3669,17 @@ Examples:
     # GUI's (the planes tab's Cancel button); the CLI passes neither. There is
     # deliberately no wall-clock budget -- no result this tool produces may
     # depend on timing.
+    # FORK DIVERGENCE (docs/fork-divergences.md, plane repair for a caller that tracks)
+    _by_name = _pads = None
+    if args.net_clearances:
+        with open(args.net_clearances, encoding="utf-8") as _f:
+            _by_name = {str(k): float(v) for k, v in json.load(_f).items()}
+    if args.pads:
+        with open(args.pads, encoding="utf-8") as _f:
+            _pads = list(json.load(_f))
+    if args.no_own_pad_lift:
+        import check_drc as _cd_lift
+        _cd_lift.OWN_PAD_LIFT = False
     _rdp_result = repair_planes(
         input_file=args.input_file,
         output_file=args.output_file,
@@ -3644,7 +3716,10 @@ Examples:
         clamp_netclasses=args._clamp_netclasses,
         clearance_ceiling=args._clearance_ceiling,
         add_teardrops=args.add_teardrops,
-        same_net_pad_clearance=args.same_net_pad_clearance
+        same_net_pad_clearance=args.same_net_pad_clearance,
+        net_clearances_by_name=_by_name,
+        pads=_pads,
+        join_gate=not args.no_join_gate,
     )
 
     # Dead-end sweep + gap-snap on the repaired plane copper (issue #84), gated

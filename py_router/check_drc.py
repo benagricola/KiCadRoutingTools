@@ -896,6 +896,12 @@ def _graphic_pad_gap(g, pd):
                point_to_pad_distance(g.end_x, g.end_y, pd)) - g.width / 2.0
 
 
+#: FORK DIVERGENCE (docs/fork-divergences.md, own-pad lift off): False makes `graphic_own_pad_nets` lift nothing, so a
+#: footprint's own copper (an antenna, a tab) blocks every net, its own pads' nets included, in the generators and
+#: the checker alike. Set by route.py and repair_planes.py `--no-own-pad-lift`; upstream always lifts.
+OWN_PAD_LIFT = True
+
+
 def graphic_own_pad_nets(pcb_data):
     """`{id(graphic_segment): frozenset(net_ids)}` -- for each piece of copper
     a FOOTPRINT draws, the nets of that same footprint's pads it touches.
@@ -927,6 +933,8 @@ def graphic_own_pad_nets(pcb_data):
     less, which is the safe direction for a generator.
     """
     out = {}
+    if not OWN_PAD_LIFT:
+        return out
     fps = getattr(pcb_data, 'footprints', None) or {}
     for g in pcb_data.segments:
         if not getattr(g, 'graphic', False):

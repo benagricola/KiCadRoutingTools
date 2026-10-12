@@ -746,6 +746,8 @@ ROUTE_CLI_ONLY = {
     # FORK DIVERGENCE (docs/connections.md).
     '--connections': "placemat's per-connection routing; the GUI has no connection list",
     '--bus-nets': "placemat's stated bus; the GUI detects buses",
+    # FORK DIVERGENCE (docs/fork-divergences.md, own-pad lift off).
+    '--no-own-pad-lift': "placemat's pour joins; the GUI keeps the own-pad lift",
     # Files and bookkeeping: the GUI routes the LIVE board and keeps its
     # results in memory, so there is no file for these to name.
     '--output': "the output FILE path (it feeds chain pruning); the GUI "

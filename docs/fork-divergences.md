@@ -208,3 +208,31 @@ nets. Open or unattributed regions use the existing frontier-ranked ladder.
   raises `WidthPolicyRefusal` with a `code` and fields.
 - Why: placemat asks KRT for the effective widths of the nets it routes rather than re-deriving KRT's precedence.
 - Test: tests/test_nominal_width_policy.py.
+
+## Plane repair for a caller that tracks
+
+- Upstream: repair_planes.py taps every plane-net pad its own geometric test finds unjoined, then routes whatever is
+  still split as a multipoint net (the guaranteed-join gate). It takes the net-class clearances only, with no
+  per-net map on its command line. Its via map keeps a tap via's copper ring off foreign copper at the copper
+  clearance, and nothing holds the via's hole at the board's copper-to-hole floor. A footprint's own copper (an
+  antenna, a tab) stops blocking the nets of the pads it touches (`check_drc.graphic_own_pad_nets`), so a route
+  may cross it to reach such a pad.
+- Fork:
+  - `plane_obstacle_builder.via_reach`: in the via map, foreign tracks, pads and vias are kept off a new via by the
+    larger of its ring at the clearance and its hole at the board's hole clearance (`resolve_hole_clearance`).
+    This applies to every caller of `build_via_obstacle_map`, the in-run plane finalize included.
+  - `repair_planes.py --net-clearances JSON` takes a {net name: mm} map as route.py does, floored at the board's
+    `min_clearance` (`named_clearances`).
+  - `--pads JSON` lists the pads pad repair may tap, as `{ref, pad[, fp]}` connection ends (`named_pads`).
+  - `--no-join-gate` leaves what is still split after the taps and region joins to the caller.
+  - `--no-own-pad-lift` on repair_planes.py and route.py sets `check_drc.OWN_PAD_LIFT` False. A footprint's own
+    copper then blocks every net, in the generators and the checker.
+- Why: placemat joins a pour net's pads by via drops, then routes the groups still apart itself, one connection task
+  each, so it needs to:
+  - name the pads to tap;
+  - keep the repair from tracking the whole net;
+  - give the repair the capture's stated clearances.
+
+  On watchy, a tap via's hole stood 0.25 mm from a track where the board asks 0.254 mm. A GND track also crossed
+  AE1's netless antenna copper to reach AE1's GND pad, a short KiCad reports.
+- Test: tests/test_fork_plane_repair.py.

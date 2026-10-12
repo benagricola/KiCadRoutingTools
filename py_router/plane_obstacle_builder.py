@@ -402,6 +402,18 @@ def identify_target_pads(
     return target_pads
 
 
+def via_reach(config: GridRouteConfig, clearance: float, hole_clearance: float) -> float:
+    """How far from a new via's centre foreign copper must keep its edge: the via's copper ring at `clearance`, and
+    its drilled hole at `hole_clearance`, the board's copper-to-hole floor (KiCad's hole_clearance, which it grades on
+    a layer where the via has no copper of its own as well).
+
+    FORK DIVERGENCE (docs/fork-divergences.md, plane repair): upstream's via map keeps only the ring at the copper
+    clearance, so where the board's hole clearance exceeds clearance plus the annular ring, a tap via's hole stands
+    too close to a track or pad on another layer (watchy: hole_clearance 0.254 mm, a 0.6/0.4 via at 0.15 mm
+    clearance left 0.25 mm)."""
+    return max(config.via_size / 2 + clearance, config.via_drill / 2 + hole_clearance)
+
+
 def build_via_obstacle_map(
     pcb_data: PCBData,
     config: GridRouteConfig,
@@ -454,6 +466,9 @@ def build_via_obstacle_map(
 
     # Half grid step cushion to account for grid discretization.
     grid_cushion = config.grid_step / 2
+    # FORK DIVERGENCE (docs/fork-divergences.md, plane repair): the board's copper-to-hole floor, for via_reach.
+    from obstacle_map import resolve_hole_clearance
+    hole_clr = resolve_hole_clearance(pcb_data, config)
 
     # Add existing vias as obstacles (including same net - can't place a new via
     # too close to another). The via-to-via clearance is the EXISTING via's
@@ -475,7 +490,7 @@ def build_via_obstacle_map(
         _clr = config.stack_clearance(_clr)  # #498: barrels meet on every layer
         centers_by_size.setdefault((via.size, _clr), []).append(coord.to_grid(via.x, via.y))
     for (vsize, _clr), via_centers in centers_by_size.items():
-        via_via_expansion_mm = vsize / 2 + config.via_size / 2 + _clr + grid_cushion
+        via_via_expansion_mm = vsize / 2 + via_reach(config, _clr, hole_clr) + grid_cushion
         circle_offsets = _precompute_circle_offsets((via_via_expansion_mm / config.grid_step) ** 2)
         _batch_block_circles_via(obstacles, via_centers, circle_offsets)
     if verbose:
@@ -495,9 +510,9 @@ def build_via_obstacle_map(
         # Use actual segment width for clearance calculation (not config.track_width)
         # Include grid cushion for discretization; price the segment's net at its
         # netclass clearance (#434 cross-class).
-        seg_expansion_mm = (config.via_size / 2 + seg.width / 2
-                            + config.layer_clearance(  # #498: meet on seg.layer
-                                seg.layer, config.obstacle_clearance(seg.net_id))
+        seg_expansion_mm = (seg.width / 2
+                            + via_reach(config, config.layer_clearance(  # #498: meet on seg.layer
+                                seg.layer, config.obstacle_clearance(seg.net_id)), hole_clr)
                             + grid_cushion)
         # FFI batching (2026-08-14): accumulate the memoized capsule arrays
         # and stamp once after the loop -- concatenation preserves the exact
@@ -539,7 +554,8 @@ def build_via_obstacle_map(
             continue
         pad_clearance = same_net_pad_clearance if is_target_net else None
         for pad in pads:
-            _add_pad_via_obstacle(obstacles, pad, coord, config, clearance_override=pad_clearance)
+            _add_pad_via_obstacle(obstacles, pad, coord, config, clearance_override=pad_clearance,
+                                  hole_clearance=hole_clr if pad_clearance is None else 0.0)
             pad_count += 1
     # #962: the target net's solder-paste OPENINGS, at the same clearance its
     # pads get. The pad loop above sees the declared pad; the opening can be
@@ -616,11 +632,12 @@ def _block_custom_pad_polys(obstacles, pad, coord, margin, via_mode, layer_idx=N
 
 def _add_pad_via_obstacle(obstacles: GridObstacleMap, pad: Pad,
                            coord: GridCoord, config: GridRouteConfig,
-                           clearance_override: float = None):
+                           clearance_override: float = None, hole_clearance: float = 0.0):
     """Add a pad as via blocking obstacle using rectangular shape with rounded corners.
 
     clearance_override: if not None, use this edge-to-edge clearance instead of
         config.clearance (used for same-net pads when same_net_pad_clearance is set).
+    hole_clearance: the board's copper-to-hole floor, which the via's hole keeps off the pad (via_reach).
     """
     gx, gy = coord.to_grid(pad.global_x, pad.global_y)
     half_width = pad.size_x / 2
@@ -644,7 +661,7 @@ def _add_pad_via_obstacle(obstacles: GridObstacleMap, pad: Pad,
     if clearance_override is None:
         # A pad override REPLACES the resolved value (KiCad, measured).
         clearance = config.pad_override_clearance(clearance, pad)
-    margin = config.via_size / 2 + clearance + config.grid_step / 2
+    margin = via_reach(config, clearance, hole_clearance) + config.grid_step / 2
     if getattr(pad, 'polygons', None):
         _block_custom_pad_polys(obstacles, pad, coord, margin, via_mode=True)
         return

@@ -7355,6 +7355,11 @@ For differential pair routing, use route_diff.py:
                              "foreign higher-clearance net (POWER_HI 0.25 while routing a Default "
                              "0.15 group) is not under-blocked (cross-class via-via/DRC). The GUI "
                              "derives the same map from the board's live net classes.")
+    # FORK DIVERGENCE (docs/fork-divergences.md, own-pad lift off)
+    parser.add_argument("--no-own-pad-lift", action="store_true",
+                        help="A footprint's own copper (an antenna, a tab) blocks every net, its own pads' nets "
+                             "included: no route crosses it to reach a pad it touches. Default: the edges touching "
+                             "a pad stop blocking that pad's net (check_drc.graphic_own_pad_nets).")
 
     # Power net routing options
     parser.add_argument("--power-nets", nargs="*", default=[],
@@ -7636,6 +7641,10 @@ For differential pair routing, use route_diff.py:
     # negative rail (-12V, -5V) is read as an unknown option and argparse exits
     # 2 before this line's result is ever used.
     args = __import__("cli_nets").pin_dash_digit_values(parser).parse_args()
+    if args.no_own_pad_lift:
+        # FORK DIVERGENCE (docs/fork-divergences.md, own-pad lift off)
+        import check_drc as _cd_lift
+        _cd_lift.OWN_PAD_LIFT = False
     # #439: the PRESENCE of --clearance is the clamp switch. Given -> it is the
     # ceiling: non-Default classes are capped at min(class, --clearance) and the
     # output .kicad_pro clamps them to the routed floor. Omitted -> honor the
