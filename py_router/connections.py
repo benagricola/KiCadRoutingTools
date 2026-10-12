@@ -237,12 +237,13 @@ def judge_joined(pcb_data, tasks: List[Task]) -> None:
     least its width on every layer, else `joined_narrow` (D3 fallback: reported with the path, not routed)."""
     comps: Dict[int, _Components] = {}
     for t in tasks:
-        if t.status or t.apart:     # FORK DIVERGENCE (--connections "apart"): the caller's judgement stands
+        if t.status:
             continue
         if t.net_id not in comps:
             comps[t.net_id] = _Components(pcb_data, t.net_id)
-        if not measure(pcb_data, t, comps[t.net_id]):
-            continue
+        # measured all the same: the ends' copper components group tasks that share copper (choose_groups)
+        if not measure(pcb_data, t, comps[t.net_id]) or t.apart:
+            continue                # FORK DIVERGENCE (--connections "apart"): the caller's judgement stands
         under = any(w < t.widths.get(layer, 0.0) - _UNDER for layer, w in t.min_width_mm.items())
         t.status = 'joined_narrow' if under else 'joined_before'
 

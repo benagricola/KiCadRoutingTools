@@ -217,6 +217,11 @@ def t_apart():
     chosen = choose_groups(tasks)
     finish(pcb, tasks, chosen, routed=True)
     check('an apart task the call routed and finds joined is routed', tasks[0].status == 'routed', tasks[0])
+    shared = resolve([dict(task(('J1', '1'), ('C1', '1')), apart=True), dict(task(('U1', '1'), ('U1', '2')), apart=True)],
+                     pcb, ['F.Cu', 'B.Cu'], min_track=0.1)
+    judge_joined(pcb, shared)
+    chosen = choose_groups(shared)
+    check('apart tasks whose ends share copper are routed in one group', chosen.get(1) == shared, chosen)
     plain = resolve([task(('J1', '1'), ('U1', '1'), {"F.Cu": 0.2, "B.Cu": 0.2})], pcb, ['F.Cu', 'B.Cu'], 0.1)
     check('a task without apart echoes none', 'apart' not in plain[0].record(), plain[0].record())
     with tempfile.TemporaryDirectory() as d:

@@ -259,7 +259,8 @@ nets. Open or unattributed regions use the existing frontier-ranked ladder.
 
 - Upstream: no --connections at all (see "--connections" above). Within the fork, a task whose ends the router's own
   connectivity model already finds joined was always answered `joined_before` (or `joined_narrow`) and not routed.
-- Fork: a task may carry `"apart": true`. `judge_joined` leaves such a task open, `choose_groups` routes it, and
+- Fork: a task may carry `"apart": true`. `judge_joined` still measures it (its ends' copper components group
+  tasks that share copper) but leaves it open, `choose_groups` routes it, and
   `finish` answers it `routed` (the call routed and the ends end up joined) or `failed`, never `joined_before`.
   `read_file` refuses a non-boolean `apart` (`bad_task`). `connections.TASK_FIELDS` lists the fields, and
   krt_capabilities.py publishes them as `task_fields`.
