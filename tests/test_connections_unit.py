@@ -296,6 +296,14 @@ def t_apart_routed_only_by_copper():
     chosen = choose_groups(tasks)
     finish(pcb, tasks, chosen, routed=True)
     check('joined by a track it is routed', tasks[0].status == 'routed' and not tasks[0].pour_only, tasks[0])
+    # the improvement gate shipped the input board instead: measured again on it, the task is failed and says why
+    reverted = _poured()
+    tasks[0].status, tasks[0].reverted = None, True
+    finish(reverted, tasks, chosen, routed=True)
+    attach_evidence(tasks, {})
+    check('an apart task whose copper the gate reverted is failed',
+          tasks[0].status == 'failed' and (tasks[0].evidence or {}).get('diagnosis') == 'reverted_by_improvement_gate',
+          tasks[0])
 
 
 def t_apart_published():

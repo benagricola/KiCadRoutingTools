@@ -7122,6 +7122,25 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                     from pcb_io_utils import passthrough_copy as _pt600
                     _pt600(input_file, output_file)
                 batch_route._improvement_gate_reverted = True
+                # FORK DIVERGENCE (docs/fork-divergences.md, --connections "apart"): the records were written before
+                # the gate, on the board it has just thrown away. An apart task is routed only when the SHIPPED board's
+                # copper joins its ends, so measure the apart tasks again on it and rewrite the summary.
+                if (json_out and _conn_tasks is not None and any(t.apart for t in _conn_tasks)
+                        and os.path.isfile(json_out)):
+                    try:
+                        from route_summary import write_summary_file as _wsf_rev
+                        with open(json_out, encoding="utf-8") as _jf_rev:
+                            _doc_rev = json.load(_jf_rev)
+                        for _t_rev in _conn_tasks:
+                            if _t_rev.apart and _t_rev.status == 'routed':
+                                _t_rev.status, _t_rev.reverted = None, True
+                        _doc_rev['connections'] = _conn_records(
+                            parse_kicad_pcb(output_file), routed=True,
+                            net_evidence=_doc_rev.get('net_evidence'))
+                        _wsf_rev(json_out, _doc_rev)
+                    except Exception as _re_rev:                  # noqa: BLE001
+                        print(f"  WARNING: --connections records not re-measured after the revert "
+                              f"({type(_re_rev).__name__}: {_re_rev})")
                 _action = (f"REVERTED {output_file} to the input board (the "
                            f"pre-rip board is the better artifact). " + _why)
             else:

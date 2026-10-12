@@ -62,6 +62,7 @@ class Task:
     # is routed and comes back routed or failed.
     apart: bool = False
     pour_only: bool = False      # apart: the router's model joins the ends through a pour, but no copper path does
+    reverted: bool = False       # apart: routed, then the improvement gate shipped the input board instead
 
     def record(self) -> dict:
         path = None
@@ -425,7 +426,9 @@ def attach_evidence(tasks: List[Task], net_evidence: dict, names: Optional[dict]
             t.evidence = copy.deepcopy(net_evidence.get(t.net) or EMPTY)
             for b in t.evidence.get("blocked_by") or ():
                 b["net"] = names.get(b.get("net"), b.get("net"))
-            if t.pour_only:         # FORK DIVERGENCE (--connections "apart")
+            if t.reverted:          # FORK DIVERGENCE (--connections "apart")
+                t.evidence.update(scope="task", diagnosis="reverted_by_improvement_gate")
+            elif t.pour_only:       # FORK DIVERGENCE (--connections "apart")
                 t.evidence.update(scope="task", diagnosis="joined_by_pour_only")
         elif t.status == 'joined_narrow':
             narrow = [{"layer": s.layer, "start": [s.start_x, s.start_y], "end": [s.end_x, s.end_y],

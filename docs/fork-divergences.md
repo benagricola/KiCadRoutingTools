@@ -275,5 +275,8 @@ nets. Open or unattributed regions use the existing frontier-ranked ladder.
 - Routed only by copper: `finish` answers an apart task `routed` only when copper alone joins its ends. Otherwise it
   answers `failed`. When the router's model joined the ends through the pour, the task's `pour_only` is set and its
   evidence carries `scope: task` and `diagnosis: joined_by_pour_only`.
+- After an improvement-gate revert: the records are written before the gate runs. When the gate ships the input board
+  instead, the apart tasks answered `routed` are measured again on that shipped board and the summary is rewritten.
+  Such a task becomes `failed`, with `diagnosis: reverted_by_improvement_gate`.
 - Test: tests/test_connections_unit.py (`t_apart`, `t_apart_drops_pour_credit`, `t_apart_routed_only_by_copper`,
   `t_apart_published`).
