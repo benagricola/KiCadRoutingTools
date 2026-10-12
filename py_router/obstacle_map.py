@@ -279,7 +279,8 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
                 # #498: the via meets this copper ON seg.layer, so a .kicad_dru
                 # rule for that layer replaces the net/class value.
                 seg_clearance = config.layer_clearance(seg.layer, _obstacle_clearance(seg.net_id))
-                via_block_mm = config.via_size / 2 + seg_width / 2 + seg_clearance + extra_clearance
+                via_block_mm = (config.via_size / 2 + seg_width / 2 + seg_clearance + extra_clearance
+                                + config.via_hole_raise(seg_clearance))  # FORK DIVERGENCE: via hole floor
                 # SPANS, like the main loop below: both producers feed
                 # _seg_via_batch and it is concatenated as one array, so a
                 # cell (N,2) here beside a span (N,3) there is a hard
@@ -310,7 +311,8 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
         trk_clearance = config.track_obstacle_clearance(seg.net_id, seg_clearance)
         expansion_mm = reserve_width / 2 + seg_width / 2 + trk_clearance + extra_clearance
         # For via blocking by segments: via half-size + segment half-width + clearance
-        via_block_mm = config.via_size / 2 + seg_width / 2 + seg_clearance + extra_clearance
+        via_block_mm = (config.via_size / 2 + seg_width / 2 + seg_clearance + extra_clearance
+                        + config.via_hole_raise(seg_clearance))  # FORK DIVERGENCE: via hole floor
         # FFI batching (2026-08-14 profiling): one Rust call per segment was
         # 7.5M crossings / ~90s across a rescue-heavy step. Accumulate the
         # (memoized, read-only) cell arrays and stamp once per build below --
@@ -2209,7 +2211,8 @@ def add_net_stubs_as_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
         # A track-scoped DRU rule RAISES the seg-vs-seg requirement only (#735).
         trk_clearance = config.track_obstacle_clearance(seg.net_id, seg_clearance)
         expansion_mm = reserve_width / 2 + seg_width / 2 + trk_clearance + extra_clearance
-        via_block_mm = config.via_size / 2 + seg_width / 2 + seg_clearance + extra_clearance
+        via_block_mm = (config.via_size / 2 + seg_width / 2 + seg_clearance + extra_clearance
+                        + config.via_hole_raise(seg_clearance))  # FORK DIVERGENCE: via hole floor
         _c = segment_blocked_cells_array(seg.start_x, seg.start_y,
                                          seg.end_x, seg.end_y,
                                          expansion_mm, coord.grid_step)
@@ -2285,7 +2288,8 @@ def add_diff_pair_own_stubs_as_obstacles(obstacles: GridObstacleMap, pcb_data: P
         # #498: a .kicad_dru layer rule REPLACES the pair clearance on seg.layer.
         seg_clearance = config.layer_clearance(seg.layer, config.clearance)
         expansion_mm = reserve_width / 2 + seg_width / 2 + seg_clearance + extra_clearance
-        via_block_mm = config.via_size / 2 + seg_width / 2 + seg_clearance + extra_clearance
+        via_block_mm = (config.via_size / 2 + seg_width / 2 + seg_clearance + extra_clearance
+                        + config.via_hole_raise(seg_clearance))  # FORK DIVERGENCE: via hole floor
         _add_segment_obstacle_with_exclusion(
             obstacles, seg, coord, layer_idx, exclude_grid_cells, expansion_mm, via_block_mm
         )
@@ -2665,7 +2669,8 @@ def add_segments_list_as_obstacles(obstacles: GridObstacleMap, segments: list,
             trk_clearance = config.track_obstacle_clearance(
                 getattr(seg, 'net_id', 0), seg_clearance)
             expansion_mm = reserve_width / 2 + seg_width / 2 + trk_clearance + extra_clearance
-            via_block_mm = config.via_size / 2 + seg_width / 2 + seg_clearance
+            via_block_mm = (config.via_size / 2 + seg_width / 2 + seg_clearance
+                            + config.via_hole_raise(seg_clearance))  # FORK DIVERGENCE: via hole floor
             _c = segment_blocked_cells_array(seg.start_x, seg.start_y,
                                              seg.end_x, seg.end_y,
                                              expansion_mm, coord.grid_step)
@@ -2737,7 +2742,8 @@ def remove_segments_list_from_obstacles(obstacles: GridObstacleMap, segments: li
         trk_clearance = config.track_obstacle_clearance(
             getattr(seg, 'net_id', 0), seg_clearance)
         expansion_mm = reserve_width / 2 + seg_width / 2 + trk_clearance + extra_clearance
-        via_block_mm = config.via_size / 2 + seg_width / 2 + seg_clearance
+        via_block_mm = (config.via_size / 2 + seg_width / 2 + seg_clearance
+                        + config.via_hole_raise(seg_clearance))  # FORK DIVERGENCE: via hole floor
 
         # Sweep item 2 (#625 follow-up): the arrays already exist -- stack a
         # layer column instead of per-row int() tuple appends (this runs on
@@ -3889,7 +3895,8 @@ def _add_pad_obstacle(obstacles: GridObstacleMap, pad, coord: GridCoord,
         expanded_layers = expand_pad_layers(pad.layers, config.layers)
         clr_groups = _clr_groups(expanded_layers)
         on_copper = any(l.endswith('.Cu') for l in expanded_layers)
-        via_margin = config.via_size / 2 + _via_clr(expanded_layers) + extra_clearance
+        via_margin = (config.via_size / 2 + _via_clr(expanded_layers) + extra_clearance
+                      + config.via_hole_raise(_via_clr(expanded_layers)))  # FORK DIVERGENCE: via hole floor
 
         def _emit(poly, m, via_pass, layer_idxs=None):
             gx_lo, gy_lo, nx, ny, inside, edist = _rasterize_polygon_box(poly, coord, m)
@@ -3972,7 +3979,8 @@ def _add_pad_obstacle(obstacles: GridObstacleMap, pad, coord: GridCoord,
 
     # Via blocking near pads - block vias if pad is on any copper layer
     if any(layer.endswith('.Cu') for layer in expanded_layers):
-        via_margin = config.via_size / 2 + _via_clr(expanded_layers) + extra_clearance
+        via_margin = (config.via_size / 2 + _via_clr(expanded_layers) + extra_clearance
+                      + config.via_hole_raise(_via_clr(expanded_layers)))  # FORK DIVERGENCE: via hole floor
         via_cells = pad_blocked_cells_array(gx, gy, half_width, half_height, via_margin,
                                             config.grid_step, corner_radius, corner_buffer,
                                             off_x, off_y, rotation_deg=pad.rect_rotation)
@@ -4017,7 +4025,7 @@ def _pad_via_keepout_cells(pad, coord: GridCoord, config: GridRouteConfig,
     else:
         corner_radius = 0
     corner_buffer = coord.grid_step * 0.75 if extra_clearance > 0 else None
-    via_margin = config.via_size / 2 + clearance + extra_clearance
+    via_margin = config.via_size / 2 + clearance + extra_clearance + config.via_hole_raise(clearance)  # FORK DIVERGENCE: via hole floor
     return pad_blocked_cells_array(gx, gy, half_width, half_height, via_margin,
                                    config.grid_step, corner_radius, corner_buffer,
                                    off_x, off_y, rotation_deg=pad.rect_rotation)

@@ -236,3 +236,21 @@ nets. Open or unattributed regions use the existing frontier-ranked ladder.
   On watchy, a tap via's hole stood 0.25 mm from a track where the board asks 0.254 mm. A GND track also crossed
   AE1's netless antenna copper to reach AE1's GND pad, a short KiCad reports.
 - Test: tests/test_fork_plane_repair.py.
+
+## Via hole floor
+
+- Upstream: the router's via keep-out (obstacle_map.py and obstacle_cache.py, for tracks and pads, base map and
+  per-net caches alike) holds a new via's copper ring at the clearance from foreign copper. The board's
+  copper-to-hole floor (`resolve_hole_clearance`) is applied only to NPTH walls (#1038, #505). Where that floor
+  exceeds the clearance plus the via's annular ring, a routed via's hole lands inside it. On watchy, a 0.6/0.4 via
+  at clearance 0.15 left 0.250 mm hole-to-track where the board asks 0.254 mm. Measured: the ring sat exactly at
+  0.15, so the rule is missing; the grid did not cause it.
+- Fork: `GridRouteConfig.via_hole_floor` is the board's floor, set in route.py, route_diff.py and repair_planes.py
+  from `resolve_hole_clearance`. Every via keep-out against a foreign track or pad adds
+  `GridRouteConfig.via_hole_raise(clearance)`, so the hole's edge is max(clearance, floor) from the copper's edge.
+  This applies in the base map, the per-net caches and their removal twins, the plane via map, and its sync twin.
+  The raise is exactly 0.0 when the floor is not above the clearance, so a board declaring nothing is unchanged to
+  the bit. Via-to-via keep-outs are not changed.
+- Why: placemat judges each phase on KiCad's DRC, and KiCad grades hole_clearance.
+- Test: tests/test_fork_plane_repair.py (`test_a_routed_via_keeps_its_hole_off_a_foreign_track...`,
+  `test_via_hole_raise_is_exactly_nothing...`, `test_a_board_declaring_no_hole_floor_gets_the_same_route_map`).

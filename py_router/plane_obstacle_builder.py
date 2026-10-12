@@ -411,7 +411,7 @@ def via_reach(config: GridRouteConfig, clearance: float, hole_clearance: float) 
     clearance, so where the board's hole clearance exceeds clearance plus the annular ring, a tap via's hole stands
     too close to a track or pad on another layer (watchy: hole_clearance 0.254 mm, a 0.6/0.4 via at 0.15 mm
     clearance left 0.25 mm)."""
-    return max(config.via_size / 2 + clearance, config.via_drill / 2 + hole_clearance)
+    return config.via_size / 2 + clearance + config.via_hole_raise(clearance, hole_clearance)
 
 
 def build_via_obstacle_map(
@@ -510,9 +510,10 @@ def build_via_obstacle_map(
         # Use actual segment width for clearance calculation (not config.track_width)
         # Include grid cushion for discretization; price the segment's net at its
         # netclass clearance (#434 cross-class).
-        seg_expansion_mm = (seg.width / 2
-                            + via_reach(config, config.layer_clearance(  # #498: meet on seg.layer
-                                seg.layer, config.obstacle_clearance(seg.net_id)), hole_clr)
+        _seg_clr = config.layer_clearance(  # #498: meet on seg.layer
+            seg.layer, config.obstacle_clearance(seg.net_id))
+        seg_expansion_mm = (config.via_size / 2 + seg.width / 2 + _seg_clr
+                            + config.via_hole_raise(_seg_clr, hole_clr)  # FORK DIVERGENCE: via hole floor
                             + grid_cushion)
         # FFI batching (2026-08-14): accumulate the memoized capsule arrays
         # and stamp once after the loop -- concatenation preserves the exact

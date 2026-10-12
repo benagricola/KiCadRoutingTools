@@ -202,6 +202,10 @@ class GridRouteConfig:
     # check_drc already read min_hole_clearance, so on a board declaring 0.25 the
     # router would happily route into a band its own checker then flagged.
     hole_clearance: float = 0.0
+    # FORK DIVERGENCE (docs/fork-divergences.md, via hole floor): the board's copper-to-hole floor
+    # (obstacle_map.resolve_hole_clearance), which a new via's HOLE keeps off foreign tracks and pads through
+    # via_hole_raise. 0.0 (a board declaring nothing) leaves every via keep-out as upstream's.
+    via_hole_floor: float = 0.0
     max_turn_angle: float = 180.0  # Max cumulative turn angle (degrees) before reset, to prevent U-turns
     # Power-tap neck-down (issue #72): when a wide power-net tap edge fails,
     # retry it at the layer's default track width. The narrow neck extends
@@ -472,6 +476,17 @@ class GridRouteConfig:
         if not self.layer_clearances:
             return fallback
         return max([fallback] + list(self.layer_clearances.values()))
+
+    def via_hole_raise(self, clearance: float, hole_floor: Optional[float] = None) -> float:
+        """How much farther than its ring at `clearance` a new via's centre must keep from foreign copper so that its
+        hole's edge is max(clearance, hole floor) from that copper's edge: max(0, via_drill/2 + floor - via_size/2 -
+        clearance), with floor = `hole_floor` or via_hole_floor. Exactly 0.0 when the floor is not above the
+        clearance, so a board declaring no floor keeps upstream's keep-outs to the bit.
+        FORK DIVERGENCE (docs/fork-divergences.md, via hole floor)."""
+        floor = self.via_hole_floor if hole_floor is None else hole_floor
+        if floor <= clearance:
+            return 0.0
+        return max(0.0, self.via_drill / 2 + floor - self.via_size / 2 - clearance)
 
     def obstacle_clearance(self, net_id: int) -> float:
         """KiCad cross-class clearance for an obstacle belonging to `net_id`.

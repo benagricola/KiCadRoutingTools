@@ -764,6 +764,9 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         print(f"Same-net pad via clearance {_snpc581:g}mm (from {_snpc_src}, "
               f"#581): vias stay off same-net pads")
     config = GridRouteConfig(**config_kwargs)
+    # FORK DIVERGENCE (docs/fork-divergences.md, via hole floor), as route.py.
+    from obstacle_map import resolve_hole_clearance as _rhc_via
+    config.via_hole_floor = _rhc_via(pcb_data, config)
 
     # Find differential pairs from all provided nets
     diff_pairs: Dict[str, DiffPairNet] = find_differential_pairs(pcb_data, net_names)

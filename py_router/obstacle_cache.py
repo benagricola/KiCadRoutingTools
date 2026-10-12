@@ -744,7 +744,8 @@ def precompute_net_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
         # true perpendicular clearance, so off-grid / diagonal tracks are covered.
         expansion_mm_by_layer[layer_name] = max(coord.grid_step, expansion_mm)
         # Segment via-block: future ROUTE via (config.via_size) near this net's copper.
-        via_block_mm = config.via_size / 2 + layer_width / 2 + clr_l + extra_clearance
+        via_block_mm = (config.via_size / 2 + layer_width / 2 + clr_l + extra_clearance
+                        + config.via_hole_raise(clr_l))  # FORK DIVERGENCE: via hole floor
         via_block_mm_by_layer[layer_name] = via_block_mm
 
     # Process segments. Keep-out from the segment's ACTUAL width in BOTH
@@ -773,7 +774,8 @@ def precompute_net_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
                     else config.track_width
                 via_block_mm = (config.via_size / 2 + seg_w / 2
                                 + config.layer_clearance(seg.layer, obs_clearance)  # #498
-                                + extra_clearance)
+                                + extra_clearance
+                                + config.via_hole_raise(config.layer_clearance(seg.layer, obs_clearance)))  # FORK DIVERGENCE: via hole floor
                 if getattr(seg, 'area_fill', False):
                     _vs = rect_blocked_spans(seg.start_x, seg.start_y, seg.end_x, seg.end_y,
                                              via_block_mm - seg_w / 2, via_block_mm, coord.grid_step)
@@ -796,7 +798,8 @@ def precompute_net_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
             expansion_mm = max(coord.grid_step,
                                own_half + _trk_l
                                + config.route_reserve_width(seg.layer) / 2 + extra_clearance)
-            via_block_mm = config.via_size / 2 + own_half + _clr_l + extra_clearance
+            via_block_mm = (config.via_size / 2 + own_half + _clr_l + extra_clearance
+                            + config.via_hole_raise(_clr_l))  # FORK DIVERGENCE: via hole floor
         _collect_segment_obstacles(seg, coord, layer_idx, expansion_mm,
                                    blocked_cell_spans_set, blocked_via_spans_set,
                                    via_block_mm)
@@ -1108,7 +1111,8 @@ def _collect_pad_obstacles(pad, coord: GridCoord, layer_map: Dict[str, int],
         expanded_layers = expand_pad_layers(pad.layers, config.layers)
         clr_groups = _clr_groups(expanded_layers)
         on_copper = any(l.endswith('.Cu') for l in expanded_layers)
-        via_margin = config.via_size / 2 + _via_clr(expanded_layers) + config.grid_step / 2
+        via_margin = (config.via_size / 2 + _via_clr(expanded_layers) + config.grid_step / 2
+                      + config.via_hole_raise(_via_clr(expanded_layers)))  # FORK DIVERGENCE: via hole floor
         for poly in pad_polys:
             for g_clr, g_idxs in clr_groups.items():
                 margin = config.track_width / 2 + g_clr + extra_clearance
@@ -1172,7 +1176,8 @@ def _collect_pad_obstacles(pad, coord: GridCoord, layer_map: Dict[str, int],
     # Via blocking around pads
     if any(layer.endswith('.Cu') for layer in expanded_layers):
         # Add half grid step buffer to account for grid quantization errors
-        via_margin = config.via_size / 2 + _via_clr(expanded_layers) + config.grid_step / 2
+        via_margin = (config.via_size / 2 + _via_clr(expanded_layers) + config.grid_step / 2
+                      + config.via_hole_raise(_via_clr(expanded_layers)))  # FORK DIVERGENCE: via hole floor
         blocked_vias.append(pad_blocked_cells_array(gx, gy, half_width, half_height,
                                                     via_margin, config.grid_step, corner_radius,
                                                     off_x=off_x, off_y=off_y,
@@ -1416,6 +1421,10 @@ def precompute_via_placement_obstacles(
     # #543: mirror the builders' cross-class pricing (see exclude_net_id above).
     _own = exclude_net_id is not None and net_id == exclude_net_id
     obs_clr = config.clearance if _own else config.obstacle_clearance(net_id)
+    # FORK DIVERGENCE (docs/fork-divergences.md, via hole floor): the board's hole floor, as build_via_obstacle_map
+    # reads it, so a removal unstamps exactly what the build stamped.
+    from obstacle_map import resolve_hole_clearance
+    _hole_floor = resolve_hole_clearance(pcb_data, config)
 
     # Collect blocked positions as numpy chunks (one per segment/via stamp), then
     # concatenate. Duplicate counts are preserved - the obstacle maps are REFERENCE
@@ -1438,8 +1447,10 @@ def precompute_via_placement_obstacles(
         # Via map: capsule at via_size/2 + seg/2 + clearance + cushion (== _add_segment_via_obstacle).
         # #543: the net's class clearance under the seg's layer rule (#434/#498),
         # exactly as build_via_obstacle_map prices this segment.
-        via_margin = (config.via_size / 2 + seg.width / 2
-                      + config.layer_clearance(seg.layer, obs_clr) + grid_cushion)
+        _seg_clr = config.layer_clearance(seg.layer, obs_clr)
+        via_margin = (config.via_size / 2 + seg.width / 2 + _seg_clr
+                      + config.via_hole_raise(_seg_clr, _hole_floor)  # FORK DIVERGENCE: via hole floor
+                      + grid_cushion)
         _fill = getattr(seg, 'area_fill', False)
         if _fill:
             via_chunks.append(rect_blocked_cells_array(

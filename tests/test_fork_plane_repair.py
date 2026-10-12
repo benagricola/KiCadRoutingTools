@@ -115,6 +115,41 @@ def test_the_new_flags_are_parsed_and_listed():
     assert '--no-own-pad-lift' in flags['route.py']
 
 
+
+def test_via_hole_raise_is_exactly_nothing_when_the_floor_is_not_above_the_clearance():
+    """Raise-only: a board declaring no hole floor keeps every via keep-out to the bit."""
+    cfg = GridRouteConfig(via_size=0.6, via_drill=0.4, clearance=0.15)
+    assert cfg.via_hole_raise(0.15) == 0.0 and cfg.via_hole_raise(0.15, 0.15) == 0.0
+    cfg.via_hole_floor = 0.254
+    assert abs(cfg.via_hole_raise(0.15) - 0.004) < 1e-12        # 0.2 + 0.254 - 0.3 - 0.15
+    assert cfg.via_hole_raise(0.3) == 0.0
+
+
+def _route_map(floor):
+    from obstacle_map import build_base_obstacle_map
+    track = Segment(start_x=-0.5, start_y=0.0, end_x=0.5, end_y=0.0, width=0.2, layer='In1.Cu', net_id=2)
+    pcb = _board(segments=[track])
+    cfg = GridRouteConfig(via_size=0.6, via_drill=0.4, clearance=0.15, grid_step=0.002, board_edge_clearance=0.0,
+                          layers=['F.Cu', 'In1.Cu', 'B.Cu'])
+    cfg.via_hole_floor = floor
+    return build_base_obstacle_map(pcb, cfg, [1])
+
+
+def test_a_routed_via_keeps_its_hole_off_a_foreign_track_at_the_boards_hole_clearance():
+    """watchy: route.py placed a 0.6/0.4 via 0.250 mm hole-to-track from a BTN3 In1.Cu track where the board asks
+    0.254. With the board's floor, the router's via keep-out holds the hole at it."""
+    coord = GridCoord(0.002)
+    gx, gy = coord.to_grid(0.0, 0.552)          # ring 0.152 off the track, hole 0.252
+    assert not _route_map(0.0).is_via_blocked(gx, gy)
+    assert _route_map(0.254).is_via_blocked(gx, gy)
+
+
+def test_a_board_declaring_no_hole_floor_gets_the_same_route_map():
+    coord = GridCoord(0.002)
+    a, b = _route_map(0.0), _route_map(0.1)     # a floor at or under the clearance raises nothing
+    for y in range(240, 320):
+        assert a.is_via_blocked(0, y) == b.is_via_blocked(0, y)
+
 if __name__ == '__main__':
     failed = []
     for name, fn in sorted((n, f) for n, f in globals().items() if n.startswith('test_') and callable(f)):

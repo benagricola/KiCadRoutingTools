@@ -993,6 +993,9 @@ def repair_planes(
         board_edge_clearance=board_edge_clearance,
         ripup_blocker_select=ripup_blocker_select
     )
+    # FORK DIVERGENCE (docs/fork-divergences.md, via hole floor), as route.py.
+    from obstacle_map import resolve_hole_clearance as _rhc_via
+    config.via_hole_floor = _rhc_via(pcb_data, config)
     # #658: the finalize/repair legs previously routed with UNIFORM layer
     # costs -- the chain's --layer-costs never reached this engine, so
     # welds/taps freely traveled layers the whole run priced up (measured:
