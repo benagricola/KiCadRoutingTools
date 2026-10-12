@@ -236,6 +236,68 @@ def t_apart():
         check('an apart that is not a boolean is refused bad_task', got == ('bad_task', {'index': 0}), got)
 
 
+def _poured():
+    """board() with a PWR zone on F.Cu over J1.1, U1.1 and U1.2: the router's model joins them through the pour."""
+    from kicad_parser import Zone
+    pcb = board()
+    pcb.zones.append(Zone(net_id=1, net_name='PWR', layer='F.Cu', polygon=[(-1, -1), (11, -1), (11, 1.5), (-1, 1.5)]))
+    return pcb
+
+
+def t_apart_drops_pour_credit():
+    """FORK DIVERGENCE (docs/fork-divergences.md, --connections "apart"): a group with an apart task routes with no
+    pour credit (the net's zones move to the private net, its components are copper alone); a group without one is
+    split exactly as before."""
+    from connections import resolve, judge_joined, choose_groups, split_nets
+    plain = _poured()
+    tasks = resolve([task(('J1', '1'), ('C1', '1'))], plain, ['F.Cu', 'B.Cu'], min_track=0.1)
+    judge_joined(plain, tasks)
+    private = split_nets(plain, choose_groups(tasks))
+    check('without apart the zone stays on the net', plain.zones[0].net_id == 1, plain.zones[0])
+    check('without apart the pads the zone joins to an end stay on the net',
+          {(p.component_ref, p.pad_number) for p in plain.pads_by_net[1]}
+          == {('J1', '1'), ('U1', '1'), ('U1', '2'), ('C1', '1')}, plain.pads_by_net[1])
+    false = _poured()
+    tasks = resolve([dict(task(('J1', '1'), ('C1', '1')), apart=False)], false, ['F.Cu', 'B.Cu'], min_track=0.1)
+    judge_joined(false, tasks)
+    split_nets(false, choose_groups(tasks))
+    check('apart false splits exactly as no apart', [(p.component_ref, p.pad_number, p.net_id) for ps in
+          false.pads_by_net.values() for p in ps] == [(p.component_ref, p.pad_number, p.net_id) for ps in
+          plain.pads_by_net.values() for p in ps] and [z.net_id for z in false.zones] == [z.net_id for z in plain.zones])
+    apart = _poured()
+    tasks = resolve([dict(task(('J1', '1'), ('C1', '1')), apart=True)], apart, ['F.Cu', 'B.Cu'], min_track=0.1)
+    judge_joined(apart, tasks)
+    private = split_nets(apart, choose_groups(tasks))
+    check('with apart the zone moves to the private net', apart.zones[0].net_id == private[1], apart.zones[0])
+    check('with apart only the ends stay on the net (no pour joins them to others)',
+          {(p.component_ref, p.pad_number) for p in apart.pads_by_net[1]} == {('J1', '1'), ('C1', '1')},
+          apart.pads_by_net[1])
+
+
+def t_apart_routed_only_by_copper():
+    """An apart task the router's model joins through the pour, with no copper path between its ends, is failed with
+    the diagnosis joined_by_pour_only; joined by a track, it is routed."""
+    from connections import resolve, judge_joined, choose_groups, finish, attach_evidence
+    pcb = _poured()
+    tasks = resolve([dict(task(('J1', '1'), ('U1', '1'), {"F.Cu": 0.2, "B.Cu": 0.2}), apart=True)], pcb,
+                    ['F.Cu', 'B.Cu'], min_track=0.1)
+    judge_joined(pcb, tasks)
+    chosen = choose_groups(tasks)
+    finish(pcb, tasks, chosen, routed=True)
+    attach_evidence(tasks, {})
+    check('joined only through the pour is failed', tasks[0].status == 'failed' and tasks[0].pour_only, tasks[0])
+    check('its evidence says the router took the pour for the join',
+          (tasks[0].evidence or {}).get('diagnosis') == 'joined_by_pour_only', tasks[0].evidence)
+    pcb = _poured()
+    pcb.segments.append(make_seg(0, 0, 10, 0, width=0.2, net_id=1))
+    tasks = resolve([dict(task(('J1', '1'), ('U1', '1'), {"F.Cu": 0.2, "B.Cu": 0.2}), apart=True)], pcb,
+                    ['F.Cu', 'B.Cu'], min_track=0.1)
+    judge_joined(pcb, tasks)
+    chosen = choose_groups(tasks)
+    finish(pcb, tasks, chosen, routed=True)
+    check('joined by a track it is routed', tasks[0].status == 'routed' and not tasks[0].pour_only, tasks[0])
+
+
 def t_apart_published():
     import subprocess
     out = subprocess.run([sys.executable, os.path.join(ROOT, 'krt_capabilities.py')], capture_output=True, text=True,
@@ -246,6 +308,8 @@ def t_apart_published():
 
 if __name__ == '__main__':
     t_apart()
+    t_apart_drops_pour_credit()
+    t_apart_routed_only_by_copper()
     t_apart_published()
     t_refusals()
     t_fp()

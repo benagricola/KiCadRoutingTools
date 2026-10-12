@@ -21,7 +21,10 @@ A JSON list of tasks:
   connectivity (KiCad's, for placemat). Such a task is never answered `joined_before` or `joined_narrow` from the
   router's model, which can count a pour island as joining pads that KiCad's fill leaves apart. It is routed and
   comes back `routed` or `failed`, with the usual evidence, and its record carries `"apart": true`. A value that is
-  not a boolean is refused (`bad_task`). `krt_capabilities.py` lists the field under `task_fields`.
+  not a boolean is refused (`bad_task`). `krt_capabilities.py` lists the field under `task_fields`. A group with an
+  apart task routes with no pour credit: the net's zones are set aside for the call, so the route joins the ends by
+  copper. It is `routed` only when copper joins them. A task the router's model joined only through the pour is
+  `failed`, with evidence `diagnosis: joined_by_pour_only`.
 - A file that is not a list, or a task with a missing or wrongly typed field, is refused before the board is read
   (exit 2, naming the task index).
 - `--connections` sets the call's nets to the task nets. It refuses `--nets`, positional net patterns, `--component`,

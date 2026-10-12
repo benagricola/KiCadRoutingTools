@@ -61,6 +61,7 @@ class Task:
     # KiCad's own connectivity), so the call never answers joined_before or joined_narrow from its own model; the task
     # is routed and comes back routed or failed.
     apart: bool = False
+    pour_only: bool = False      # apart: the router's model joins the ends through a pour, but no copper path does
 
     def record(self) -> dict:
         path = None
@@ -170,11 +171,13 @@ class _Components:
     records every union as an edge, so a fresh union-find over the edges gives one root space for pads (by
     pad_index_repr), segments (point ids 2i and 2i+1), vias (via_index_repr) and zones (zone_index_repr)."""
 
-    def __init__(self, pcb_data, net_id):
+    def __init__(self, pcb_data, net_id, zones: bool = True):
+        """`zones` False leaves the net's zones out: components joined by copper alone (FORK DIVERGENCE,
+        --connections "apart")."""
         from check_connected import check_net_connectivity
         self.segs = [s for s in pcb_data.segments if s.net_id == net_id]
         self.vias = [v for v in pcb_data.vias if v.net_id == net_id]
-        self.zones = [z for z in pcb_data.zones if z.net_id == net_id]
+        self.zones = [z for z in pcb_data.zones if z.net_id == net_id] if zones else []
         self.pads = list(pcb_data.pads_by_net.get(net_id, []))
         res = check_net_connectivity(net_id, self.segs, self.vias, self.pads, self.zones,
                                      tolerance=0.02, return_graph=True, pcb_data=pcb_data)
@@ -290,7 +293,11 @@ def split_nets(pcb_data, chosen: Dict[int, List[Task]], also: Iterable[int] = ()
     names = getattr(pcb_data, 'net_id_to_name', None)
     for nid in list(dict.fromkeys(list(chosen) + [n for n in also if n is not None])):
         group = chosen.get(nid) or []
-        comps = _Components(pcb_data, nid)
+        # FORK DIVERGENCE (docs/fork-divergences.md, --connections "apart"): a group with a task the caller judged
+        # apart routes with no pour credit: its components are copper alone, and the net's zones move to the private
+        # net (no credit there; a foreign zone is no routing obstacle), so the route must join the ends by copper.
+        copper_only = any(t.apart for t in group)
+        comps = _Components(pcb_data, nid, zones=not copper_only)
         keep = comps.roots(p for t in group for p in t.start_pads + t.end_pads)
         ends = {id(p) for t in group for p in t.start_pads + t.end_pads}
         pid = next_id
@@ -313,6 +320,10 @@ def split_nets(pcb_data, chosen: Dict[int, List[Task]], also: Iterable[int] = ()
         for item in list(comps.segs) + list(comps.vias) + list(comps.zones):
             if comps.root.get(id(item)) not in keep:
                 item.net_id = pid
+        if copper_only:
+            for z in pcb_data.zones:
+                if z.net_id == nid:
+                    z.net_id = pid
         private[nid] = pid
     pcb_data.connections_private = {**(getattr(pcb_data, 'connections_private', None) or {}), **private}
     pcb_data.connections_private_names = set(getattr(pcb_data, 'connections_private_names', None) or ()) | {
@@ -368,6 +379,7 @@ def _finish(pcb_after, tasks, chosen, routed):
         for p in ps:
             pads.setdefault((p.component_ref, p.pad_number), []).append(p)
     comps: Dict[int, _Components] = {}
+    copper: Dict[int, _Components] = {}       # copper alone, for the apart tasks
     in_group = {id(t) for g in chosen.values() for t in g}
     for t in tasks:
         if t.status == 'refused':
@@ -386,7 +398,13 @@ def _finish(pcb_after, tasks, chosen, routed):
             t.path = None
         if id(t) in in_group and t.status is None:
             if t.apart:             # FORK DIVERGENCE (--connections "apart"): never joined_before
-                t.status = 'routed' if routed and t.joined else 'failed'
+                # routed only when copper joins the ends; joined through the pour alone is the router's model, not
+                # copper it laid
+                if t.joined and nid not in copper:
+                    copper[nid] = _Components(pcb_after, nid, zones=False)
+                by_copper = bool(t.joined and copper[nid].roots(t.start_pads) & copper[nid].roots(t.end_pads))
+                t.pour_only = bool(t.joined and not by_copper)
+                t.status = 'routed' if routed and by_copper else 'failed'
             else:
                 t.status = ('routed' if routed else 'joined_before') if t.joined else 'failed'
 
@@ -407,6 +425,8 @@ def attach_evidence(tasks: List[Task], net_evidence: dict, names: Optional[dict]
             t.evidence = copy.deepcopy(net_evidence.get(t.net) or EMPTY)
             for b in t.evidence.get("blocked_by") or ():
                 b["net"] = names.get(b.get("net"), b.get("net"))
+            if t.pour_only:         # FORK DIVERGENCE (--connections "apart")
+                t.evidence.update(scope="task", diagnosis="joined_by_pour_only")
         elif t.status == 'joined_narrow':
             narrow = [{"layer": s.layer, "start": [s.start_x, s.start_y], "end": [s.end_x, s.end_y],
                        "width": s.width, "need": t.widths[s.layer]}

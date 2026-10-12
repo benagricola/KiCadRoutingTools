@@ -267,4 +267,13 @@ nets. Open or unattributed regions use the existing frontier-ranked ladder.
 - Why: placemat judges a pour's pads by KiCad's connectivity, with the zones refilled. The router's fill model can
   count a pour island as joining pads that KiCad leaves apart (a starved thermal, a cut fill), and then it skipped
   the very task placemat sent it for those pads.
-- Test: tests/test_connections_unit.py (`t_apart`, `t_apart_published`).
+- No pour credit for an apart group: when a group holds an apart task, `split_nets` builds its components from copper
+  alone and moves the net's zones to the private net for the call. A foreign zone is no routing obstacle to KRT, so
+  this removes the zones' credit without walling the route in. The router then sees the ends apart and must join
+  them with copper; a pour's fill no longer counts as reaching the far end. A group with no apart task is split
+  exactly as before.
+- Routed only by copper: `finish` answers an apart task `routed` only when copper alone joins its ends. Otherwise it
+  answers `failed`. When the router's model joined the ends through the pour, the task's `pour_only` is set and its
+  evidence carries `scope: task` and `diagnosis: joined_by_pour_only`.
+- Test: tests/test_connections_unit.py (`t_apart`, `t_apart_drops_pour_credit`, `t_apart_routed_only_by_copper`,
+  `t_apart_published`).
