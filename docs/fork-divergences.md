@@ -254,3 +254,16 @@ nets. Open or unattributed regions use the existing frontier-ranked ladder.
 - Why: placemat judges each phase on KiCad's DRC, and KiCad grades hole_clearance.
 - Test: tests/test_fork_plane_repair.py (`test_a_routed_via_keeps_its_hole_off_a_foreign_track...`,
   `test_via_hole_raise_is_exactly_nothing...`, `test_a_board_declaring_no_hole_floor_gets_the_same_route_map`).
+
+## --connections "apart"
+
+- Upstream: no --connections at all (see "--connections" above). Within the fork, a task whose ends the router's own
+  connectivity model already finds joined was always answered `joined_before` (or `joined_narrow`) and not routed.
+- Fork: a task may carry `"apart": true`. `judge_joined` leaves such a task open, `choose_groups` routes it, and
+  `finish` answers it `routed` (the call routed and the ends end up joined) or `failed`, never `joined_before`.
+  `read_file` refuses a non-boolean `apart` (`bad_task`). `connections.TASK_FIELDS` lists the fields, and
+  krt_capabilities.py publishes them as `task_fields`.
+- Why: placemat judges a pour's pads by KiCad's connectivity, with the zones refilled. The router's fill model can
+  count a pour island as joining pads that KiCad leaves apart (a starved thermal, a cut fill), and then it skipped
+  the very task placemat sent it for those pads.
+- Test: tests/test_connections_unit.py (`t_apart`, `t_apart_published`).

@@ -20,6 +20,9 @@ from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional
 
 STATUSES = ('routed', 'failed', 'joined_before', 'joined_narrow', 'deferred', 'refused')
+# The fields a --connections task may carry (read_file). Published by krt_capabilities.py (`task_fields`) so a caller
+# can require one; FORK DIVERGENCE (docs/fork-divergences.md, --connections "apart") for "apart".
+TASK_FIELDS = ('net', 'from', 'to', 'widths', 'apart')
 REASONS = ('unknown_ref', 'unknown_fp', 'fp_ref_mismatch', 'unknown_pad', 'pad_not_on_net', 'layer_not_routed', 'layer_width_missing',
            'width_under_board_minimum')
 PRIVATE_PREFIX = '__connections_private_'
@@ -54,6 +57,10 @@ class Task:
     end_roots: set = field(default_factory=set)
     layers: list = field(default_factory=list)       # the layers the call routed
     evidence: Optional[dict] = None                  # failed and joined_narrow only (attach_evidence)
+    # FORK DIVERGENCE (docs/fork-divergences.md, --connections "apart"): the caller judged the two ends apart (by
+    # KiCad's own connectivity), so the call never answers joined_before or joined_narrow from its own model; the task
+    # is routed and comes back routed or failed.
+    apart: bool = False
 
     def record(self) -> dict:
         path = None
@@ -63,12 +70,13 @@ class Task:
         return {"net": self.net, "from": dict(self.start), "to": dict(self.end), "status": self.status,
                 "reason": self.reason, "joined": self.joined, "length_mm": self.length_mm,
                 "min_width_mm": dict(self.min_width_mm), "path": path,
-                "widths": dict(self.widths), "layers": list(self.layers), "evidence": self.evidence}
+                "widths": dict(self.widths), "layers": list(self.layers), "evidence": self.evidence,
+                **({"apart": True} if self.apart else {})}
 
 
 def read_file(path) -> list:
     """The parsed connections file: a JSON list of {net, from: {ref, pad[, fp]}, to: {ref, pad[, fp]},
-    widths: {layer: mm}}."""
+    widths: {layer: mm}[, apart: true|false]}."""
     with open(path, encoding='utf-8') as f:
         doc = json.load(f)
     if not isinstance(doc, list):
@@ -80,7 +88,8 @@ def read_file(path) -> list:
                       for k, v in t['widths'].items())
               and all(isinstance(t.get(k), dict) and isinstance(t[k].get('ref'), str)
                       and isinstance(t[k].get('pad'), str)
-                      and (t[k].get('fp') is None or isinstance(t[k]['fp'], str)) for k in ('from', 'to')))
+                      and (t[k].get('fp') is None or isinstance(t[k]['fp'], str)) for k in ('from', 'to'))
+              and isinstance(t.get('apart', False), bool))
         if not ok:
             raise ConnectionsError('bad_task', index=i)
     return doc
@@ -116,7 +125,7 @@ def resolve(raw: list, pcb_data, routing_layers, min_track: float) -> List[Task]
     out = []
     for i, t in enumerate(raw):
         task = Task(i, t['net'], _end(t['from']), _end(t['to']),
-                    {k: float(v) for k, v in t['widths'].items()})
+                    {k: float(v) for k, v in t['widths'].items()}, apart=bool(t.get('apart', False)))
         task.layers = list(routing_layers)
         out.append(task)
         nid = by_name.get(task.net)
@@ -228,7 +237,7 @@ def judge_joined(pcb_data, tasks: List[Task]) -> None:
     least its width on every layer, else `joined_narrow` (D3 fallback: reported with the path, not routed)."""
     comps: Dict[int, _Components] = {}
     for t in tasks:
-        if t.status:
+        if t.status or t.apart:     # FORK DIVERGENCE (--connections "apart"): the caller's judgement stands
             continue
         if t.net_id not in comps:
             comps[t.net_id] = _Components(pcb_data, t.net_id)
@@ -375,7 +384,10 @@ def _finish(pcb_after, tasks, chosen, routed):
         if t.status != 'joined_narrow':
             t.path = None
         if id(t) in in_group and t.status is None:
-            t.status = ('routed' if routed else 'joined_before') if t.joined else 'failed'
+            if t.apart:             # FORK DIVERGENCE (--connections "apart"): never joined_before
+                t.status = 'routed' if routed and t.joined else 'failed'
+            else:
+                t.status = ('routed' if routed else 'joined_before') if t.joined else 'failed'
 
 
 def records(tasks: List[Task]) -> list:

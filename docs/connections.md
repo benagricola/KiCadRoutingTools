@@ -17,6 +17,11 @@ A JSON list of tasks:
 - An end is every pad of that footprint with that number on the net (a number may repeat in a footprint).
 - `widths` names every layer the call routes on (`--layers`) and no other; a task that misses one or adds one is
   refused.
+- `apart` (optional, `true` or `false`): the caller has judged the two ends apart, by its own view of the board's
+  connectivity (KiCad's, for placemat). Such a task is never answered `joined_before` or `joined_narrow` from the
+  router's model, which can count a pour island as joining pads that KiCad's fill leaves apart. It is routed and
+  comes back `routed` or `failed`, with the usual evidence, and its record carries `"apart": true`. A value that is
+  not a boolean is refused (`bad_task`). `krt_capabilities.py` lists the field under `task_fields`.
 - A file that is not a list, or a task with a missing or wrongly typed field, is refused before the board is read
   (exit 2, naming the task index).
 - `--connections` sets the call's nets to the task nets. It refuses `--nets`, positional net patterns, `--component`,

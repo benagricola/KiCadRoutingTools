@@ -448,6 +448,23 @@ def script_flags(path, _depth=1):
     return sorted(flags)
 
 
+def _task_fields(root):
+    """connections.py's TASK_FIELDS, read without importing it (this script imports nothing of the router); [] when
+    the clone has no such module or constant."""
+    try:
+        with open(_tool_path(root, 'connections.py'), encoding='utf-8') as f:
+            tree = ast.parse(f.read())
+    except (OSError, SyntaxError):
+        return []
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(getattr(t, 'id', '') == 'TASK_FIELDS' for t in node.targets):
+            try:
+                return list(ast.literal_eval(node.value))
+            except ValueError:
+                return []
+    return []
+
+
 def capabilities(root=ROOT):
     mods = {m: os.path.isfile(_tool_path(root, m)) for m in KNOWN_MODULES}
     flags = {s: script_flags(_tool_path(root, s))
@@ -458,6 +475,8 @@ def capabilities(root=ROOT):
         'is_git_clone': os.path.exists(os.path.join(root, '.git')),
         'modules': mods,
         'flags': flags,
+        # FORK DIVERGENCE (docs/fork-divergences.md, --connections "apart"): the fields a --connections task may carry.
+        'task_fields': {'route.py': _task_fields(root)},
     }
     try:                                    # best-effort, never fatal
         # (This used to insert py_router/ on sys.path so `routing_defaults`

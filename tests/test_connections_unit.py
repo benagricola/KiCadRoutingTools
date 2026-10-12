@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """--connections: load, refusals, the width-aware joined judgement, grouping, and the net split (placemat fork)."""
+import json
 import os
 import sys
 
@@ -194,7 +195,53 @@ def t_read_file():
         check('a string end is refused with its task index', got == ('bad_task', {'index': 0}), got)
 
 
+def t_apart():
+    """FORK DIVERGENCE (docs/fork-divergences.md, --connections "apart"): a task the caller judged apart is never
+    joined_before or joined_narrow from the router's own model; it is routed, and comes back routed or failed."""
+    import json
+    import tempfile
+    from connections import resolve, judge_joined, choose_groups, finish, read_file, ConnectionsError
+    pcb = board()
+    pcb.segments.append(make_seg(0, 0, 10, 0, width=0.2, net_id=1))     # the router's model: J1.1-U1.1 joined
+    t = dict(task(('J1', '1'), ('U1', '1'), {"F.Cu": 0.2, "B.Cu": 0.2}), apart=True)
+    tasks = resolve([t], pcb, ['F.Cu', 'B.Cu'], min_track=0.1)
+    judge_joined(pcb, tasks)
+    check('an apart task joined in the router\'s model stays open', tasks[0].status is None, tasks[0])
+    chosen = choose_groups(tasks)
+    check('an apart task is routed', tasks[0] in chosen.get(1, []), chosen)
+    finish(pcb, tasks, chosen, routed=False)
+    check('an apart task the call did not route is failed, not joined_before', tasks[0].status == 'failed', tasks[0])
+    rec = tasks[0].record()
+    check('its record echoes apart', rec.get('apart') is True, rec)
+    tasks = resolve([t], pcb, ['F.Cu', 'B.Cu'], min_track=0.1)
+    chosen = choose_groups(tasks)
+    finish(pcb, tasks, chosen, routed=True)
+    check('an apart task the call routed and finds joined is routed', tasks[0].status == 'routed', tasks[0])
+    plain = resolve([task(('J1', '1'), ('U1', '1'), {"F.Cu": 0.2, "B.Cu": 0.2})], pcb, ['F.Cu', 'B.Cu'], 0.1)
+    check('a task without apart echoes none', 'apart' not in plain[0].record(), plain[0].record())
+    with tempfile.TemporaryDirectory() as d:
+        bad = os.path.join(d, 'bad.json')
+        with open(bad, 'w') as f:
+            json.dump([dict(task(('J1', '1'), ('U1', '1')), apart="yes")], f)
+        try:
+            read_file(bad)
+            got = None
+        except ConnectionsError as e:
+            got = (e.code, e.facts)
+        check('an apart that is not a boolean is refused bad_task', got == ('bad_task', {'index': 0}), got)
+
+
+def t_apart_published():
+    import subprocess
+    out = subprocess.run([sys.executable, os.path.join(ROOT, 'krt_capabilities.py')], capture_output=True, text=True,
+                         cwd=ROOT, timeout=120, check=True).stdout
+    check('the capability list publishes the apart task field',
+          'apart' in json.loads(out)['task_fields']['route.py'], out[:200])
+
+
 if __name__ == '__main__':
+    t_apart()
+    t_apart_published()
     t_refusals()
     t_fp()
     t_fp_parsed()
