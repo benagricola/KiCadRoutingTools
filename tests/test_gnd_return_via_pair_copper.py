@@ -126,27 +126,45 @@ def test_return_vias_keep_the_upstream_site_when_clear():
         assert abs(v.x - a.x) < 1e-9 and abs(v.y - a.y) < 1e-9, (v, a)
 
 
-def test_sub_grid_graze_of_own_copper_is_left_to_the_micro_shift():
-    """A pair track inside clearance by less than half a grid step keeps the
-    upstream site (the cleanup micro-shift moves the track off by its
-    shortfall); the same graze by foreign copper moves the via."""
+def test_own_copper_just_inside_clearance_moves_the_via():
+    """A pair track 0.01 mm inside the via's clearance, or a pair via 0.01 mm
+    inside via-to-via clearance, counts as a conflict: the via moves to the
+    other side, or is not placed when that side is taken too."""
     cfg, spacing = _cfg(), 0.25
     coord = GridCoord(cfg.grid_step)
     ahead, behind = _sites(cfg, coord, spacing)
     n = ahead[1]
-    shortfall = cfg.grid_step / 4
-    gap = cfg.via_size / 2 + 0.1 + cfg.clearance - shortfall
+    gap = cfg.via_size / 2 + 0.1 + cfg.clearance - 0.01
     own = _seg(n.x - 0.3, n.y - gap, n.x + 0.3, n.y - gap, N)
     vias = _create_gnd_vias(_path(coord), coord, cfg, cfg.layers, spacing, GND, [1],
                             pair_segments=[own], pair_vias=[], pcb_data=_pcb())
-    for v, a in zip(vias, ahead):
-        assert abs(v.x - a.x) < 1e-9 and abs(v.y - a.y) < 1e-9, (v, a)
-
-    foreign = _seg(n.x - 0.3, n.y - gap, n.x + 0.3, n.y - gap, FOREIGN)
-    vias = _create_gnd_vias(_path(coord), coord, cfg, cfg.layers, spacing, GND, [1],
-                            pair_segments=[], pair_vias=[], pcb_data=_pcb(segments=[foreign]))
+    assert len(vias) == 2, vias
     for v, b in zip(vias, behind):
         assert abs(v.x - b.x) < 1e-9 and abs(v.y - b.y) < 1e-9, (v, b)
+
+    # A pair via just inside via-to-via clearance of the ahead N site, and the
+    # pair's track over the behind N site: the N-side via is not placed.
+    d = cfg.via_size + cfg.clearance - 0.01
+    own_via = Via(x=n.x, y=n.y - d, size=cfg.via_size, drill=cfg.via_drill,
+                  layers=['F.Cu', 'B.Cu'], net_id=N)
+    b = behind[1]
+    own_behind = _seg(b.x - 0.3, b.y, b.x + 0.3, b.y, N)
+    vias = _create_gnd_vias(_path(coord), coord, cfg, cfg.layers, spacing, GND, [1],
+                            pair_segments=[own_behind], pair_vias=[own_via], pcb_data=_pcb())
+    assert len(vias) == 1, vias
+    assert abs(vias[0].x - ahead[0].x) < 1e-9 and abs(vias[0].y - ahead[0].y) < 1e-9, vias
+
+
+def test_no_board_is_upstreams_placement():
+    """With pcb_data None nothing is checked: the vias land on the router's
+    side even over the pair's own copper (upstream's behaviour)."""
+    cfg, spacing = _cfg(), 0.25
+    coord = GridCoord(cfg.grid_step)
+    ahead, _ = _sites(cfg, coord, spacing)
+    vias = _create_gnd_vias(_path(coord), coord, cfg, cfg.layers, spacing, GND, [1],
+                            pair_segments=[_seg(ahead[1].x - 0.3, ahead[1].y,
+                                                ahead[1].x + 0.3, ahead[1].y, N)])
+    assert [(v.x, v.y) for v in vias] == [(a.x, a.y) for a in ahead], vias
 
 
 def run():

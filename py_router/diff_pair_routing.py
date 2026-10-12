@@ -1093,8 +1093,9 @@ def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gn
         pair_segments, pair_vias, pcb_data: FORK DIVERGENCE (placemat fork,
             not upstream; docs/fork-divergences.md "Diff-pair GND return
             vias"). With pcb_data given, each via site must pass
-            net_rescue._via_site_clear against the board's copper plus the
-            pair's own just-built segments and vias. The Rust router chose
+            net_rescue._via_site_clear (tracks, vias, pads, drills; not
+            zones or the board edge) against the board's copper plus the
+            pair's own just-built segments and vias, at full clearance. The Rust router chose
             the side on the obstacle map, which does not hold the pair's own
             tracks, so a pair that bends back within reach of the site put
             the via on its own track. A side whose chosen site is not clear
@@ -1110,26 +1111,18 @@ def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gn
 
     _site_clear = None
     if pcb_data is not None:
-        from dataclasses import replace as _dc_replace
         from types import SimpleNamespace
         from net_rescue import _via_site_clear
-        _board = SimpleNamespace(segments=pcb_data.segments,
-                                 vias=list(pcb_data.vias),
-                                 footprints=pcb_data.footprints)
-        _own = SimpleNamespace(segments=list(pair_segments or ()),
-                               vias=list(pair_vias or ()), footprints={})
-        # The pair's own copper may sit inside clearance by up to the cleanup
-        # micro-shift's reach (cleanup_pipeline: grid_step/2 by default),
-        # which moves the pair's copper off the via by its shortfall, as it
-        # does for every sub-grid graze. Probed as a via smaller by that much
-        # in radius; drills keep the full hole-to-hole.
-        _own_cfg = _dc_replace(config, via_size=max(
-            config.via_drill, config.via_size - config.grid_step))
+        # The pair's own copper is checked at full clearance, as foreign
+        # copper is: to every other net it is foreign copper.
+        _board = SimpleNamespace(
+            segments=list(pcb_data.segments) + list(pair_segments or ()),
+            vias=list(pcb_data.vias) + list(pair_vias or ()),
+            footprints=pcb_data.footprints)
 
         def _site_clear(x, y):
-            return (_via_site_clear(_board, x, y, config, gnd_net_id,
-                                    exact_pads=True)
-                    and _via_site_clear(_own, x, y, _own_cfg, gnd_net_id))
+            return _via_site_clear(_board, x, y, config, gnd_net_id,
+                                   exact_pads=True)
 
     # Calculate GND via perpendicular offset: track edge + clearance + via radius
     # Use max track width for clearance since track width varies by layer

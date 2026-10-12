@@ -2966,15 +2966,23 @@ def apply_meanders_to_diff_pair(
             # Fork (docs/fork-divergences.md "Diff-pair GND return vias"): the
             # sites are checked against the board without this pair's
             # pre-meander copper and return vias, which the new copper replaces.
+            # Matched by object (add_route_to_pcb_data appends the result's own
+            # objects, and a cleanup pass that moves copper moves those objects)
+            # or by net and coordinates (a copy).
             from types import SimpleNamespace
+            _old_s = result.get('new_segments', [])
+            _old_v = result.get('new_vias', [])
+            _old_ids = {id(o) for o in _old_s} | {id(o) for o in _old_v}
             _old_segs = {(s.net_id, s.layer, s.start_x, s.start_y, s.end_x, s.end_y)
-                         for s in result.get('new_segments', [])}
-            _old_vias = {(v.net_id, v.x, v.y) for v in result.get('new_vias', [])}
+                         for s in _old_s}
+            _old_vias = {(v.net_id, v.x, v.y) for v in _old_v}
             _board = SimpleNamespace(
                 segments=[s for s in pcb_data.segments
-                          if (s.net_id, s.layer, s.start_x, s.start_y, s.end_x, s.end_y)
+                          if id(s) not in _old_ids
+                          and (s.net_id, s.layer, s.start_x, s.start_y, s.end_x, s.end_y)
                           not in _old_segs],
-                vias=[v for v in pcb_data.vias if (v.net_id, v.x, v.y) not in _old_vias],
+                vias=[v for v in pcb_data.vias
+                      if id(v) not in _old_ids and (v.net_id, v.x, v.y) not in _old_vias],
                 footprints=pcb_data.footprints)
             gnd_vias = _create_gnd_vias(
                 new_centerline_grid, coord, config, layer_names, spacing_mm, gnd_net_id, gnd_via_dirs,

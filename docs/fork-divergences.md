@@ -296,13 +296,15 @@ nets. Open or unattributed regions use the existing frontier-ranked ladder.
   USB pair turned back over both return vias of one layer change, and KiCad reported shorting_items GND/USB_D+ and
   GND/USB_D-. The same code is in upstream's origin/main 364b4572.
 - Fork: `_create_gnd_vias` takes the pair's just-built segments and vias and the board. Each site must pass
-  `net_rescue._via_site_clear`, the router's exact via-landing check: foreign copper at each pair's class
-  clearance, pads by their copper, every drill at hole-to-hole. The pair's own copper is checked with a margin of
-  half a grid step, the reach of the cleanup micro-shift that moves the pair's copper off a sub-grid graze. The
+  `net_rescue._via_site_clear`, the via-landing check upstream's other callers use: tracks and vias at each net
+  pair's class clearance, pads by their copper, every drill at hole-to-hole. It does not check zones or the board
+  edge. The pair's own tracks and vias are checked at full clearance, the same as any other net's. The
   router's side is tried first and then the other one, both vias together as upstream places them; failing that,
   each via takes its own first clear side, and a via with no clear side is not placed (logged as "GND return via
   ... not placed"). Both callers pass the board: route_diff_pair_with_obstacles, and the meander rebuild in
-  length_matching.apply_meanders_to_diff_pair, which leaves out the pair's pre-meander copper it replaces.
+  length_matching.apply_meanders_to_diff_pair. The meander rebuild leaves out the pair's pre-meander copper it
+  replaces, matched by object or by net and coordinates; copper copied and then moved by a cleanup pass would stay
+  in the view and could move or drop a return via. No test reaches the meander branch.
 - Why: placemat judges each phase on KiCad's DRC. A return via that shorts the pair costs the pair, where a missing
   return via costs nothing KiCad grades.
 - Test: tests/test_gnd_return_via_pair_copper.py.
