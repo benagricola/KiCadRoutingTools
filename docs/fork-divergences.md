@@ -299,9 +299,12 @@ nets. Open or unattributed regions use the existing frontier-ranked ladder.
   `net_rescue._via_site_clear`, the via-landing check upstream's other callers use: tracks and vias at each net
   pair's class clearance, pads by their copper, every drill at hole-to-hole. It does not check zones or the board
   edge. The pair's own tracks and vias are checked at full clearance, the same as any other net's. The
-  router's side is tried first and then the other one, both vias together as upstream places them; failing that,
-  each via takes its own first clear side, and a via with no clear side is not placed (logged as "GND return via
-  ... not placed"). Both callers pass the board: route_diff_pair_with_obstacles, and the meander rebuild in
+  router's side is tried first and then the other one, both vias together as upstream places them. Failing that,
+  each via searches near its own two sites with add_gnd_vias.py's ring search (nearest ring first, 24 angles 15
+  degrees apart): rings one grid step apart out to one via diameter, around the router's site and then the other
+  side's. The candidates are not snapped to the grid as add_gnd_vias does, because this check is exact rather than
+  per grid cell. The first clear candidate wins; a via with none is not placed (logged as "GND return via ... not
+  placed"). Both callers pass the board: route_diff_pair_with_obstacles, and the meander rebuild in
   length_matching.apply_meanders_to_diff_pair. The meander rebuild leaves out the pair's pre-meander copper it
   replaces, matched by object or by net and coordinates; copper copied and then moved by a cleanup pass would stay
   in the view and could move or drop a return via. No test reaches the meander branch.

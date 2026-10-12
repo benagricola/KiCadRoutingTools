@@ -1095,12 +1095,14 @@ def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gn
             vias"). With pcb_data given, each via site must pass
             net_rescue._via_site_clear (tracks, vias, pads, drills; not
             zones or the board edge) against the board's copper plus the
-            pair's own just-built segments and vias, at full clearance. The Rust router chose
-            the side on the obstacle map, which does not hold the pair's own
-            tracks, so a pair that bends back within reach of the site put
-            the via on its own track. A side whose chosen site is not clear
-            tries the other side; a via with no clear site is not placed.
-            With pcb_data None the placement is upstream's, ungated.
+            pair's own just-built segments and vias, at full clearance.
+            The Rust router chose the side on the obstacle map, which does
+            not hold the pair's own tracks, so a pair that bends back within
+            reach of the site put the via on its own track. Both vias go to
+            the router's side, else both to the other side; else each via
+            takes the first clear site of a ring search around its two
+            sites, out to one via diameter, or is not placed. With pcb_data
+            None the placement is upstream's, ungated.
 
     Returns:
         List of Via objects for GND connections
@@ -1190,44 +1192,73 @@ def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gn
                 return (cx + side * perp_x * gnd_via_perp_mm + dx * via_via_dist_mm * along,
                         cy + side * perp_y * gnd_via_perp_mm + dy * via_via_dist_mm * along)
 
-            if _site_clear is None:
-                sites = [_site(+1, gnd_dir), _site(-1, gnd_dir)]
-            else:
-                # Fork: the Rust router's side first, then the other one,
-                # both vias together as upstream places them; failing that,
-                # each via on its own first clear side, or not at all.
-                sites = None
-                for along in (gnd_dir, -gnd_dir):
-                    pair_sites = [_site(+1, along), _site(-1, along)]
-                    if all(_site_clear(x, y) for x, y in pair_sites):
-                        sites = pair_sites
-                        break
-                if sites is None:
-                    sites = []
-                    for side in (+1, -1):
-                        for along in (gnd_dir, -gnd_dir):
-                            if _site_clear(*_site(side, along)):
-                                sites.append(_site(side, along))
-                                break
-                        else:
-                            sx, sy = _site(side, gnd_dir)
-                            print(f"    GND return via at ({sx:.3f},{sy:.3f}) not placed: "
-                                  f"no site clear of the pair's copper and foreign copper")
-
-            # Create GND vias (free=True prevents KiCad auto-assigning net)
-            for gx_mm, gy_mm in sites:
-                _gv = Via(
-                    x=gx_mm, y=gy_mm,
+            def _make(xy):
+                # free=True prevents KiCad auto-assigning net
+                return Via(
+                    x=xy[0], y=xy[1],
                     size=config.via_size,
                     drill=config.via_drill,
                     layers=["F.Cu", "B.Cu"],  # Always through-hole
                     net_id=gnd_net_id,
                     free=True
                 )
+
+            if _site_clear is None:
+                gnd_vias.append(_make(_site(+1, gnd_dir)))
+                gnd_vias.append(_make(_site(-1, gnd_dir)))
+                continue
+
+            # Fork: the Rust router's side first, then the other one, both
+            # vias together as upstream places them.
+            chosen = None
+            for along in (gnd_dir, -gnd_dir):
+                pair_sites = [_site(+1, along), _site(-1, along)]
+                if all(_site_clear(x, y) for x, y in pair_sites):
+                    chosen = pair_sites
+                    break
+            if chosen is not None:
+                for xy in chosen:
+                    _gv = _make(xy)
+                    gnd_vias.append(_gv)
+                    _board.vias.append(_gv)  # later sites keep hole-to-hole
+                continue
+            # Failing that, each via searches near its own two sites:
+            # add_gnd_vias.py's ring search (nearest ring first, 24 angles
+            # 15 degrees apart), in rings one grid step apart out to one via
+            # diameter, around the router's site and then the other side's.
+            # Angle 0 points away from the pair, 90 degrees along the heading.
+            # Not snapped to the grid as add_gnd_vias does: this check is
+            # exact, not on grid cells. The first clear site wins.
+            step = config.grid_step
+            n_rings = max(0, int(config.via_size / step + 1e-9))
+            for side in (+1, -1):
+                out_x, out_y = side * perp_x, side * perp_y
+                placed = None
+                for ring in range(n_rings + 1):
+                    r = ring * step
+                    for along in (gnd_dir, -gnd_dir):
+                        bx, by = _site(side, along)
+                        for ang in (range(0, 360, 15) if ring else (0,)):
+                            a = math.radians(ang)
+                            ca, sa = math.cos(a), math.sin(a)
+                            x = bx + r * (ca * out_x + sa * dx)
+                            y = by + r * (ca * out_y + sa * dy)
+                            if _site_clear(x, y):
+                                placed = (x, y)
+                                break
+                        if placed:
+                            break
+                    if placed:
+                        break
+                if placed is None:
+                    sx, sy = _site(side, gnd_dir)
+                    print(f"    GND return via at ({sx:.3f},{sy:.3f}) not placed: "
+                          f"no site within {n_rings * step:.2f}mm clear of the "
+                          f"pair's copper and foreign copper")
+                    continue
+                _gv = _make(placed)
                 gnd_vias.append(_gv)
-                if _site_clear is not None:
-                    # Later sites keep hole-to-hole from this via too.
-                    _board.vias.append(_gv)
+                _board.vias.append(_gv)
 
     return gnd_vias
 
