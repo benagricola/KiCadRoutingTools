@@ -2963,8 +2963,22 @@ def apply_meanders_to_diff_pair(
             from diff_pair_routing import _create_gnd_vias
             gnd_net_id = result.get('gnd_net_id')
             gnd_via_dirs = result.get('gnd_via_dirs', [])
+            # Fork (docs/fork-divergences.md "Diff-pair GND return vias"): the
+            # sites are checked against the board without this pair's
+            # pre-meander copper and return vias, which the new copper replaces.
+            from types import SimpleNamespace
+            _old_segs = {(s.net_id, s.layer, s.start_x, s.start_y, s.end_x, s.end_y)
+                         for s in result.get('new_segments', [])}
+            _old_vias = {(v.net_id, v.x, v.y) for v in result.get('new_vias', [])}
+            _board = SimpleNamespace(
+                segments=[s for s in pcb_data.segments
+                          if (s.net_id, s.layer, s.start_x, s.start_y, s.end_x, s.end_y)
+                          not in _old_segs],
+                vias=[v for v in pcb_data.vias if (v.net_id, v.x, v.y) not in _old_vias],
+                footprints=pcb_data.footprints)
             gnd_vias = _create_gnd_vias(
-                new_centerline_grid, coord, config, layer_names, spacing_mm, gnd_net_id, gnd_via_dirs
+                new_centerline_grid, coord, config, layer_names, spacing_mm, gnd_net_id, gnd_via_dirs,
+                pair_segments=new_segments, pair_vias=new_vias, pcb_data=_board
             )
             new_vias.extend(gnd_vias)
 

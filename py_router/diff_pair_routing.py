@@ -1078,7 +1078,8 @@ def _pair_via_offset(config, spacing_mm):
                track_via_clearance - spacing_mm)
 
 
-def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gnd_net_id, gnd_via_dirs):
+def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gnd_net_id, gnd_via_dirs,
+                     pair_segments=None, pair_vias=None, pcb_data=None):
     """Create GND vias at layer changes in the centerline path.
 
     Args:
@@ -1089,6 +1090,16 @@ def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gn
         spacing_mm: P/N offset from centerline
         gnd_net_id: Net ID for GND vias
         gnd_via_dirs: List of directions (+1=ahead, -1=behind) from Rust router
+        pair_segments, pair_vias, pcb_data: FORK DIVERGENCE (placemat fork,
+            not upstream; docs/fork-divergences.md "Diff-pair GND return
+            vias"). With pcb_data given, each via site must pass
+            net_rescue._via_site_clear against the board's copper plus the
+            pair's own just-built segments and vias. The Rust router chose
+            the side on the obstacle map, which does not hold the pair's own
+            tracks, so a pair that bends back within reach of the site put
+            the via on its own track. A side whose chosen site is not clear
+            tries the other side; a via with no clear site is not placed.
+            With pcb_data None the placement is upstream's, ungated.
 
     Returns:
         List of Via objects for GND connections
@@ -1096,6 +1107,29 @@ def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gn
     gnd_vias = []
     if gnd_net_id is None or len(simplified_path) < 2:
         return gnd_vias
+
+    _site_clear = None
+    if pcb_data is not None:
+        from dataclasses import replace as _dc_replace
+        from types import SimpleNamespace
+        from net_rescue import _via_site_clear
+        _board = SimpleNamespace(segments=pcb_data.segments,
+                                 vias=list(pcb_data.vias),
+                                 footprints=pcb_data.footprints)
+        _own = SimpleNamespace(segments=list(pair_segments or ()),
+                               vias=list(pair_vias or ()), footprints={})
+        # The pair's own copper may sit inside clearance by up to the cleanup
+        # micro-shift's reach (cleanup_pipeline: grid_step/2 by default),
+        # which moves the pair's copper off the via by its shortfall, as it
+        # does for every sub-grid graze. Probed as a via smaller by that much
+        # in radius; drills keep the full hole-to-hole.
+        _own_cfg = _dc_replace(config, via_size=max(
+            config.via_drill, config.via_size - config.grid_step))
+
+        def _site_clear(x, y):
+            return (_via_site_clear(_board, x, y, config, gnd_net_id,
+                                    exact_pads=True)
+                    and _via_site_clear(_own, x, y, _own_cfg, gnd_net_id))
 
     # Calculate GND via perpendicular offset: track edge + clearance + via radius
     # Use max track width for clearance since track width varies by layer
@@ -1159,28 +1193,48 @@ def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gn
             via_idx += 1
 
             # GND via positions: perpendicular offset + along-heading offset
-            gnd_p_x = cx + perp_x * gnd_via_perp_mm + dx * via_via_dist_mm * gnd_dir
-            gnd_p_y = cy + perp_y * gnd_via_perp_mm + dy * via_via_dist_mm * gnd_dir
-            gnd_n_x = cx - perp_x * gnd_via_perp_mm + dx * via_via_dist_mm * gnd_dir
-            gnd_n_y = cy - perp_y * gnd_via_perp_mm + dy * via_via_dist_mm * gnd_dir
+            def _site(side, along):
+                return (cx + side * perp_x * gnd_via_perp_mm + dx * via_via_dist_mm * along,
+                        cy + side * perp_y * gnd_via_perp_mm + dy * via_via_dist_mm * along)
+
+            if _site_clear is None:
+                sites = [_site(+1, gnd_dir), _site(-1, gnd_dir)]
+            else:
+                # Fork: the Rust router's side first, then the other one,
+                # both vias together as upstream places them; failing that,
+                # each via on its own first clear side, or not at all.
+                sites = None
+                for along in (gnd_dir, -gnd_dir):
+                    pair_sites = [_site(+1, along), _site(-1, along)]
+                    if all(_site_clear(x, y) for x, y in pair_sites):
+                        sites = pair_sites
+                        break
+                if sites is None:
+                    sites = []
+                    for side in (+1, -1):
+                        for along in (gnd_dir, -gnd_dir):
+                            if _site_clear(*_site(side, along)):
+                                sites.append(_site(side, along))
+                                break
+                        else:
+                            sx, sy = _site(side, gnd_dir)
+                            print(f"    GND return via at ({sx:.3f},{sy:.3f}) not placed: "
+                                  f"no site clear of the pair's copper and foreign copper")
 
             # Create GND vias (free=True prevents KiCad auto-assigning net)
-            gnd_vias.append(Via(
-                x=gnd_p_x, y=gnd_p_y,
-                size=config.via_size,
-                drill=config.via_drill,
-                layers=["F.Cu", "B.Cu"],  # Always through-hole
-                net_id=gnd_net_id,
-                free=True
-            ))
-            gnd_vias.append(Via(
-                x=gnd_n_x, y=gnd_n_y,
-                size=config.via_size,
-                drill=config.via_drill,
-                layers=["F.Cu", "B.Cu"],  # Always through-hole
-                net_id=gnd_net_id,
-                free=True
-            ))
+            for gx_mm, gy_mm in sites:
+                _gv = Via(
+                    x=gx_mm, y=gy_mm,
+                    size=config.via_size,
+                    drill=config.via_drill,
+                    layers=["F.Cu", "B.Cu"],  # Always through-hole
+                    net_id=gnd_net_id,
+                    free=True
+                )
+                gnd_vias.append(_gv)
+                if _site_clear is not None:
+                    # Later sites keep hole-to-hole from this via too.
+                    _board.vias.append(_gv)
 
     return gnd_vias
 
@@ -4787,7 +4841,8 @@ def route_diff_pair_with_obstacles(pcb_data: PCBData, diff_pair: DiffPairNet,
 
     # Create GND vias at layer changes if enabled
     gnd_vias = _create_gnd_vias(
-        simplified_path, coord, config, layer_names, spacing_mm, gnd_net_id, gnd_via_dirs
+        simplified_path, coord, config, layer_names, spacing_mm, gnd_net_id, gnd_via_dirs,
+        pair_segments=new_segments, pair_vias=new_vias, pcb_data=pcb_data
     )
     new_vias.extend(gnd_vias)
 

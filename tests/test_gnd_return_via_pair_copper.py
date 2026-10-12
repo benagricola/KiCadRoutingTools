@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Diff-pair GND return vias (_create_gnd_vias) keep clearance from the pair's
+own just-routed copper and from foreign copper.
+
+The pose router picks a return via's side (ahead of or behind the signal vias)
+on the obstacle map, which does not hold the pair's own tracks. When the pair
+bends back within reach of the via, the via landed on the pair's track and
+KiCad reported shorting_items GND/P and GND/N. Fork divergence: see
+docs/fork-divergences.md, "Diff-pair GND return vias".
+
+    python3 tests/test_gnd_return_via_pair_copper.py
+"""
+import os
+import sys
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+sys.path.insert(0, os.path.join(_ROOT, 'py_router'))
+sys.path.insert(0, os.path.join(_ROOT, 'py_tools'))
+
+from kicad_parser import Segment, Via, Net, PCBData, BoardInfo
+from routing_config import GridRouteConfig, GridCoord
+import obstacle_map  # noqa: F401  # puts rust_router on sys.path
+from diff_pair_routing import _create_gnd_vias
+from check_drc import check_via_segment_overlap
+
+P, N, GND, FOREIGN = 1, 2, 3, 4
+
+
+def _cfg():
+    return GridRouteConfig(grid_step=0.05, via_size=0.6, via_drill=0.3,
+                           clearance=0.15, hole_to_hole_clearance=0.25,
+                           track_width=0.2, layers=['F.Cu', 'B.Cu'])
+
+
+def _pcb(segments=(), vias=()):
+    return PCBData(board_info=BoardInfo(layers={}, copper_layers=['F.Cu', 'B.Cu'],
+                                        board_bounds=(-10.0, -10.0, 10.0, 10.0)),
+                   nets={P: Net(net_id=P, name='D_P', pads=[]),
+                         N: Net(net_id=N, name='D_N', pads=[]),
+                         GND: Net(net_id=GND, name='GND', pads=[]),
+                         FOREIGN: Net(net_id=FOREIGN, name='SIG', pads=[])},
+                   footprints={}, vias=list(vias), segments=list(segments),
+                   pads_by_net={})
+
+
+def _path(coord):
+    # Centerline heading +x on F.Cu, a layer change at the origin, then +x on B.Cu.
+    pts = [(-3.0, 0.0, 0), (0.0, 0.0, 0), (0.0, 0.0, 1), (3.0, 0.0, 1)]
+    return [(coord.to_grid(x, y)[0], coord.to_grid(x, y)[1], layer) for x, y, layer in pts]
+
+
+def _sites(cfg, coord, spacing):
+    """Upstream placement with no gate: [p_ahead, n_ahead] and [p_behind, n_behind]."""
+    ahead = _create_gnd_vias(_path(coord), coord, cfg, cfg.layers, spacing, GND, [1])
+    behind = _create_gnd_vias(_path(coord), coord, cfg, cfg.layers, spacing, GND, [-1])
+    return ahead, behind
+
+
+def _shorts(vias, segments, cfg):
+    return [(v, s) for v in vias for s in segments
+            if s.net_id != v.net_id and check_via_segment_overlap(v, s, cfg.clearance)[0]]
+
+
+def _seg(x1, y1, x2, y2, net, layer='F.Cu', w=0.2):
+    return Segment(start_x=x1, start_y=y1, end_x=x2, end_y=y2, width=w, layer=layer, net_id=net)
+
+
+def test_return_via_moves_off_the_pairs_own_track():
+    """The pair's N track bends back across the ahead site: that side's via
+    goes behind, clear of the track, instead of shorting it."""
+    cfg, spacing = _cfg(), 0.25
+    coord = GridCoord(cfg.grid_step)
+    ahead, behind = _sites(cfg, coord, spacing)
+    n_site = ahead[1]
+    # A short N track on F.Cu through the ahead N site, out of reach of the
+    # behind site.
+    own_n = _seg(n_site.x - 0.3, n_site.y, n_site.x + 0.3, n_site.y, N)
+    assert _shorts(ahead, [own_n], cfg), "test setup: the ahead site must short the track"
+
+    vias = _create_gnd_vias(_path(coord), coord, cfg, cfg.layers, spacing, GND, [1],
+                            pair_segments=[own_n], pair_vias=[], pcb_data=_pcb())
+    assert len(vias) == 2, vias
+    assert not _shorts(vias, [own_n], cfg), vias
+    # Both vias move behind together (upstream places them as a pair).
+    for v, b in zip(vias, behind):
+        assert abs(v.x - b.x) < 1e-9 and abs(v.y - b.y) < 1e-9, (v, b)
+
+
+def test_return_via_dropped_when_no_site_is_clear():
+    """Own copper over the ahead N site and foreign copper over the behind N
+    site: the N-side via is not placed; the P-side via still is, clear."""
+    cfg, spacing = _cfg(), 0.25
+    coord = GridCoord(cfg.grid_step)
+    ahead, behind = _sites(cfg, coord, spacing)
+    own_n = _seg(ahead[1].x - 0.3, ahead[1].y, ahead[1].x + 0.3, ahead[1].y, N)
+    foreign = _seg(behind[1].x - 0.3, behind[1].y, behind[1].x + 0.3, behind[1].y,
+                   FOREIGN, layer='B.Cu')
+
+    vias = _create_gnd_vias(_path(coord), coord, cfg, cfg.layers, spacing, GND, [1],
+                            pair_segments=[own_n], pair_vias=[],
+                            pcb_data=_pcb(segments=[foreign]))
+    assert len(vias) == 1, vias
+    assert not _shorts(vias, [own_n, foreign], cfg), vias
+    p = vias[0]
+    assert any(abs(p.x - s.x) < 1e-9 and abs(p.y - s.y) < 1e-9
+               for s in (ahead[0], behind[0])), p
+
+
+def test_return_vias_keep_the_upstream_site_when_clear():
+    """Nothing in reach: the vias land where upstream puts them."""
+    cfg, spacing = _cfg(), 0.25
+    coord = GridCoord(cfg.grid_step)
+    ahead, _ = _sites(cfg, coord, spacing)
+    # The pair's own straight tracks either side of the via, at +-spacing.
+    own = [_seg(-3.0, spacing, 0.0, spacing, P), _seg(-3.0, -spacing, 0.0, -spacing, N),
+           _seg(0.0, spacing, 3.0, spacing, P, 'B.Cu'), _seg(0.0, -spacing, 3.0, -spacing, N, 'B.Cu')]
+    pair_vias = [Via(x=0.0, y=spacing, size=cfg.via_size, drill=cfg.via_drill,
+                     layers=['F.Cu', 'B.Cu'], net_id=P),
+                 Via(x=0.0, y=-spacing, size=cfg.via_size, drill=cfg.via_drill,
+                     layers=['F.Cu', 'B.Cu'], net_id=N)]
+    vias = _create_gnd_vias(_path(coord), coord, cfg, cfg.layers, spacing, GND, [1],
+                            pair_segments=own, pair_vias=pair_vias, pcb_data=_pcb())
+    assert len(vias) == 2, vias
+    for v, a in zip(vias, ahead):
+        assert abs(v.x - a.x) < 1e-9 and abs(v.y - a.y) < 1e-9, (v, a)
+
+
+def test_sub_grid_graze_of_own_copper_is_left_to_the_micro_shift():
+    """A pair track inside clearance by less than half a grid step keeps the
+    upstream site (the cleanup micro-shift moves the track off by its
+    shortfall); the same graze by foreign copper moves the via."""
+    cfg, spacing = _cfg(), 0.25
+    coord = GridCoord(cfg.grid_step)
+    ahead, behind = _sites(cfg, coord, spacing)
+    n = ahead[1]
+    shortfall = cfg.grid_step / 4
+    gap = cfg.via_size / 2 + 0.1 + cfg.clearance - shortfall
+    own = _seg(n.x - 0.3, n.y - gap, n.x + 0.3, n.y - gap, N)
+    vias = _create_gnd_vias(_path(coord), coord, cfg, cfg.layers, spacing, GND, [1],
+                            pair_segments=[own], pair_vias=[], pcb_data=_pcb())
+    for v, a in zip(vias, ahead):
+        assert abs(v.x - a.x) < 1e-9 and abs(v.y - a.y) < 1e-9, (v, a)
+
+    foreign = _seg(n.x - 0.3, n.y - gap, n.x + 0.3, n.y - gap, FOREIGN)
+    vias = _create_gnd_vias(_path(coord), coord, cfg, cfg.layers, spacing, GND, [1],
+                            pair_segments=[], pair_vias=[], pcb_data=_pcb(segments=[foreign]))
+    for v, b in zip(vias, behind):
+        assert abs(v.x - b.x) < 1e-9 and abs(v.y - b.y) < 1e-9, (v, b)
+
+
+def run():
+    fails = 0
+    for name, fn in sorted(globals().items()):
+        if name.startswith('test_') and callable(fn):
+            try:
+                fn()
+                print(f"  PASS: {name}")
+            except Exception as e:  # noqa: BLE001
+                fails += 1
+                print(f"  FAIL: {name}: {type(e).__name__}: {e}")
+    print(f"\n{fails} failed" if fails else "\nall passed")
+    return 1 if fails else 0
+
+
+if __name__ == "__main__":
+    sys.exit(run())

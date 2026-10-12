@@ -284,3 +284,25 @@ nets. Open or unattributed regions use the existing frontier-ranked ladder.
   Such a task becomes `failed`, with `diagnosis: reverted_by_improvement_gate`.
 - Test: tests/test_connections_unit.py (`t_apart`, `t_apart_drops_pour_credit`, `t_apart_routed_only_by_copper`,
   `t_apart_published`).
+
+## Diff-pair GND return vias
+
+- Upstream: the pose router picks each return via's side, ahead of or behind the signal vias, by `is_via_blocked`
+  on the diff-pair obstacle map (rust_router/src/pose_router.rs `gnd_via_sites`, `compute_gnd_via_directions`).
+  That map holds foreign copper only, not the pair's own tracks. The pair must run straight for the via's along
+  offset plus 2 grid cells after a layer change (`straight_after_via`), but the via's clearance disc reaches about
+  0.6 mm further, and a pair that bends back within that reach is not checked. `_create_gnd_vias`
+  (py_router/diff_pair_routing.py) then places the vias where the router said, unchecked. On esp-rust-board the
+  USB pair turned back over both return vias of one layer change, and KiCad reported shorting_items GND/USB_D+ and
+  GND/USB_D-. The same code is in upstream's origin/main 364b4572.
+- Fork: `_create_gnd_vias` takes the pair's just-built segments and vias and the board. Each site must pass
+  `net_rescue._via_site_clear`, the router's exact via-landing check: foreign copper at each pair's class
+  clearance, pads by their copper, every drill at hole-to-hole. The pair's own copper is checked with a margin of
+  half a grid step, the reach of the cleanup micro-shift that moves the pair's copper off a sub-grid graze. The
+  router's side is tried first and then the other one, both vias together as upstream places them; failing that,
+  each via takes its own first clear side, and a via with no clear side is not placed (logged as "GND return via
+  ... not placed"). Both callers pass the board: route_diff_pair_with_obstacles, and the meander rebuild in
+  length_matching.apply_meanders_to_diff_pair, which leaves out the pair's pre-meander copper it replaces.
+- Why: placemat judges each phase on KiCad's DRC. A return via that shorts the pair costs the pair, where a missing
+  return via costs nothing KiCad grades.
+- Test: tests/test_gnd_return_via_pair_copper.py.
