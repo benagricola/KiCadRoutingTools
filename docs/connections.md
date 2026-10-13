@@ -164,10 +164,11 @@ A multipoint net (a group whose ends span more than two pads) fails in one of tw
 recorded, with `at: null` because actual search starts are not recorded. A tap edge
 (`route_multipoint_taps`) keeps its per-direction iterations and frontier cells in its `failed_edge_blocking` entry,
 and phase 3 (phase3_routing.py `_record_tap_searches`) records each failed edge's search as `search_failed` before
-the rip ladder, the last edge's standing for the net. When the net's tap edges are still failed after the ladder,
-`_record_tap_boxin` records `boxed_in_static` for the first failed edge whose search fits it, as the single-ended
-path does for a net that failed with nothing rippable. A failed edge that met no frontier cell has no entry and no
-search on record.
+the rip ladder, the last edge's standing for the net. When the net's tap edges are still failed after a ladder that
+found nothing it may rip, or that did not run, `_record_tap_boxin` records `boxed_in_static` from the net's last
+search on record when that search fits `static_boxin_hint`. A ladder that found rippable copper leaves no verdict:
+its failure is not a static box-in. Both are recorded only when the call writes a summary. A failed edge that met no
+frontier cell has no entry and no search on record.
 
 The evidence is of the latest failure: a later route of the net, or a new failed search, starts it again. A per-net
 rescue that leaves the net in pieces (`rescue_succeeded` with `fully_connected: false`) does not: the failure it

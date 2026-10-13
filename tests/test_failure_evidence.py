@@ -128,32 +128,35 @@ def t_a_rescue_that_leaves_the_net_split_keeps_the_failure():
 
 
 def t_tap_edge_search_is_recorded():
-    """phase3_routing records each failed tap edge's search from its failed_edge_blocking entry, and the verdict
-    when the search fits static_boxin_hint."""
+    """phase3_routing records each failed tap edge's search from its failed_edge_blocking entry, and the verdict from
+    the last search on record when it fits static_boxin_hint; neither without failure_evidence."""
     from phase3_routing import _record_tap_boxin, _record_tap_searches
     from failure_evidence import evidence_of
     from routing_config import GridRouteConfig
     pcb = make_pcb(nets={1: Net(1, 'VB')})
-    entry = ([(1, 1, 0), (2, 1, 0), (3, 1, 0)], (0.1, 0.1),
-             {'fwd': [(1, 1, 0)], 'bwd': [(2, 1, 0), (3, 1, 0)], 'extra': [(9, 9, 0)],
-              'iterations': {'forward': 98, 'backward': 5000}, 'tgt_cells': [], 'src_cells': []})
+
+    def entry(fwd, bwd):
+        return ([(1, 1, 0), (2, 1, 0), (3, 1, 0)], (0.1, 0.1),
+                {'fwd': [(1, 1, 0)], 'bwd': [(2, 1, 0), (3, 1, 0)], 'extra': [(9, 9, 0)],
+                 'iterations': {'forward': fwd, 'backward': bwd}, 'tgt_cells': [], 'src_cells': []})
     cfg = GridRouteConfig(layers=['F.Cu', 'B.Cu'])
     st = N(net_history={}, frontier_blocking={}, route_index=0)
-    _record_tap_searches(st, pcb, cfg, 1, {(0, 1): entry}, [])
-    check('no search is recorded when the call keeps no evidence', st.net_history.get(1) is None, st.net_history)
+    _record_tap_searches(st, pcb, cfg, 1, {(0, 1): entry(98, 5000)}, [])
+    _record_tap_boxin(st, pcb, cfg, 1)
+    check('nothing is recorded when the call keeps no evidence', st.net_history.get(1) is None, st.net_history)
     cfg.failure_evidence = True
-    _record_tap_searches(st, pcb, cfg, 1, {(0, 1): entry}, [])
-    _record_tap_boxin(st, pcb, cfg, 1, {(0, 1): entry})
+    _record_tap_searches(st, pcb, cfg, 1, {(0, 1): entry(20000, 5000), (1, 2): entry(98, 5000)}, [])
+    _record_tap_boxin(st, pcb, cfg, 1)
     ev = evidence_of(st, 1)
-    check('the tap edge search is the net\'s, per direction',
+    check('the last tap edge search is the net\'s, per direction',
           ev['search'] == {'forward': {'iterations': 98, 'frontier_cells': 1},
                            'backward': {'iterations': 5000, 'frontier_cells': 2}}, ev['search'])
-    check('the verdict is recorded', ev['diagnosis'] == 'boxed_in_static'
+    check('the verdict is from the last search on record', ev['diagnosis'] == 'boxed_in_static'
           and ev['verdicts'][0]['iterations'] == 5098, ev['verdicts'])
-    many = dict(entry[2], iterations={'forward': 20000, 'backward': 5000})
     st2 = N(net_history={}, frontier_blocking={}, route_index=0)
-    _record_tap_boxin(st2, pcb, cfg, 1, {(0, 1): (entry[0], entry[1], many)})
-    check('a search past the bound gets no verdict', st2.net_history.get(1) is None, st2.net_history)
+    _record_tap_searches(st2, pcb, cfg, 1, {(0, 1): entry(20000, 5000)}, [])
+    _record_tap_boxin(st2, pcb, cfg, 1)
+    check('a search past the bound gets no verdict', evidence_of(st2, 1)['verdicts'] == [], st2.net_history)
 
 
 def t_unrecorded_search_start_is_unknown():
