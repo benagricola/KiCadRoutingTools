@@ -135,11 +135,21 @@ def calculate_stub_length(pcb_data, net_id: int) -> float:
     Returns:
         Total stub length in mm
     """
-    net_segments = [s for s in pcb_data.segments if s.net_id == net_id]
+    net_segments = terminal_segments(pcb_data, net_id)
     total = 0.0
     for seg in net_segments:
         total += segment_length(seg)
     return total
+
+
+def terminal_segments(pcb_data, net_id: int) -> List[Segment]:
+    """The net's segments that can end a route: its tracks, not its copper graphics.
+
+    FORK DIVERGENCE (docs/fork-divergences.md, "Copper graphics with a net conduct"): a graphic with a net is copper
+    of the net (check_connected.conducts) but the router does not route to one, so its strokes and fill bands are
+    neither terminals, free ends nor stub length. The pads and tracks they join are grouped by the authoritative graph
+    (get_copper_connected_terminal_groups), which counts the graphic. Upstream takes every segment of the net here."""
+    return [s for s in pcb_data.segments if s.net_id == net_id and not getattr(s, 'graphic', False)]
 
 
 def is_edge_stub(pad_x: float, pad_y: float, bga_zones: List) -> bool:
@@ -1197,7 +1207,7 @@ def _get_net_endpoints_ordered(pcb_data: PCBData, net_id: int, config: GridRoute
     coord = GridCoord(config.grid_step)
     layer_map = build_layer_map(config.layers)
 
-    net_segments = [s for s in pcb_data.segments if s.net_id == net_id]
+    net_segments = terminal_segments(pcb_data, net_id)
     net_pads = drop_off_board_pads(pcb_data, pcb_data.pads_by_net.get(net_id, []))
     net_vias = [v for v in pcb_data.vias if v.net_id == net_id]
 
@@ -1600,7 +1610,7 @@ def _get_multipoint_net_pads_unordered(
     coord = GridCoord(config.grid_step)
     layer_map = build_layer_map(config.layers)
 
-    net_segments = [s for s in pcb_data.segments if s.net_id == net_id]
+    net_segments = terminal_segments(pcb_data, net_id)
     # Unnumbered pads (pad_number == "") are paste/thermal artifacts that KiCad
     # does not netlist individually; they must not become routing targets or
     # they show up as failed pads with component_ref '?' (issue #94). They are

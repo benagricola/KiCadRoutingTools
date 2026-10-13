@@ -329,7 +329,12 @@ nets. Open or unattributed regions use the existing frontier-ranked ladder.
   obstacle net.
 - Fork: `check_connected.conducts` counts a graphic that carries a net as copper of that net: its stroke segments
   and, for a filled shape, its interior bands (`area_fill`). A graphic with no net stays an obstacle only.
-  `connections.split_nets` leaves every graphic on its net. The router still does not route to a graphic.
+  `connections.split_nets` leaves every graphic on its net. The router still does not route to a graphic:
+  `connectivity.terminal_segments` leaves graphics out of a net's terminals, free ends and stub length (upstream's
+  `get_net_endpoints` and `get_multipoint_net_pads` take a free end of every band and stroke as a terminal, 60 of
+  them on the board below), and the pads and tracks a graphic joins are grouped by the graph, which counts it. A
+  `--connections` task's `min_width_mm` leaves out the graphics on its path, whose `width` is a stroke or a band's
+  height.
 - Why: KiCad 10 counts a PCB_SHAPE with a net as a connected item. Measured with pcbnew 10.0.6: a pad and a via
   joined only by a net-tagged line, an unfilled polygon's stroke or a filled polygon read connected
   (`GetConnectedItems`, `GetUnconnectedCount`); an unfilled rectangle whose stroke misses both does not. On a real
@@ -338,5 +343,6 @@ nets. Open or unattributed regions use the existing frontier-ranked ladder.
   walled the task's end in. The interior bands alone did not hold a polygon together: neighbouring bands meet at
   exact tangency, which the graph does not credit, so one polygon read as several pieces. The conducting stroke
   meets every band at both ends and joins them.
+- Replayed on that board (the four VBIKE tasks at 2.4651 mm on F.Cu and B.Cu): all four routed, 2.4651 mm on F.Cu.
 - Test: tests/test_copper_graphic_net_conducts.py, tests/test_filled_copper_graphic_area.py (`7b`),
   tests/test_check_weird.py (art soft joint).

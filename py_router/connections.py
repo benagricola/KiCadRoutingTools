@@ -231,6 +231,11 @@ def measure(pcb_data, task: Task, comps: Optional[_Components] = None) -> bool:
     if best is not None:
         narrow: Dict[str, float] = {}
         for s in best[1]:
+            # FORK DIVERGENCE (docs/fork-divergences.md, "Copper graphics with a net conduct"): the path may cross a
+            # copper graphic, whose `width` is a stroke or a fill band's height, not a track width; like a pad or a
+            # pour it carries no width here.
+            if getattr(s, 'graphic', False):
+                continue
             narrow[s.layer] = min(narrow.get(s.layer, s.width), s.width)
         task.length_mm, task.min_width_mm, task.path = round(best[0], 4), narrow, list(best[1])
     return True

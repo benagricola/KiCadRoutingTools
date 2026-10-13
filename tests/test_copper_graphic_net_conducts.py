@@ -21,6 +21,11 @@ Properties:
   4. split_nets keeps a via joined to a task end only through a graphic on
      the net, and keeps every graphic of the net on the net, also one that
      touches nothing; a via the graphic does not reach still moves.
+  5. The router does not route to a graphic: a multipoint net's terminals are
+     its pads and track ends, not a graphic's stroke or band ends, and pads a
+     graphic joins share a terminal group.
+  6. A task joined through a graphic reports no width for the graphic: its
+     `width` is a stroke or a band's height, not a track width.
 
 Run:  python3 tests/test_copper_graphic_net_conducts.py
 """
@@ -133,10 +138,52 @@ def t_split():
     check('4d: a via the graphic does not reach moves to the private net', v2.net_id == pid, v2.net_id)
 
 
+def _three_pads():
+    """PWR: U1.1 at (0,0) and U2.1 at (5,0) under one slanted filled polygon, J1.1 at (20,0) on its own."""
+    pads = {1: [make_pad(1, 0, 0, ref='U1', num='1', net_name='PWR', size_x=1.0, size_y=1.0),
+                make_pad(1, 5, 0, ref='U2', num='1', net_name='PWR', size_x=1.0, size_y=1.0),
+                make_pad(1, 20, 0, ref='J1', num='1', net_name='PWR')]}
+    segs = extract_segments('(gr_poly (pts (xy -1 -1) (xy 7 -1) (xy -1 4)) (stroke (width 0.2) (type solid)) '
+                            '(fill yes) (layer "F.Cu") (net "PWR") (uuid "g5"))', NAME_TO_ID)
+    return make_pcb(nets={1: Net(1, 'PWR')}, pads_by_net=pads, segments=segs)
+
+
+def t_terminals():
+    from connectivity import get_multipoint_net_pads, get_copper_connected_terminal_groups
+    from routing_config import GridRouteConfig
+    pcb = _three_pads()
+    pcb.segments.append(make_seg(5, 0, 8, 0, width=0.3, net_id=1))     # a track stub off U2.1
+    info = get_multipoint_net_pads(pcb, 1, GridRouteConfig(layers=['F.Cu', 'B.Cu']))
+    refs = sorted(getattr(r[5], 'component_ref', '?') for r in info or ())
+    where = sorted((round(r[3], 3), round(r[4], 3)) for r in info or ())
+    check('5a: the terminals are pads and the track\'s free end, none on the polygon',
+          set(where) <= {(0, 0), (5, 0), (8, 0), (20, 0)} and (20, 0) in where and (0, 0) in where, where)
+    groups = get_copper_connected_terminal_groups(pcb, 1, info)
+    at = {(round(r[3], 3), round(r[4], 3)): groups[i] for i, r in enumerate(info)}
+    near = {g for xy, g in at.items() if xy != (20, 0)}
+    check('5b: the pads the polygon joins share a group, the far pad does not',
+          len(near) == 1 and at[(20, 0)] not in near, at)
+
+
+def t_width():
+    from connections import resolve, judge_joined
+    pcb = _three_pads()
+    pcb.segments.append(make_seg(7, -1, 20, 0, width=0.3, net_id=1))     # from the polygon's corner to J1
+    tasks = resolve([{"net": "PWR", "from": {"ref": "U1", "pad": "1"}, "to": {"ref": "J1", "pad": "1"},
+                      "widths": {"F.Cu": 0.25, "B.Cu": 0.25}}], pcb, ['F.Cu', 'B.Cu'], min_track=0.1)
+    judge_joined(pcb, tasks)
+    t = tasks[0]
+    check('6: joined through the polygon and a track, the width is the track\'s',
+          t.joined and t.length_mm is not None and t.min_width_mm == {'F.Cu': 0.3} and t.status == 'joined_before',
+          (t.status, t.length_mm, t.min_width_mm))
+
+
 if __name__ == '__main__':
     t_conducts()
     t_joins()
     t_split()
+    t_terminals()
+    t_width()
     if fails:
         print(f'{len(fails)} FAILURE(S): {fails}')
         sys.exit(1)
