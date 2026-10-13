@@ -40,7 +40,10 @@ A JSON list of tasks:
 3. For this call only, each named net is cut down to the pads of the routed group's ends and the copper already
    joined to them. Its other pads and copper move to a private net (`__connections_private_<id>`) that is an
    obstacle at the net's class clearance and is never ripped (protected_nets.py `protection_map`, as locked copper).
-   Same-net pads of an end's footprint that are not ends are obstacles too (D4). A named net with nothing to route
+   Same-net pads of an end's footprint that are not ends are obstacles too (D4). A copper graphic of the net stays on
+   the net (docs/fork-divergences.md, "Copper graphics with a net conduct"); one not joined to an end gets an
+   obstacle twin on the private net for the call, so the route neither crosses it nor joins the task through it to
+   the copper the call leaves alone. A named net with nothing to route
    moves whole, so the call does not touch it; that includes a net whose every task is refused. The writer copies the input text and appends only new copper, so the
    private net never reaches the output board or project.
 4. The routed net's copper is laid at the group's widths, per layer (`config.net_layer_widths`). Neck-down rules

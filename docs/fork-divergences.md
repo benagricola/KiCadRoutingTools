@@ -329,20 +329,32 @@ nets. Open or unattributed regions use the existing frontier-ranked ladder.
   obstacle net.
 - Fork: `check_connected.conducts` counts a graphic that carries a net as copper of that net: its stroke segments
   and, for a filled shape, its interior bands (`area_fill`). A graphic with no net stays an obstacle only.
-  `connections.split_nets` leaves every graphic on its net. The router still does not route to a graphic:
-  `connectivity.terminal_segments` leaves graphics out of a net's terminals, free ends and stub length (upstream's
-  `get_net_endpoints` and `get_multipoint_net_pads` take a free end of every band and stroke as a terminal, 60 of
-  them on the board below), and the pads and tracks a graphic joins are grouped by the graph, which counts it. A
-  `--connections` task's `min_width_mm` leaves out the graphics on its path, whose `width` is a stroke or a band's
-  height.
+  `connections.split_nets` leaves every graphic on its net; one not joined to a task's end gets an obstacle twin on
+  the private net for the call (`connections_art_twins`, left out of the board `finish` measures), so the route
+  neither crosses it nor joins the task through it to the copper the call leaves alone. The router still does not
+  route to a graphic: `connectivity.terminal_segments` leaves graphics out of a net's terminals, free ends and stub
+  length, and out of the stub groups MPS ordering and bus detection read (`get_net_mst_segments`,
+  `get_net_routing_endpoints`). Upstream's `get_net_endpoints` and `get_multipoint_net_pads` take a free end of every
+  band and stroke as a terminal, 60 of them on the board below. The pads and tracks a graphic joins are grouped by
+  the graph, which counts it. A `--connections` task's `min_width_mm` (`connections._path_width`) measures a line, an
+  arc or an unfilled outline on its path at the stroke as drawn (`drawn_width`), so a thin stroke join reads
+  `joined_narrow`; a filled shape's bands and outline carry no width, like a pour, whatever its cross-section.
+  Upstream's via-to-pad graze bridge (`close_soft_joints`, #470) counts only a direct track stub as serving the
+  joint; the fork also skips a via and pad that one copper item of the net already joins, a track or a graphic taken
+  whole (`_copper_joins_via_pad`).
 - Why: KiCad 10 counts a PCB_SHAPE with a net as a connected item. Measured with pcbnew 10.0.6: a pad and a via
   joined only by a net-tagged line, an unfilled polygon's stroke or a filled polygon read connected
-  (`GetConnectedItems`, `GetUnconnectedCount`); an unfilled rectangle whose stroke misses both does not. On a real
+  (`GetConnectedItems`, `GetUnconnectedCount`); an unfilled rectangle whose stroke misses both does not. The fork
+  matches KiCad for graphics that carry a net only. KiCad also credits net-less art (a `gr_line` with no net joining
+  two pads of one net gives 0 unconnected items in kicad-cli 10.0.6 DRC); the fork keeps net-less art an obstacle
+  and nothing else, on purpose, because the requirement covers graphics with a net. Upstream's evidence for #513
+  item 6 (7bdd5f13: opengammakit, 5 nets the model read joined through art and kicad-cli reported open) was not
+  rechecked: that board is not in this clone. On a real
   board a cell joined five vias of its via field to a MOSFET's source pads with two filled B.Cu polygons on the net.
   A `--connections` call moved two of those vias and both polygons, stroke and interior, to the private net, which
   walled the task's end in. The interior bands alone did not hold a polygon together: neighbouring bands meet at
-  exact tangency, which the graph does not credit, so one polygon read as several pieces. The conducting stroke
-  meets every band at both ends and joins them.
+  exact tangency, which the graph does not credit, so the board's polygon read as one piece per band. The conducting
+  stroke meets every band at both ends and joins them.
 - Replayed on that board (the four VBIKE tasks at 2.4651 mm on F.Cu and B.Cu): all four routed, 2.4651 mm on F.Cu.
 - Test: tests/test_copper_graphic_net_conducts.py, tests/test_filled_copper_graphic_area.py (`7b`),
   tests/test_check_weird.py (art soft joint).

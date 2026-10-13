@@ -478,6 +478,41 @@ def _own_net_npth_hole_dist(pcb_data, net_id, x1, y1, x2, y2) -> float:
     return best
 
 
+def _copper_joins_via_pad(vx, vy, vr, pad, layer, items) -> bool:
+    """Does one copper item of the net -- a track, or a copper graphic's segments together -- reach both the via
+    barrel at (vx, vy) (radius vr) and `pad`'s copper on `layer`?
+
+    FORK DIVERGENCE (docs/fork-divergences.md, "Copper graphics with a net conduct"): upstream's via-to-pad graze
+    bridge counts only a direct track stub as serving the joint, and bridged a via its own net's polygon already
+    joins to the pad. A segment reaches the barrel within half its width plus the radius, and the pad where a point
+    of its centreline, sampled every 0.05 mm, is within half its width of the pad's copper."""
+    import math
+    from check_drc import point_to_pad_distance
+
+    def _near_via(s):
+        dx, dy = s.end_x - s.start_x, s.end_y - s.start_y
+        L2 = dx * dx + dy * dy
+        t = max(0.0, min(1.0, ((vx - s.start_x) * dx + (vy - s.start_y) * dy) / L2)) if L2 else 0.0
+        return math.hypot(vx - (s.start_x + t * dx), vy - (s.start_y + t * dy)) <= s.width / 2.0 + vr + 1e-6
+
+    def _on_pad(s):
+        if s.layer != layer:
+            return False
+        L = math.hypot(s.end_x - s.start_x, s.end_y - s.start_y)
+        n = max(1, int(L / 0.05))
+        for k in range(n + 1):
+            f = k / n
+            if point_to_pad_distance(s.start_x + f * (s.end_x - s.start_x),
+                                     s.start_y + f * (s.end_y - s.start_y), pad) <= s.width / 2.0 + 1e-6:
+                return True
+        return False
+
+    for segs in items:
+        if any(_near_via(s) for s in segs) and any(_on_pad(s) for s in segs):
+            return True
+    return False
+
+
 def close_soft_joints(results, pcb_data: PCBData, scope_net_ids, config,
                       clearance: float = None) -> int:
     """Bridge same-net SOFT JOINTS with a TINY coincident segment (#soft-joint).
@@ -633,6 +668,16 @@ def close_soft_joints(results, pcb_data: PCBData, scope_net_ids, config,
     # with one endpoint on the barrel and the other inside the pad -- every
     # healthy dogbone) are skipped.
     via_pad_conns = []
+    # FORK DIVERGENCE (docs/fork-divergences.md, "Copper graphics with a net conduct"): the net's copper items --
+    # each track, and each copper graphic as ONE item (its strokes and fill bands, by uuid, as KiCad holds one
+    # PCB_SHAPE) -- so a via and a pad one item already joins get no graze bridge (_copper_joins_via_pad).
+    vp_items = {}
+    for _s in pcb_data.segments:
+        if not _s.net_id or (scope_net_ids is not None and _s.net_id not in scope_net_ids):
+            continue
+        _key = ('g', _s.uuid) if getattr(_s, 'graphic', False) and _s.uuid else ('t', id(_s))
+        vp_items.setdefault(_s.net_id, {}).setdefault(_key, []).append(_s)
+    vp_items = {n: list(d.values()) for n, d in vp_items.items()}
     # Some plane-flow callers pass a minimal namespace config with no
     # track_width (only clearance); fall back to the stock default.
     _vp_tw = getattr(config, 'track_width', 0) or 0.127
@@ -675,7 +720,8 @@ def close_soft_joints(results, pcb_data: PCBData, scope_net_ids, config,
                             break
                     if served:
                         break
-                if served:
+                if served or _copper_joins_via_pad(vx, vy, vr, p, vp_layer,
+                                                   vp_items.get(vp_net, ())):
                     continue
                 w2 = min(_vp_tw, p.size_x, p.size_y, 2 * vr)
                 if not clears(vp_net, vx, vy, p.global_x, p.global_y,

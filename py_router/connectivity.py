@@ -147,8 +147,10 @@ def terminal_segments(pcb_data, net_id: int) -> List[Segment]:
 
     FORK DIVERGENCE (docs/fork-divergences.md, "Copper graphics with a net conduct"): a graphic with a net is copper
     of the net (check_connected.conducts) but the router does not route to one, so its strokes and fill bands are
-    neither terminals, free ends nor stub length. The pads and tracks they join are grouped by the authoritative graph
-    (get_copper_connected_terminal_groups), which counts the graphic. Upstream takes every segment of the net here."""
+    neither terminals, free ends nor stub length, nor the stub groups MPS ordering and bus detection read
+    (get_net_mst_segments, get_net_routing_endpoints). The pads and tracks they join are grouped by the authoritative
+    graph (get_copper_connected_terminal_groups), which counts the graphic. Upstream takes every segment of the net
+    here."""
     return [s for s in pcb_data.segments if s.net_id == net_id and not getattr(s, 'graphic', False)]
 
 
@@ -1893,7 +1895,7 @@ def get_net_mst_segments(pcb_data: PCBData, net_id: int) -> List[Tuple[Tuple[flo
 
     Uses stub endpoints if available, otherwise pad positions.
     """
-    net_segments = [s for s in pcb_data.segments if s.net_id == net_id]
+    net_segments = terminal_segments(pcb_data, net_id)  # FORK DIVERGENCE: see terminal_segments
     net_pads = pcb_data.pads_by_net.get(net_id, [])
     net_vias = [v for v in pcb_data.vias if v.net_id == net_id]
 
@@ -1941,7 +1943,7 @@ def get_net_routing_endpoints(pcb_data: PCBData, net_id: int) -> List[Tuple[floa
 
     Returns list of (x, y) positions, typically 2 for source and target.
     """
-    net_segments = [s for s in pcb_data.segments if s.net_id == net_id]
+    net_segments = terminal_segments(pcb_data, net_id)  # FORK DIVERGENCE: see terminal_segments
     net_pads = pcb_data.pads_by_net.get(net_id, [])
     net_vias = [v for v in pcb_data.vias if v.net_id == net_id]
 

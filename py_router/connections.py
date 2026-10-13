@@ -210,6 +210,21 @@ class _Components:
         return {self.root[id(x)] for x in items if id(x) in self.root}
 
 
+def _path_width(seg) -> Optional[float]:
+    """A path segment's width for a task's `min_width_mm`, or None when it has none.
+
+    FORK DIVERGENCE (docs/fork-divergences.md, "Copper graphics with a net conduct"): a filled shape's interior band
+    (`area_fill`) has its height as `width`, and its outline the fab track width the parser gives a filled shape's
+    edge (kicad_parser `_emit_outline`), so neither is a track width: like a pad or a pour, a filled shape carries no
+    width here. A line, an arc or an unfilled outline is measured at the stroke as drawn (`drawn_width`)."""
+    if not getattr(seg, 'graphic', False):
+        return seg.width
+    if getattr(seg, 'area_fill', False) or getattr(seg, 'graphic_filled', False):
+        return None
+    drawn = getattr(seg, 'drawn_width', None)
+    return drawn if drawn is not None else seg.width
+
+
 def measure(pcb_data, task: Task, comps: Optional[_Components] = None) -> bool:
     """Set the task's `joined`, `length_mm`, `min_width_mm` and `path` from `pcb_data`'s copper; returns `joined`.
     The length and widths are those of the shortest track path between the two ends (net_queries
@@ -231,12 +246,10 @@ def measure(pcb_data, task: Task, comps: Optional[_Components] = None) -> bool:
     if best is not None:
         narrow: Dict[str, float] = {}
         for s in best[1]:
-            # FORK DIVERGENCE (docs/fork-divergences.md, "Copper graphics with a net conduct"): the path may cross a
-            # copper graphic, whose `width` is a stroke or a fill band's height, not a track width; like a pad or a
-            # pour it carries no width here.
-            if getattr(s, 'graphic', False):
+            w = _path_width(s)
+            if w is None:
                 continue
-            narrow[s.layer] = min(narrow.get(s.layer, s.width), s.width)
+            narrow[s.layer] = min(narrow.get(s.layer, w), w)
         task.length_mm, task.min_width_mm, task.path = round(best[0], 4), narrow, list(best[1])
     return True
 
@@ -293,8 +306,10 @@ def split_nets(pcb_data, chosen: Dict[int, List[Task]], also: Iterable[int] = ()
     """Move, for each chosen net, every pad and copper item outside the components of its tasks' ends into a private
     obstacle net; a net in `also` (named by the file, nothing to route) moves whole, so the call leaves it alone.
     Returns {net id: private id}. The caller gives the private net its net's class clearance and protects it."""
+    from dataclasses import replace as _replace
     from kicad_parser import Net
     private: Dict[int, int] = {}
+    twins = []
     next_id = max(list(pcb_data.nets) + list(pcb_data.pads_by_net) + [0]) + 1
     names = getattr(pcb_data, 'net_id_to_name', None)
     for nid in list(dict.fromkeys(list(chosen) + [n for n in also if n is not None])):
@@ -324,9 +339,13 @@ def split_nets(pcb_data, chosen: Dict[int, List[Task]], also: Iterable[int] = ()
         pnet.pads = list(moved)
         pcb_data.pads_by_net[nid], pcb_data.pads_by_net[pid] = stay, moved
         for item in list(comps.segs) + list(comps.vias) + list(comps.zones):
-            # FORK DIVERGENCE (docs/fork-divergences.md, "Copper graphics with a net conduct"): a copper graphic is
-            # copper of its net and stays on it.
             if getattr(item, 'graphic', False):
+                # FORK DIVERGENCE (docs/fork-divergences.md, "Copper graphics with a net conduct"): a copper graphic
+                # is copper of its net and stays on it. One joined to none of the tasks' ends gets an obstacle twin
+                # on the private net for the call, so the route neither crosses it nor joins the task through it
+                # to the copper the call leaves alone.
+                if comps.root.get(id(item)) not in keep:
+                    twins.append(_replace(item, net_id=pid, owner_ref=''))
                 continue
             if comps.root.get(id(item)) not in keep:
                 item.net_id = pid
@@ -335,6 +354,8 @@ def split_nets(pcb_data, chosen: Dict[int, List[Task]], also: Iterable[int] = ()
                 if z.net_id == nid:
                     z.net_id = pid
         private[nid] = pid
+    pcb_data.segments.extend(twins)
+    pcb_data.connections_art_twins = list(getattr(pcb_data, 'connections_art_twins', None) or []) + twins
     pcb_data.connections_private = {**(getattr(pcb_data, 'connections_private', None) or {}), **private}
     pcb_data.connections_private_names = set(getattr(pcb_data, 'connections_private_names', None) or ()) | {
         pcb_data.nets[p].name for p in private.values()}
@@ -349,11 +370,16 @@ class _Unsplit:
         self.pcb = pcb_data
         self.moved = []
         self.pads_by_net = None
+        self.segments = None
 
     def __enter__(self):
         back = {pid: nid for nid, pid in (getattr(self.pcb, 'connections_private', None) or {}).items()}
         if not back:
             return self
+        twins = {id(s) for s in (getattr(self.pcb, 'connections_art_twins', None) or ())}
+        if twins:               # the graphics' obstacle twins are not on the board the call ships
+            self.segments = list(self.pcb.segments)
+            self.pcb.segments[:] = [s for s in self.pcb.segments if id(s) not in twins]
         self.pads_by_net = dict(self.pcb.pads_by_net)
         for pid, nid in back.items():
             self.pcb.pads_by_net[nid] = list(self.pcb.pads_by_net.get(nid, [])) + list(
@@ -368,6 +394,8 @@ class _Unsplit:
     def __exit__(self, *exc):
         for item, pid in self.moved:
             item.net_id = pid
+        if self.segments is not None:
+            self.pcb.segments[:] = self.segments
         if self.pads_by_net is not None:
             self.pcb.pads_by_net.clear()
             self.pcb.pads_by_net.update(self.pads_by_net)
