@@ -159,6 +159,63 @@ def t_tap_edge_search_is_recorded():
     check('a search past the bound gets no verdict', evidence_of(st2, 1)['verdicts'] == [], st2.net_history)
 
 
+def _phase3_events(rippable: bool) -> list:
+    """The net events run_phase3_tap_routing records for a multipoint net whose one tap edge fails and stays failed
+    after the rip ladder. The router's pieces are stubbed: route_multipoint_taps returns the failed edge, and
+    try_phase3_ripup reports through `outcome` whether it found copper it may rip, then returns None (still failed)."""
+    import phase3_routing as p3
+    import protected_nets
+    from routing_config import GridRouteConfig
+    entry = ([(1, 1, 0), (2, 1, 0)], (0.1, 0.1),
+             {'fwd': [(1, 1, 0)], 'bwd': [(2, 1, 0)], 'extra': [], 'iterations': {'forward': 98, 'backward': 5000},
+              'tgt_cells': [], 'src_cells': []})
+    completed = {'new_segments': [], 'new_vias': [], 'failed_edge_blocking': {(0, 1): entry},
+                 'failed_pads_info': [{'component_ref': 'U1', 'pad_number': '1', 'x': 0.0, 'y': 0.0}],
+                 'tap_edges_routed': 1, 'tap_edges_failed': 1, 'iterations': 10}
+    main = {'new_segments': [], 'new_vias': [], 'mst_edges': [(0, 1), (1, 2)]}
+
+    def ripup(*a, outcome=None, **k):
+        if rippable and outcome is not None:
+            outcome['rippable'] = True
+        return None
+    stubs = {'_order_nets_by_boxed_in_risk': lambda pending, pcb: list(pending.items()),
+             'build_single_ended_obstacles': lambda *a, **k: (None, None),
+             'route_multipoint_taps': lambda *a, **k: dict(completed),
+             'try_phase3_ripup': ripup,
+             '_phase3_tap_relocation_retry': lambda *a, **k: None,
+             '_phase3_stub_switch_retry': lambda *a, **k: None,
+             '_commit_net_result': lambda *a, **k: None,
+             'invalidate_obstacle_cache': lambda *a, **k: None,
+             'seam_reask_one_net': lambda *a, **k: None}
+    saved = {k: getattr(p3, k) for k in stubs}
+    saved_prot = protected_nets.cached_protection_map
+    try:
+        for k, v in stubs.items():
+            setattr(p3, k, v)
+        protected_nets.cached_protection_map = lambda *a, **k: {}
+        pcb = make_pcb(nets={1: Net(1, 'VB')})
+        cfg = GridRouteConfig(layers=['F.Cu', 'B.Cu'])
+        cfg.failure_evidence = True
+        cfg.max_rip_up_count = 3
+        st = N(pending_multipoint_nets={1: main}, working_obstacles=None, net_obstacles_cache={},
+               multipoint_taps_done=set(), net_history={}, route_index=0, frontier_blocking={},
+               ripped_route_layer_costs={}, ripped_route_via_positions={})
+        p3.run_phase3_tap_routing(st, pcb, cfg, None, None, set(), [1], [], {}, {}, {}, [], {}, {})
+    finally:
+        for k, v in saved.items():
+            setattr(p3, k, v)
+        protected_nets.cached_protection_map = saved_prot
+    return [ev['event'] for ev in st.net_history.get(1) or ()]
+
+
+def t_tap_verdict_waits_for_a_ladder_with_nothing_to_rip():
+    found = _phase3_events(rippable=True)
+    check('a ladder that found rippable copper and still failed leaves no verdict',
+          'search_failed' in found and 'boxed_in_static' not in found, found)
+    none = _phase3_events(rippable=False)
+    check('a ladder that found nothing to rip leaves the verdict', 'boxed_in_static' in none, none)
+
+
 def t_unrecorded_search_start_is_unknown():
     from failure_evidence import search_facts
     from routing_config import GridRouteConfig
@@ -285,6 +342,7 @@ if __name__ == '__main__':
     t_old_failure_facts_do_not_survive_success_or_a_new_search()
     t_a_rescue_that_leaves_the_net_split_keeps_the_failure()
     t_tap_edge_search_is_recorded()
+    t_tap_verdict_waits_for_a_ladder_with_nothing_to_rip()
     t_unrecorded_search_start_is_unknown()
     t_static_records_name_the_pads()
     t_static_tracks_per_net_and_layer()

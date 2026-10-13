@@ -291,6 +291,23 @@ def t_graze_bridge():
     check('8: the graze is bridged bare and not where a polygon of the net joins via and pad',
           got == {'bare': 1, 'poly': 0}, got)
 
+    # 8b: a tall filled rectangle (one 4 mm band) ends 0.675 mm short of the via barrel, though the via is within
+    # half the band's height of the band's end; pcbnew 10.0.6 reads the via unjoined to the pad (1 unconnected).
+    tall = ('(gr_poly (pts (xy 0 -2) (xy 10 -2) (xy 10 2) (xy 0 2)) (stroke (width 0.1) (type solid)) (fill yes) '
+            '(layer "F.Cu") (net "PWR") (uuid "t"))')
+    pcb = make_pcb(nets={1: Net(1, 'PWR')}, segments=extract_segments(tall, NAME_TO_ID),
+                   pads_by_net={1: [make_pad(1, 10.2, 0, ref='U1', num='1', net_name='PWR', size_x=1.0, size_y=0.6)]},
+                   vias=[make_via(10.95, 0, net_id=1, size=0.45, drill=0.2)])
+    n = close_soft_joints([], pcb, {1}, GridRouteConfig(track_width=0.2, clearance=0.1, layers=['F.Cu', 'B.Cu']))
+    check('8b: a polygon whose copper stops short of the via does not stand in for the bridge', n == 1, n)
+    # 8c: tracks keep upstream's test. A 0.2 mm track from the pad that overlaps the via ring by 0.005 mm, with
+    # neither end in the via, is no direct stub: the graze is bridged, as upstream does.
+    pcb = make_pcb(nets={1: Net(1, 'PWR')}, segments=[make_seg(0, 0, 2, 0.7609, width=0.2, net_id=1)],
+                   pads_by_net={1: [make_pad(1, 0, 0, ref='U1', num='1', net_name='PWR', size_x=1.0, size_y=0.6)]},
+                   vias=[make_via(0.9, 0, net_id=1, size=0.45, drill=0.2)])
+    n = close_soft_joints([], pcb, {1}, GridRouteConfig(track_width=0.2, clearance=0.1, layers=['F.Cu', 'B.Cu']))
+    check('8c: a track that only grazes the via ring does not stand in for the bridge (upstream)', n == 1, n)
+
 
 if __name__ == '__main__':
     t_conducts()

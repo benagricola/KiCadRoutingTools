@@ -123,12 +123,33 @@ def test_max_track_width_takes_a_number_or_a_width_per_layer():
     from repair_planes import parse_layer_widths
     assert parse_layer_widths('2') == 2.0
     assert parse_layer_widths('F.Cu=1.37,In1.Cu=3.56') == {'F.Cu': 1.37, 'In1.Cu': 3.56}
-    for bad in ('F.Cu=', 'F.Cu=x', '=1.0', 'F.Cu=-1', 'wide'):
+    for bad in ('F.Cu=', 'F.Cu=x', '=1.0', 'F.Cu=-1', 'wide', 'F.Cu=inf', 'F.Cu=nan', 'F.Cu=0.3,B.Cu=-inf'):
         try:
             parse_layer_widths(bad)
         except argparse.ArgumentTypeError:
             continue
         raise AssertionError(bad)
+
+
+def test_a_per_layer_width_on_a_layer_the_board_lacks_is_refused():
+    from repair_planes import LayerWidthsError, check_layer_widths
+    check_layer_widths({'F.Cu': 0.3, 'In1.Cu': 0.8}, ['F.Cu', 'In1.Cu', 'B.Cu'])
+    check_layer_widths(0.8, ['F.Cu'])
+    try:
+        check_layer_widths({'f.cu': 0.3, 'In1.Cu': 0.8}, ['F.Cu', 'In1.Cu', 'B.Cu'])
+    except LayerWidthsError as e:
+        assert e.code == 'unknown_layer' and e.facts['layer'] == 'f.cu', (e.code, e.facts)
+    else:
+        raise AssertionError('f.cu accepted')
+    with tempfile.TemporaryDirectory() as tmp:
+        board = os.path.join(tmp, 'b.kicad_pcb')
+        pathlib.Path(board).write_text('(kicad_pcb (version 20241229)\n\t(layers\n\t\t(0 "F.Cu" signal)\n'
+                                       '\t\t(2 "B.Cu" signal)\n\t)\n)\n')
+        for arg, code in (('f.cu=0.3,B.Cu=0.8', 'unknown_layer'), ('F.Cu=nan', 'bad_width')):
+            out = subprocess.run([sys.executable, os.path.join(ROOT, 'py_router', 'repair_planes.py'), board,
+                                  os.path.join(tmp, 'o.kicad_pcb'), '--nets', 'GND', '--max-track-width', arg],
+                                 capture_output=True, text=True, cwd=tmp, timeout=120)
+            assert out.returncode == 2 and code in out.stderr, (arg, out.returncode, out.stderr[-400:])
 
 
 def test_each_layer_of_the_repairs_copper_is_laid_at_its_own_width():
@@ -210,7 +231,9 @@ def test_a_bad_pads_end_is_refused_with_its_index_and_field():
     cases = [([{"ref": "C1", "pad": "2", "width": 0}], 'width'), ([{"ref": "C1", "pad": "2", "width": -1}], 'width'),
              ([{"ref": "C1", "pad": "2", "width": "0.2"}], 'width'),
              ([{"ref": "C1", "pad": "2", "width": True}], 'width'),
+             ([{"ref": "C1", "pad": "2", "width": float('inf')}], 'width'),
              ([{"ref": "C1", "pad": "2"}, {"pad": "1"}], 'ref'), ([{"ref": "C1", "pad": None}], 'pad'),
+             ([{"ref": "C1", "pad": 1}], 'pad'), ([{"ref": "C1", "pad": 1.0}], 'pad'),
              ([{"ref": "C1", "pad": "2", "fp": 3}], 'fp')]
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, 'pads.json')
@@ -230,7 +253,7 @@ def test_a_bad_pads_end_is_refused_with_its_index_and_field():
             assert e.code == 'not_a_list'
         else:
             raise AssertionError('not a list')
-        good = [{"ref": "C1", "pad": "2", "width": 0.25}, {"ref": "J1", "pad": 1, "fp": "u"}]
+        good = [{"ref": "C1", "pad": "2", "width": 0.25}, {"ref": "J1", "pad": "1", "fp": "u"}]
         pathlib.Path(path).write_text(json.dumps(good))
         assert read_pads(path) == good
         pathlib.Path(path).write_text(json.dumps([{"ref": "C1", "pad": "2", "width": 0}]))

@@ -240,12 +240,16 @@ nets. Open or unattributed regions use the existing frontier-ranked ladder.
     (`named_pad_widths`). Without it the pad is tapped at `--track-width` as before. A per-layer `--max-track-width`
     still caps it on each layer. Region joins stay per net. `read_pads` refuses a bad file before the board is read,
     as argparse errors (exit 2) carrying `PadsError`'s code and facts: `not_a_list`, or `bad_pad` with the end's
-    `index` and the `field` (`ref`, `pad`, `fp`, or a `width` that is not a positive number).
+    `index` and the `field` (`ref`, a `pad` that is not a string, `fp`, or a `width` that is not a finite positive
+    number).
     krt_capabilities.py publishes the fields (`pad_fields`, from `PAD_FIELDS`).
   - `--no-join-gate` leaves what is still split after the taps and region joins to the caller.
   - `--no-own-pad-lift` on repair_planes.py and route.py sets `check_drc.OWN_PAD_LIFT` False. A footprint's own
     copper then blocks every net, in the generators and the checker.
-  - `--max-track-width` also takes a width per layer, `LAYER=MM,LAYER=MM` (`parse_layer_widths`). The repair routes
+  - `--max-track-width` also takes a width per layer, `LAYER=MM,LAYER=MM` (`parse_layer_widths`). An entry
+    whose width is not a finite positive number is refused (`bad_width`), and so is a layer the board's copper
+    layers (or, with none parsed, `--layers`) do not name (`unknown_layer`, `check_layer_widths`), both before the
+    board is read, as argparse errors carrying `LayerWidthsError`'s code and facts. The repair routes
     at the widest, and its own copper of the repaired nets (via drop tracks, region joins, the bridges it closes) is
     laid at no more than its layer's width (`_cap_layer_widths`); a layer the map does not name keeps the widest.
     Upstream takes one number. krt_capabilities.py publishes the forms (`flag_forms`, from
@@ -358,8 +362,10 @@ nets. Open or unattributed regions use the existing frontier-ranked ladder.
   arc or an unfilled outline on its path at the stroke as drawn (`drawn_width`), so a thin stroke join reads
   `joined_narrow`; a filled shape's bands and outline carry no width, like a pour, whatever its cross-section.
   Upstream's via-to-pad graze bridge (`close_soft_joints`, #470) counts only a direct track stub as serving the
-  joint; the fork also skips a via and pad that one copper item of the net already joins, a track or a graphic taken
-  whole (`_copper_joins_via_pad`).
+  joint; the fork also skips a via and pad that one copper graphic of the net already joins, by the graphic's real
+  copper on the pad's layer: a filled shape's polygon plus its strokes at their drawn widths, a stroke drawn at 0
+  adding none (`_graphic_copper`, `_graphic_joins_via_pad`). Tracks keep upstream's test, so a board with no
+  graphics is unchanged (esp_prog routes byte-identical to 96e0422f).
 - Why: KiCad 10 counts a PCB_SHAPE with a net as a connected item. Measured with pcbnew 10.0.6: a pad and a via
   joined only by a net-tagged line, an unfilled polygon's stroke or a filled polygon read connected
   (`GetConnectedItems`, `GetUnconnectedCount`); an unfilled rectangle whose stroke misses both does not. The fork

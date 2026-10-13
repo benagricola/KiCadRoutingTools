@@ -47,7 +47,7 @@ from startup_checks import exit_on_error_if_main
 # (#457 item 3).
 exit_on_error_if_main(__name__)
 
-from kicad_parser import parse_kicad_pcb, PCBData, Segment, Via, pcb_uses_name_nets, pad_is_plated_through
+from kicad_parser import parse_kicad_pcb, PCBData, Segment, Via, pcb_uses_name_nets, pad_is_plated_through, extract_layers
 from kicad_writer import (generate_segment_sexpr, generate_gr_line_sexpr,
                           generate_via_sexpr, via_net_name)
 from routing_config import GridRouteConfig
@@ -765,9 +765,19 @@ def named_clearances(pcb_data, by_name: dict, input_file: str, clearance: float)
 MAX_TRACK_WIDTH_FORMS = ('number', 'per_layer')
 
 
+class LayerWidthsError(ValueError):
+    """A per-layer --max-track-width that cannot be used: `code` and `facts`, as PadsError."""
+
+    def __init__(self, code: str, **facts):
+        self.code, self.facts = code, facts
+        super().__init__(f'--max-track-width: {code} {json.dumps(facts, sort_keys=True)}')
+
+
 def parse_layer_widths(text):
     """--max-track-width: a plain width in mm (`2.0`), or a width per layer (`F.Cu=1.37,In1.Cu=3.56`) as
-    {layer: mm}. FORK DIVERGENCE (docs/fork-divergences.md, "Plane repair for a caller that tracks")."""
+    {layer: mm}. A per-layer entry that is not LAYER=MM with a finite positive width is refused (`bad_width`, with
+    the entry); its layers are checked against the board by check_layer_widths. The plain form is a float, as
+    before. FORK DIVERGENCE (docs/fork-divergences.md, "Plane repair for a caller that tracks")."""
     import argparse
     text = str(text).strip()
     if '=' not in text:
@@ -783,10 +793,21 @@ def parse_layer_widths(text):
             width = float(w)
         except ValueError:
             width = None
-        if not sep or not layer or width is None or width <= 0:
-            raise argparse.ArgumentTypeError(f"not LAYER=WIDTH: {part!r}")
+        if not sep or not layer or width is None or not math.isfinite(width) or width <= 0:
+            raise argparse.ArgumentTypeError(str(LayerWidthsError('bad_width', entry=part)))
         out[layer] = width
     return out
+
+
+def check_layer_widths(widths, copper_layers) -> None:
+    """Refuse a per-layer --max-track-width naming a layer that is not one of `copper_layers` (`unknown_layer`,
+    with the layer and the layers there are). Nothing to check for a plain width or an empty layer list.
+    FORK DIVERGENCE (docs/fork-divergences.md, "Plane repair for a caller that tracks")."""
+    if not isinstance(widths, dict) or not copper_layers:
+        return
+    for layer in widths:
+        if layer not in copper_layers:
+            raise LayerWidthsError('unknown_layer', layer=layer, layers=list(copper_layers))
 
 
 def _cap_layer_widths(new_segments, board_segments, caps, net_ids, orig_ids) -> None:
@@ -819,7 +840,8 @@ class PadsError(ValueError):
 
 
 def read_pads(path) -> list:
-    """The parsed --pads file: a JSON list of {ref, pad[, fp][, width]}. `width` (mm, a positive number) is the tap
+    """The parsed --pads file: a JSON list of {ref, pad[, fp][, width]}, `pad` a string as KiCad numbers pads.
+    `width` (mm, a positive number) is the tap
     width for that pad. Refused with PadsError: `not_a_list`, or `bad_pad` with the end's index and the field.
     FORK DIVERGENCE (docs/fork-divergences.md, "Plane repair for a caller that tracks")."""
     with open(path, encoding='utf-8') as f:
@@ -834,11 +856,11 @@ def read_pads(path) -> list:
             raise PadsError('bad_pad', index=i, field=None)
         if not isinstance(e.get('ref'), str):
             raise PadsError('bad_pad', index=i, field='ref')
-        if not (isinstance(e.get('pad'), str) or (_num(e.get('pad')) and float(e['pad']).is_integer())):
+        if not isinstance(e.get('pad'), str):
             raise PadsError('bad_pad', index=i, field='pad')
         if e.get('fp') is not None and not isinstance(e['fp'], str):
             raise PadsError('bad_pad', index=i, field='fp')
-        if 'width' in e and not (_num(e['width']) and e['width'] > 0):
+        if 'width' in e and not (_num(e['width']) and math.isfinite(e['width']) and e['width'] > 0):
             raise PadsError('bad_pad', index=i, field='width')
     return doc
 
@@ -1066,6 +1088,7 @@ def repair_planes(
     # (_cap_layer_widths). A layer the map does not name keeps the widest.
     layer_width_caps = None
     if isinstance(max_track_width, dict):
+        check_layer_widths(max_track_width, list(pcb_data.board_info.copper_layers or []))
         layer_width_caps = dict(max_track_width)
         max_track_width = max(layer_width_caps.values())
         min_track_width = min(min_track_width, max_track_width)
@@ -3680,6 +3703,13 @@ Examples:
     # FORK DIVERGENCE (docs/fork-divergences.md, plane repair for a caller that tracks): a bad --pads file is refused
     # before the board is read.
     _pads_early = None
+    if isinstance(args.max_track_width, dict):
+        try:
+            with open(args.input_file, encoding="utf-8") as _bf:
+                _copper = extract_layers(_bf.read()).copper_layers
+            check_layer_widths(args.max_track_width, _copper or list(args.layers or []))
+        except (OSError, ValueError) as _le:
+            parser.error(str(_le))
     if args.pads:
         try:
             _pads_early = read_pads(args.pads)
