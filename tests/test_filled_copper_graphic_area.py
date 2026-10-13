@@ -131,18 +131,18 @@ def test_rect_and_circle():
     check(not _covers(cs, 4.9, 4.9), "6c: and not the corner outside the disc")
 
 
-def test_filled_area_conducts_unfilled_does_not():
-    """KiCad joins pads through a filled net-tagged polygon, so this model has
-    to as well - and must still refuse to join through unfilled art, whose
-    shape it does not have."""
+def test_filled_area_and_stroke_conduct():
+    """KiCad joins pads through a net-tagged polygon, filled or not: a filled
+    shape through its interior, an unfilled one through its stroke (fork
+    divergence; tests/test_copper_graphic_net_conducts.py has the joins)."""
     fill = [s for s in extract_segments(_poly('yes'), NAME_TO_ID)
             if getattr(s, 'area_fill', False)]
     stroke = [s for s in extract_segments(_poly('no'), NAME_TO_ID)
               if getattr(s, 'graphic', False)]
     check(bool(fill) and all(conducts(s) for s in fill),
           "7: a filled shape's interior bands conduct")
-    check(bool(stroke) and not any(conducts(s) for s in stroke),
-          "7b: unfilled art still does not conduct")
+    check(bool(stroke) and all(conducts(s) for s in stroke),
+          "7b: an unfilled shape's stroke conducts")
 
 
 def test_pads_join_through_a_filled_pour():
@@ -164,7 +164,7 @@ if __name__ == '__main__':
     for fn in (test_filled_covers_its_middle, test_unfilled_does_not,
                test_bands_merge_and_cover, test_merging_never_over_blocks,
                test_concave_polygon_is_not_bridged, test_rect_and_circle,
-               test_filled_area_conducts_unfilled_does_not,
+               test_filled_area_and_stroke_conduct,
                test_pads_join_through_a_filled_pour):
         print(fn.__name__)
         fn()

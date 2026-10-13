@@ -431,19 +431,21 @@ def bare_pad_nets(pcb_data, exclude_net_ids=None,
 def conducts(seg) -> bool:
     """Does this segment carry current in the connectivity model?
 
-    Net-tagged copper GRAPHICS are DRC-real copper but not, in general, a join
-    this model may credit: it only sees the strokes someone drew, so a cluster
-    that merely touches a card-edge finger looks joined when it is not
-    (opengammakit shipped 5 nets open while this model read them connected).
-    That reasoning is about copper whose SHAPE is not modelled.
+    Tracks do. A copper GRAPHIC does when it carries a net: its stroke
+    segments, and a filled shape's interior bands (`area_fill`, from the
+    parser), are copper of that net.
 
-    A FILLED shape is different: its interior is modelled (`area_fill` bands
-    from the parser), so a join through it is as verifiable as one through a
-    zone -- and KiCad joins pads through a filled net-tagged polygon, measured
-    on KiCad 10 by deleting one and watching its net fall from 3 unconnected
-    pairs to 8. Those segments conduct; unfilled art still does not.
+    FORK DIVERGENCE (docs/fork-divergences.md, "Copper graphics with a net
+    conduct"). Upstream credits no join through any graphic (#513 item 6),
+    on the premise that KiCad's connectivity never does. KiCad 10 does: a
+    PCB_SHAPE with a net is a connected item, and pads and vias joined only
+    by a net-tagged line, an unfilled polygon's stroke or a filled polygon
+    read connected there (pcbnew 10.0.6, GetConnectedItems /
+    GetUnconnectedCount).
     """
-    return (not getattr(seg, 'graphic', False)) or getattr(seg, 'area_fill', False)
+    if not getattr(seg, 'graphic', False):
+        return True
+    return bool(getattr(seg, 'net_id', 0))
 
 
 def net_copper_fragments(net_id, segments, vias, pads, zones=None,
@@ -1150,14 +1152,10 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
     # Add segment endpoints
     for seg_idx, seg in enumerate(segments):
         if not conducts(seg):
-            # UNFILLED net-tagged copper art (card-edge fingers and the like):
-            # DRC-real obstacles but not a join this model may credit, because
-            # only the stroke is modelled (#513 item 6 -- opengammakit shipped
-            # 5 nets open while this model read them connected through the
-            # finger graphics). Allocate the two point ids (callers rely on
+            # A copper graphic with no net (see conducts()): an obstacle, not
+            # a join. Allocate the two point ids (callers rely on
             # "segment i -> ids 2i / 2i+1") but keep the points out of the
-            # join graph entirely. A FILLED shape's interior IS modelled, so
-            # its bands conduct -- see conducts().
+            # join graph entirely.
             point_id += 2
             continue
         start_id = point_id
@@ -1445,7 +1443,7 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
         endpoint_index = SpatialIndex(cell_size=1.0)
         for seg_idx, seg in enumerate(segments):
             if not conducts(seg):
-                continue  # unfilled art does not conduct (see conducts())
+                continue  # a graphic with no net does not conduct (see conducts())
             if seg.layer.endswith('.Cu'):
                 endpoint_index.add(seg.start_x, seg.start_y, seg.layer, seg_idx * 2, seg.width)
                 endpoint_index.add(seg.end_x, seg.end_y, seg.layer, seg_idx * 2 + 1, seg.width)
@@ -1476,7 +1474,7 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
     seg_index = SegmentIndex(cell_size=max(_max_reach * 1.01, 0.05))
     for seg_idx, seg in enumerate(segments):
         if not conducts(seg):
-            continue  # unfilled art does not conduct (see conducts()): a point
+            continue  # a graphic with no net does not conduct (see conducts()): a point
             # lying on it must not union through it (T-junction/through-pad)
         seg_start_id = seg_idx * 2
         seg_index.add(seg, seg_start_id)

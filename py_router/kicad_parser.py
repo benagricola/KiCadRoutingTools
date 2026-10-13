@@ -4695,13 +4695,11 @@ def warn_net_tagged_graphics(segments, name_to_id=None) -> int:
     or rewritten), with a FILLED shape modelled over its whole area rather than
     its outline alone.
 
-    What remains a limitation is TARGETING: the router cannot route to a
-    graphic, so a connection that has to land on one stays open, and the
-    connectivity model does not credit joins through one (crediting a join it
-    cannot verify once shipped 5 split nets reading "fully connected" with 0
-    DRC violations, opengammakit). KiCad itself does join pads through a filled
-    net-tagged polygon, so for that shape its DRC and this model disagree in
-    the safe direction: this model may call a net open that KiCad calls closed.
+    The connectivity model credits a join through one, as KiCad 10 does
+    (FORK DIVERGENCE, docs/fork-divergences.md "Copper graphics with a net
+    conduct"; upstream credits none, #513 item 6). What remains a limitation is
+    TARGETING: the router cannot route to a graphic, so a connection whose only
+    landing is one stays open.
 
     Returns the number of net-tagged graphic segments found. Called by BOTH
     parse paths (file text and pcbnew build)."""
@@ -4714,10 +4712,11 @@ def warn_net_tagged_graphics(segments, name_to_id=None) -> int:
     preview = ', '.join(nets[:6]) + (', ...' if len(nets) > 6 else '')
     print(f"NOTE: {len(tagged)} NET-TAGGED copper graphic segment(s) on "
           f"{len(nets)} net(s) ({preview}). These are modelled as real copper "
-          f"-- obstacles and DRC, a filled shape over its whole area -- but the "
-          f"router cannot route TO a graphic and does not credit joins through "
-          f"one. A connection that must LAND on one stays open; draw that end "
-          f"as a pad, track or zone if the router has to reach it (#513).")
+          f"of their net -- obstacles and DRC, a filled shape over its whole "
+          f"area, and joins through them credited as KiCad credits them -- but "
+          f"the router cannot route TO a graphic. A connection that must LAND "
+          f"on one stays open; draw that end as a pad, track or zone if the "
+          f"router has to reach it (#513).")
     # ...and say what it will look like AFTERWARDS, which is the part people
     # actually hit (#659). KiCad's own DRC lists such a net as unconnected on
     # every run, forever: the art is copper to KiCad, so it demands a link to
@@ -4727,9 +4726,7 @@ def warn_net_tagged_graphics(segments, name_to_id=None) -> int:
     # links on zone-less signal nets. Nobody should spend a retry on it.
     print(f"      A net whose only link is a graphic this model cannot target "
           f"stays open on every run: the art is immutable (#337), so that is a "
-          f"board-authoring fix, not a routing failure. Where the graphic is a "
-          f"FILLED polygon, KiCad's own connectivity does join through it, so "
-          f"KiCad may well report the net connected (#659).")
+          f"board-authoring fix, not a routing failure (#659).")
     return len(tagged)
 
 

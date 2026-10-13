@@ -624,9 +624,12 @@ def main():
                       layer='F.Cu', net_id=NET, graphic=True)
     _mixed = _pcb([_track, _artseg], pads=_gp)
     _cm = check_net_connectivity(NET, [_track, _artseg], [], _gp, [])
-    results.append(("a track ending short of ART is a real open "
+    # FORK DIVERGENCE (docs/fork-divergences.md, "Copper graphics with a net
+    # conduct"): the caps overlap and the art carries the net, so KiCad and
+    # check_connected join them; upstream reads this net open.
+    results.append(("a track whose cap overlaps net-tagged ART is joined "
                     "(check_connected)",
-                    _cm['num_components'] > 1 or bool(_cm['disconnected_pads'])))
+                    _cm['num_components'] == 1 and not _cm['disconnected_pads']))
     results.append(("...and the track-vs-art pair is still reported",
                     _sj(_mixed) == 1))
     _rep = [x for x in check_weird(_mixed, tolerance=0)[0]

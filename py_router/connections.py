@@ -319,6 +319,10 @@ def split_nets(pcb_data, chosen: Dict[int, List[Task]], also: Iterable[int] = ()
         pnet.pads = list(moved)
         pcb_data.pads_by_net[nid], pcb_data.pads_by_net[pid] = stay, moved
         for item in list(comps.segs) + list(comps.vias) + list(comps.zones):
+            # FORK DIVERGENCE (docs/fork-divergences.md, "Copper graphics with a net conduct"): a copper graphic is
+            # copper of its net and stays on it.
+            if getattr(item, 'graphic', False):
+                continue
             if comps.root.get(id(item)) not in keep:
                 item.net_id = pid
         if copper_only:

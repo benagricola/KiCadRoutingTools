@@ -311,3 +311,25 @@ nets. Open or unattributed regions use the existing frontier-ranked ladder.
 - Why: placemat judges each phase on KiCad's DRC. A return via that shorts the pair costs the pair, where a missing
   return via costs nothing KiCad grades.
 - Test: tests/test_gnd_return_via_pair_copper.py.
+
+## Copper graphics with a net conduct
+
+- Upstream: a net-tagged copper graphic (`gr_line`, `gr_arc`, `gr_rect`, `gr_circle`, `gr_poly` and footprint shapes
+  on a copper layer) parses as `Segment(graphic=True)`: an obstacle and DRC copper, never a join.
+  `check_net_connectivity` keeps every graphic out of the join graph (#513 item 6, check_connected.py), on the premise
+  that KiCad's connectivity never counts a graphic. `--connections` did not exist upstream; in the fork its
+  `split_nets` moved copper that only a graphic joined to a task's end, and the graphic itself, onto the private
+  obstacle net.
+- Fork: `check_connected.conducts` counts a graphic that carries a net as copper of that net: its stroke segments
+  and, for a filled shape, its interior bands (`area_fill`). A graphic with no net stays an obstacle only.
+  `connections.split_nets` leaves every graphic on its net. The router still does not route to a graphic.
+- Why: KiCad 10 counts a PCB_SHAPE with a net as a connected item. Measured with pcbnew 10.0.6: a pad and a via
+  joined only by a net-tagged line, an unfilled polygon's stroke or a filled polygon read connected
+  (`GetConnectedItems`, `GetUnconnectedCount`); an unfilled rectangle whose stroke misses both does not. On a real
+  board a cell joined five vias of its via field to a MOSFET's source pads with two filled B.Cu polygons on the net.
+  A `--connections` call moved two of those vias and both polygons, stroke and interior, to the private net, which
+  walled the task's end in. The interior bands alone did not hold a polygon together: neighbouring bands meet at
+  exact tangency, which the graph does not credit, so one polygon read as several pieces. The conducting stroke
+  meets every band at both ends and joins them.
+- Test: tests/test_copper_graphic_net_conducts.py, tests/test_filled_copper_graphic_area.py (`7b`),
+  tests/test_check_weird.py (art soft joint).
