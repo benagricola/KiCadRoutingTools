@@ -114,6 +114,7 @@ def test_the_new_flags_are_parsed_and_listed():
     assert {'--net-clearances', '--pads', '--no-join-gate', '--no-own-pad-lift'} <= set(flags['repair_planes.py'])
     assert '--no-own-pad-lift' in flags['route.py']
     assert json.loads(out)['flag_forms']['repair_planes.py']['--max-track-width'] == ['number', 'per_layer']
+    assert json.loads(out)['pad_fields']['repair_planes.py'] == ['ref', 'pad', 'fp', 'width']
 
 
 
@@ -142,6 +143,101 @@ def test_each_layer_of_the_repairs_copper_is_laid_at_its_own_width():
     _cap_layer_widths(new, [old, added], caps, {1}, {id(old)})
     assert [d['width'] for d in new] == [1.37, 3.56, 0.5, 3.56, 3.56]
     assert old.width == 3.56 and added.width == 1.37
+
+
+def _plane_board(path):
+    """GND poured on B.Cu over a 30 x 20 mm board; F.Cu SMD pads of GND, none joined to it: C1.2 (a decoupling pad),
+    J1.1 and R1.2."""
+    def fp(ref, x, y, gnd_pad, gnd_dx):
+        other = '2' if gnd_pad == '1' else '1'
+        return ('(footprint "t:P" (layer "F.Cu") (uuid "u-%s") (at %s %s)\n'
+                ' (property "Reference" "%s" (at 0 0) (layer "F.SilkS"))\n'
+                ' (pad "%s" smd rect (at %s 0) (size 0.5 0.5) (layers "F.Cu") (net 2 "SIG"))\n'
+                ' (pad "%s" smd rect (at %s 0) (size 0.25 0.25) (layers "F.Cu") (net 1 "GND")))\n'
+                % (ref, x, y, ref, other, -gnd_dx, gnd_pad, gnd_dx))
+    text = ('(kicad_pcb (version 20241229) (generator "test")\n (general (thickness 1.6))\n'
+            ' (layers (0 "F.Cu" signal) (2 "B.Cu" signal) (25 "Edge.Cuts" user))\n'
+            ' (net 0 "") (net 1 "GND") (net 2 "SIG")\n'
+            ' (gr_rect (start 0 0) (end 30 20) (stroke (width 0.1) (type solid)) (fill no) (layer "Edge.Cuts"))\n'
+            + fp('C1', 8, 10, '2', 0.5) + fp('J1', 22, 10, '1', -0.5) + fp('R1', 15, 15, '2', 0.5)
+            + ' (zone (net 1) (net_name "GND") (layer "B.Cu") (uuid "z") (hatch edge 0.5)'
+            ' (connect_pads (clearance 0.5)) (min_thickness 0.2) (fill yes (thermal_gap 0.5)'
+            ' (thermal_bridge_width 0.5))\n  (polygon (pts (xy 1 1) (xy 29 1) (xy 29 19) (xy 1 19)))\n'
+            '  (filled_polygon (layer "B.Cu") (pts (xy 1 1) (xy 29 1) (xy 29 19) (xy 1 19))))\n)\n')
+    pathlib.Path(path).write_text(text)
+
+
+def _tap_widths(pads):
+    """{(ref, pad): the track width each tap of pad repair was asked for}, repairing _plane_board's GND with
+    --track-width 0.8 and the given --pads ends."""
+    import repair_planes as rp
+    seen = {}
+    real = rp.tap_pad_with_escalation
+
+    def spy(pad, layer, net_id, pcb_data, cfg, *a, **k):
+        seen.setdefault((pad.component_ref, pad.pad_number), set()).add(round(cfg.track_width, 4))
+        return real(pad, layer, net_id, pcb_data, cfg, *a, **k)
+    rp.tap_pad_with_escalation = spy
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, 'plane.kicad_pcb')
+            _plane_board(src)
+            rp.repair_planes(src, os.path.join(tmp, 'out.kicad_pcb'), ['GND'], ['B.Cu'], track_width=0.8,
+                             min_track_width=0.8, max_track_width=0.8, via_size=0.6, via_drill=0.3,
+                             routing_layers=['F.Cu', 'B.Cu'], pads=pads, dry_run=True)
+    finally:
+        rp.tap_pad_with_escalation = real
+    return seen
+
+
+def test_a_pad_given_a_width_is_tapped_at_it_beside_pads_at_the_nets_width():
+    """A decoupling pad (C1.2, width 0.25) and carrier pads (J1.1, R1.2, no width) in one call. Pad repair skips a
+    pad it already finds on the plane, so at least one carrier pad is tapped."""
+    seen = _tap_widths([{"ref": "C1", "pad": "2", "width": 0.25}, {"ref": "J1", "pad": "1"},
+                        {"ref": "R1", "pad": "2"}])
+    assert seen.get(('C1', '2')) == {0.25}, seen
+    carriers = {k: v for k, v in seen.items() if k != ('C1', '2')}
+    assert carriers and all(v == {0.8} for v in carriers.values()), seen
+
+
+def test_ends_without_a_width_are_tapped_as_before():
+    seen = _tap_widths([{"ref": "C1", "pad": "2"}, {"ref": "J1", "pad": "1"}, {"ref": "R1", "pad": "2"}])
+    assert seen and all(v == {0.8} for v in seen.values()), seen
+
+
+def test_a_bad_pads_end_is_refused_with_its_index_and_field():
+    from repair_planes import PadsError, read_pads
+    cases = [([{"ref": "C1", "pad": "2", "width": 0}], 'width'), ([{"ref": "C1", "pad": "2", "width": -1}], 'width'),
+             ([{"ref": "C1", "pad": "2", "width": "0.2"}], 'width'),
+             ([{"ref": "C1", "pad": "2", "width": True}], 'width'),
+             ([{"ref": "C1", "pad": "2"}, {"pad": "1"}], 'ref'), ([{"ref": "C1", "pad": None}], 'pad'),
+             ([{"ref": "C1", "pad": "2", "fp": 3}], 'fp')]
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, 'pads.json')
+        for doc, fld in cases:
+            pathlib.Path(path).write_text(json.dumps(doc))
+            try:
+                read_pads(path)
+            except PadsError as e:
+                assert e.code == 'bad_pad' and e.facts['field'] == fld \
+                    and e.facts['index'] == len(doc) - 1, (doc, e.code, e.facts)
+                continue
+            raise AssertionError(doc)
+        pathlib.Path(path).write_text(json.dumps({"ref": "C1"}))
+        try:
+            read_pads(path)
+        except PadsError as e:
+            assert e.code == 'not_a_list'
+        else:
+            raise AssertionError('not a list')
+        good = [{"ref": "C1", "pad": "2", "width": 0.25}, {"ref": "J1", "pad": 1, "fp": "u"}]
+        pathlib.Path(path).write_text(json.dumps(good))
+        assert read_pads(path) == good
+        pathlib.Path(path).write_text(json.dumps([{"ref": "C1", "pad": "2", "width": 0}]))
+        out = subprocess.run([sys.executable, os.path.join(ROOT, 'py_router', 'repair_planes.py'), 'x.kicad_pcb',
+                              'y.kicad_pcb', '--nets', 'GND', '--pads', path], capture_output=True, text=True,
+                             cwd=tmp, timeout=120)
+        assert out.returncode == 2 and 'bad_pad' in out.stderr and '"field": "width"' in out.stderr, out.stderr[-500:]
 
 
 def test_via_hole_raise_is_exactly_nothing_when_the_floor_is_not_above_the_clearance():

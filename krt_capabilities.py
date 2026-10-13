@@ -484,6 +484,9 @@ def capabilities(root=ROOT):
         'task_fields': {'route.py': _task_fields(root)},
         # FORK DIVERGENCE (docs/fork-divergences.md, plane repair for a caller that tracks): the value forms a flag
         # takes beyond a plain number; a flag missing here takes its plain form only.
+        # FORK DIVERGENCE (docs/fork-divergences.md, plane repair for a caller that tracks): the fields a --pads end
+        # may carry.
+        'pad_fields': {'repair_planes.py': _module_constant(root, 'repair_planes.py', 'PAD_FIELDS')},
         'flag_forms': {'repair_planes.py': {
             '--max-track-width': _module_constant(root, 'repair_planes.py', 'MAX_TRACK_WIDTH_FORMS')}},
     }

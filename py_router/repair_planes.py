@@ -805,6 +805,56 @@ def _cap_layer_widths(new_segments, board_segments, caps, net_ids, orig_ids) -> 
             s.width = cap
 
 
+#: The fields a --pads end may carry, published by krt_capabilities.py (`pad_fields`). FORK DIVERGENCE
+#: (docs/fork-divergences.md, "Plane repair for a caller that tracks").
+PAD_FIELDS = ('ref', 'pad', 'fp', 'width')
+
+
+class PadsError(ValueError):
+    """A --pads file that cannot be read: `code` and `facts`, as connections.ConnectionsError."""
+
+    def __init__(self, code: str, **facts):
+        self.code, self.facts = code, facts
+        super().__init__(f'--pads: {code} {json.dumps(facts, sort_keys=True)}')
+
+
+def read_pads(path) -> list:
+    """The parsed --pads file: a JSON list of {ref, pad[, fp][, width]}. `width` (mm, a positive number) is the tap
+    width for that pad. Refused with PadsError: `not_a_list`, or `bad_pad` with the end's index and the field.
+    FORK DIVERGENCE (docs/fork-divergences.md, "Plane repair for a caller that tracks")."""
+    with open(path, encoding='utf-8') as f:
+        doc = json.load(f)
+    if not isinstance(doc, list):
+        raise PadsError('not_a_list', path=str(path))
+
+    def _num(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+    for i, e in enumerate(doc):
+        if not isinstance(e, dict):
+            raise PadsError('bad_pad', index=i, field=None)
+        if not isinstance(e.get('ref'), str):
+            raise PadsError('bad_pad', index=i, field='ref')
+        if not (isinstance(e.get('pad'), str) or (_num(e.get('pad')) and float(e['pad']).is_integer())):
+            raise PadsError('bad_pad', index=i, field='pad')
+        if e.get('fp') is not None and not isinstance(e['fp'], str):
+            raise PadsError('bad_pad', index=i, field='fp')
+        if 'width' in e and not (_num(e['width']) and e['width'] > 0):
+            raise PadsError('bad_pad', index=i, field='width')
+    return doc
+
+
+def named_pad_widths(pcb_data, ends) -> Dict[int, float]:
+    """{id(pad): mm} for the pads the `ends` that carry a `width` name (named_pads' matching): the tap width for
+    each. FORK DIVERGENCE (docs/fork-divergences.md, "Plane repair for a caller that tracks")."""
+    out = {}
+    for e in ends:
+        if e.get('width') is None:
+            continue
+        for pid in named_pads(pcb_data, [e]):
+            out[pid] = float(e['width'])
+    return out
+
+
 def named_pads(pcb_data, ends) -> set:
     """id()s of the pads `ends` name, each {ref, pad} with "fp" (the footprint's KiCad uuid) when two footprints share
     the reference, as connection ends name them (connections.resolve); an end naming no pad names none.
@@ -1020,6 +1070,13 @@ def repair_planes(
         max_track_width = max(layer_width_caps.values())
         min_track_width = min(min_track_width, max_track_width)
     _orig_segment_ids = {id(s) for s in _orig_segments}
+    # FORK DIVERGENCE (docs/fork-divergences.md, "Plane repair for a caller that tracks"): a --pads end's `width` is
+    # that pad's tap width. A per-layer --max-track-width still caps it on each layer (_cap_layer_widths).
+    _pad_widths = named_pad_widths(pcb_data, pads) if pads else {}
+
+    def _for_pad(cfg, pad):
+        w = _pad_widths.get(id(pad))
+        return replace(cfg, track_width=w) if w else cfg
 
     # Get board bounds
     board_bounds = pcb_data.board_info.board_bounds
@@ -1612,7 +1669,7 @@ def repair_planes(
                                           f"{pad.component_ref}.{pad.pad_number}")
                     print(f"    Pad {pad.component_ref}.{pad.pad_number} ({pad_layer})...", end=" ", flush=True)
                     result = tap_pad_with_escalation(
-                        pad, pad_layer, net_id, pcb_data, tap_config,
+                        pad, pad_layer, net_id, pcb_data, _for_pad(tap_config, pad),
                         max_search_radius=max_search_radius,
                         via_size=via_size,
                         via_drill=via_drill,
@@ -1635,7 +1692,7 @@ def repair_planes(
                         # Rip the signal net(s) blocking this pad's trace and retry
                         # (the ripped nets are re-routed after the repair pass).
                         rr = _tap_pad_with_ripup(
-                            pad, pad_layer, net_id, pcb_data, tap_config, config,
+                            pad, pad_layer, net_id, pcb_data, _for_pad(tap_config, pad), config,
                             max_search_radius, via_size, via_drill, max_rip_nets,
                             plane_net_ids, result, ripped_net_ids, verbose,
                             distant_trace_radius=distant_radius,
@@ -2875,7 +2932,7 @@ def repair_planes(
                     for vtry, dtry in via_pairs:
                         result = tap_pad_with_escalation(
                             pad, _cand, net_id, pcb_data,
-                            replace(tap_config, via_size=vtry, via_drill=dtry,
+                            replace(_for_pad(tap_config, pad), via_size=vtry, via_drill=dtry,
                                     board_edge_clearance=_pad_edge),
                             max_search_radius=max_search_radius, via_size=vtry,
                             via_drill=dtry, verbose=verbose, fine_for_all=True,
@@ -2965,7 +3022,7 @@ def repair_planes(
                             # config.clearance in the edge keep-out, letting the fallback
                             # trace graze the outline sub-fab (ulx3s In2.Cu at 0.0). Cap
                             # it at the pad's own edge distance, as the via tap above does.
-                            replace(tap_config, via_size=via_size, via_drill=via_drill,
+                            replace(_for_pad(tap_config, pad), via_size=via_size, via_drill=via_drill,
                                     board_edge_clearance=_pad_edge),
                             max_search_radius=max_search_radius,
                             via_size=via_size, via_drill=via_drill,
@@ -3020,7 +3077,8 @@ def repair_planes(
     # (WITH the pour), so a load-bearing tap is kept and re-bent instead. route.py's
     # reconnect excludes the plane nets, so they are only ever cleaned up here.
     if layer_width_caps:
-        _cap_layer_widths(all_new_segments, pcb_data.segments, layer_width_caps, set(net_ids), _orig_segment_ids)
+        _cap_layer_widths(all_new_segments, pcb_data.segments, layer_width_caps, set(net_ids),
+                          _orig_segment_ids)
     if all_new_segments:
         if progress_callback:
             progress_callback(0, 0, "Cleaning up repair copper (graze prune/nudge)...")
@@ -3161,7 +3219,8 @@ def repair_planes(
         print(f"  (soft-joint close skipped: {_e})")
 
     if layer_width_caps:        # again for the copper the closes above added
-        _cap_layer_widths(all_new_segments, pcb_data.segments, layer_width_caps, set(net_ids), _orig_segment_ids)
+        _cap_layer_widths(all_new_segments, pcb_data.segments, layer_width_caps, set(net_ids),
+                          _orig_segment_ids)
 
     kv10_names = pcb_data.net_id_to_name if pcb_uses_name_nets(pcb_data) else None
 
@@ -3593,7 +3652,8 @@ Examples:
                              "takes them (floored at the board's min_clearance). Default: the board's net classes.")
     parser.add_argument("--pads", metavar="JSON", default=None,
                         help="Only these pads may be tapped: a JSON list of {ref, pad} (with fp, the footprint's "
-                             "uuid, when two footprints share the reference). Default: every pad of the net.")
+                             "uuid, when two footprints share the reference, and width, the pad's tap width in mm, "
+                             "when it is not the net's). Default: every pad of the net.")
     parser.add_argument("--no-join-gate", action="store_true",
                         help="Do not route what is still split after the taps and region joins as a multipoint "
                              "net (the guaranteed-join gate); the caller routes it.")
@@ -3617,6 +3677,14 @@ Examples:
                            enforce_fab_floors, count_copper_layers_in_file)
     add_fab_tier_args(parser)
     args = __import__("cli_nets").pin_dash_digit_values(parser).parse_args()
+    # FORK DIVERGENCE (docs/fork-divergences.md, plane repair for a caller that tracks): a bad --pads file is refused
+    # before the board is read.
+    _pads_early = None
+    if args.pads:
+        try:
+            _pads_early = read_pads(args.pads)
+        except (OSError, ValueError) as _pe:
+            parser.error(f"--pads {args.pads}: {_pe}")
     # #439: identical net-class/clearance model to route.py. --clearance is the
     # clamp switch: GIVEN -> ceiling, every class capped at min(class, ceiling),
     # writeback clamps (_clamp_netclasses True). OMITTED -> each net routes at its
@@ -3742,9 +3810,7 @@ Examples:
     if args.net_clearances:
         with open(args.net_clearances, encoding="utf-8") as _f:
             _by_name = {str(k): float(v) for k, v in json.load(_f).items()}
-    if args.pads:
-        with open(args.pads, encoding="utf-8") as _f:
-            _pads = list(json.load(_f))
+    _pads = _pads_early
     if args.no_own_pad_lift:
         import check_drc as _cd_lift
         _cd_lift.OWN_PAD_LIFT = False

@@ -235,7 +235,13 @@ nets. Open or unattributed regions use the existing frontier-ranked ladder.
     disc stays at upstream's ring plus clearance, as in "Via hole floor" below.
   - `repair_planes.py --net-clearances JSON` takes a {net name: mm} map as route.py does, floored at the board's
     `min_clearance` (`named_clearances`).
-  - `--pads JSON` lists the pads pad repair may tap, as `{ref, pad[, fp]}` connection ends (`named_pads`).
+  - `--pads JSON` lists the pads pad repair may tap, as `{ref, pad[, fp][, width]}` connection ends (`named_pads`).
+    `width` (mm) is that pad's tap width: its via drop's track, in the repair pass and the forced-via sweep
+    (`named_pad_widths`). Without it the pad is tapped at `--track-width` as before. A per-layer `--max-track-width`
+    still caps it on each layer. Region joins stay per net. `read_pads` refuses a bad file before the board is read,
+    as argparse errors (exit 2) carrying `PadsError`'s code and facts: `not_a_list`, or `bad_pad` with the end's
+    `index` and the `field` (`ref`, `pad`, `fp`, or a `width` that is not a positive number).
+    krt_capabilities.py publishes the fields (`pad_fields`, from `PAD_FIELDS`).
   - `--no-join-gate` leaves what is still split after the taps and region joins to the caller.
   - `--no-own-pad-lift` on repair_planes.py and route.py sets `check_drc.OWN_PAD_LIFT` False. A footprint's own
     copper then blocks every net, in the generators and the checker.
@@ -251,6 +257,7 @@ nets. Open or unattributed regions use the existing frontier-ranked ladder.
   - give the repair the capture's stated clearances;
   - lay a net's current width on each layer at that layer's width (an inner layer's IPC width is wider than an
     outer one's), where one number put the widest on every layer.
+  - tap a decoupling pad at its class width beside a carrier pad tapped at the current width, in one call.
 
   On watchy, a tap via's hole stood 0.25 mm from a track where the board asks 0.254 mm. A GND track also crossed
   AE1's netless antenna copper to reach AE1's GND pad, a short KiCad reports.
