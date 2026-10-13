@@ -239,11 +239,18 @@ nets. Open or unattributed regions use the existing frontier-ranked ladder.
   - `--no-join-gate` leaves what is still split after the taps and region joins to the caller.
   - `--no-own-pad-lift` on repair_planes.py and route.py sets `check_drc.OWN_PAD_LIFT` False. A footprint's own
     copper then blocks every net, in the generators and the checker.
+  - `--max-track-width` also takes a width per layer, `LAYER=MM,LAYER=MM` (`parse_layer_widths`). The repair routes
+    at the widest, and its own copper of the repaired nets (via drop tracks, region joins, the bridges it closes) is
+    laid at no more than its layer's width (`_cap_layer_widths`); a layer the map does not name keeps the widest.
+    Upstream takes one number. krt_capabilities.py publishes the forms (`flag_forms`, from
+    `MAX_TRACK_WIDTH_FORMS`).
 - Why: placemat joins a pour net's pads by via drops, then routes the groups still apart itself, one connection task
   each, so it needs to:
   - name the pads to tap;
   - keep the repair from tracking the whole net;
-  - give the repair the capture's stated clearances.
+  - give the repair the capture's stated clearances;
+  - lay a net's current width on each layer at that layer's width (an inner layer's IPC width is wider than an
+    outer one's), where one number put the widest on every layer.
 
   On watchy, a tap via's hole stood 0.25 mm from a track where the board asks 0.254 mm. A GND track also crossed
   AE1's netless antenna copper to reach AE1's GND pad, a short KiCad reports.

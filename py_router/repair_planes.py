@@ -760,6 +760,51 @@ def named_clearances(pcb_data, by_name: dict, input_file: str, clearance: float)
     return resolve_floored_clearances(input_file, clearance, by_id)[1]
 
 
+#: The forms --max-track-width accepts, published by krt_capabilities.py (`flag_forms`). FORK DIVERGENCE
+#: (docs/fork-divergences.md, "Plane repair for a caller that tracks").
+MAX_TRACK_WIDTH_FORMS = ('number', 'per_layer')
+
+
+def parse_layer_widths(text):
+    """--max-track-width: a plain width in mm (`2.0`), or a width per layer (`F.Cu=1.37,In1.Cu=3.56`) as
+    {layer: mm}. FORK DIVERGENCE (docs/fork-divergences.md, "Plane repair for a caller that tracks")."""
+    import argparse
+    text = str(text).strip()
+    if '=' not in text:
+        try:
+            return float(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"not a width: {text!r}")
+    out = {}
+    for part in text.split(','):
+        layer, sep, w = part.partition('=')
+        layer = layer.strip()
+        try:
+            width = float(w)
+        except ValueError:
+            width = None
+        if not sep or not layer or width is None or width <= 0:
+            raise argparse.ArgumentTypeError(f"not LAYER=WIDTH: {part!r}")
+        out[layer] = width
+    return out
+
+
+def _cap_layer_widths(new_segments, board_segments, caps, net_ids, orig_ids) -> None:
+    """Lay the repair's own copper of `net_ids` at no more than its layer's width in `caps`: the dicts it will write
+    and the Segments it added to the board. Input copper is left as it is.
+    FORK DIVERGENCE (docs/fork-divergences.md, "Plane repair for a caller that tracks")."""
+    for d in new_segments:
+        cap = caps.get(d.get('layer'))
+        if cap is not None and d.get('net_id') in net_ids and d.get('width', 0) > cap:
+            d['width'] = cap
+    for s in board_segments:
+        if id(s) in orig_ids or getattr(s, 'graphic', False) or s.net_id not in net_ids:
+            continue
+        cap = caps.get(s.layer)
+        if cap is not None and s.width > cap:
+            s.width = cap
+
+
 def named_pads(pcb_data, ends) -> set:
     """id()s of the pads `ends` name, each {ref, pad} with "fp" (the footprint's KiCad uuid) when two footprints share
     the reference, as connection ends name them (connections.resolve); an end naming no pad names none.
@@ -965,6 +1010,16 @@ def repair_planes(
             print(f"Error: Net '{net_name}' not found in PCB")
             return (0, 0)
         net_ids.append(net_id)
+
+    # FORK DIVERGENCE (docs/fork-divergences.md, "Plane repair for a caller that tracks"): --max-track-width may give
+    # a width per layer; the repair routes at the widest and each layer's copper is laid at its own width
+    # (_cap_layer_widths). A layer the map does not name keeps the widest.
+    layer_width_caps = None
+    if isinstance(max_track_width, dict):
+        layer_width_caps = dict(max_track_width)
+        max_track_width = max(layer_width_caps.values())
+        min_track_width = min(min_track_width, max_track_width)
+    _orig_segment_ids = {id(s) for s in _orig_segments}
 
     # Get board bounds
     board_bounds = pcb_data.board_info.board_bounds
@@ -2964,6 +3019,8 @@ def repair_planes(
     # graze (e.g. ddr5 GND tap grazing the LBDQ connector pad). Connectivity-gated
     # (WITH the pour), so a load-bearing tap is kept and re-bent instead. route.py's
     # reconnect excludes the plane nets, so they are only ever cleaned up here.
+    if layer_width_caps:
+        _cap_layer_widths(all_new_segments, pcb_data.segments, layer_width_caps, set(net_ids), _orig_segment_ids)
     if all_new_segments:
         if progress_callback:
             progress_callback(0, 0, "Cleaning up repair copper (graze prune/nudge)...")
@@ -3103,6 +3160,9 @@ def repair_planes(
     except Exception as _e:
         print(f"  (soft-joint close skipped: {_e})")
 
+    if layer_width_caps:        # again for the copper the closes above added
+        _cap_layer_widths(all_new_segments, pcb_data.segments, layer_width_caps, set(net_ids), _orig_segment_ids)
+
     kv10_names = pcb_data.net_id_to_name if pcb_uses_name_nets(pcb_data) else None
 
     # GUI (return_results): hand the plane/repair copper + the ripped net ids
@@ -3222,6 +3282,9 @@ def repair_planes(
         # them in the deletion set (strip-and-replace parity).
         if progress_callback:
             progress_callback(1, 1, "Plane repair complete")
+        if layer_width_caps:
+            _cap_layer_widths(all_new_segments, pcb_data.segments, layer_width_caps, set(net_ids),
+                              _orig_segment_ids)
         return (total_routes, total_regions, all_new_vias, all_new_segments,
                 ripped_net_ids + partial_ids + inplace_reconnected_ids,
                 _strip_segments)
@@ -3435,8 +3498,10 @@ Examples:
                         help="Layer(s) available for routing (e.g., F.Cu B.Cu). If omitted, all copper layers are used.")
 
     # Track width options
-    parser.add_argument("--max-track-width", type=float, default=defaults.REPAIR_MAX_TRACK_WIDTH,
-                        help="Maximum track width for connections in mm (default: 2.0)")
+    parser.add_argument("--max-track-width", type=parse_layer_widths, default=defaults.REPAIR_MAX_TRACK_WIDTH,
+                        help="Maximum track width for connections in mm (default: 2.0), or a width per layer "
+                             "as LAYER=MM,LAYER=MM (e.g. F.Cu=1.37,In1.Cu=3.56): each layer's copper is laid "
+                             "at its own width, a layer not named at the widest")
     parser.add_argument("--min-track-width", type=float, default=defaults.REPAIR_MIN_TRACK_WIDTH,
                         help="Minimum track width for connections in mm (default: 0.2)")
     parser.add_argument("--track-width", type=float, default=None,

@@ -113,7 +113,35 @@ def test_the_new_flags_are_parsed_and_listed():
     flags = json.loads(out)['flags']
     assert {'--net-clearances', '--pads', '--no-join-gate', '--no-own-pad-lift'} <= set(flags['repair_planes.py'])
     assert '--no-own-pad-lift' in flags['route.py']
+    assert json.loads(out)['flag_forms']['repair_planes.py']['--max-track-width'] == ['number', 'per_layer']
 
+
+
+def test_max_track_width_takes_a_number_or_a_width_per_layer():
+    import argparse
+    from repair_planes import parse_layer_widths
+    assert parse_layer_widths('2') == 2.0
+    assert parse_layer_widths('F.Cu=1.37,In1.Cu=3.56') == {'F.Cu': 1.37, 'In1.Cu': 3.56}
+    for bad in ('F.Cu=', 'F.Cu=x', '=1.0', 'F.Cu=-1', 'wide'):
+        try:
+            parse_layer_widths(bad)
+        except argparse.ArgumentTypeError:
+            continue
+        raise AssertionError(bad)
+
+
+def test_each_layer_of_the_repairs_copper_is_laid_at_its_own_width():
+    from kicad_parser import Segment
+    from repair_planes import _cap_layer_widths
+    caps = {'F.Cu': 1.37, 'In1.Cu': 3.56}
+    new = [{'layer': 'F.Cu', 'width': 3.56, 'net_id': 1}, {'layer': 'In1.Cu', 'width': 3.56, 'net_id': 1},
+           {'layer': 'F.Cu', 'width': 0.5, 'net_id': 1}, {'layer': 'B.Cu', 'width': 3.56, 'net_id': 1},
+           {'layer': 'F.Cu', 'width': 3.56, 'net_id': 2}]
+    old = Segment(start_x=0, start_y=0, end_x=1, end_y=0, width=3.56, layer='F.Cu', net_id=1)
+    added = Segment(start_x=0, start_y=1, end_x=1, end_y=1, width=3.56, layer='F.Cu', net_id=1)
+    _cap_layer_widths(new, [old, added], caps, {1}, {id(old)})
+    assert [d['width'] for d in new] == [1.37, 3.56, 0.5, 3.56, 3.56]
+    assert old.width == 3.56 and added.width == 1.37
 
 
 def test_via_hole_raise_is_exactly_nothing_when_the_floor_is_not_above_the_clearance():

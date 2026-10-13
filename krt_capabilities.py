@@ -448,21 +448,26 @@ def script_flags(path, _depth=1):
     return sorted(flags)
 
 
-def _task_fields(root):
-    """connections.py's TASK_FIELDS, read without importing it (this script imports nothing of the router); [] when
-    the clone has no such module or constant."""
+def _module_constant(root, module, name):
+    """A module's literal tuple or list constant `name`, read without importing it (this script imports nothing of
+    the router); [] when the clone has no such module or constant."""
     try:
-        with open(_tool_path(root, 'connections.py'), encoding='utf-8') as f:
+        with open(_tool_path(root, module), encoding='utf-8') as f:
             tree = ast.parse(f.read())
     except (OSError, SyntaxError):
         return []
     for node in tree.body:
-        if isinstance(node, ast.Assign) and any(getattr(t, 'id', '') == 'TASK_FIELDS' for t in node.targets):
+        if isinstance(node, ast.Assign) and any(getattr(t, 'id', '') == name for t in node.targets):
             try:
                 return list(ast.literal_eval(node.value))
             except ValueError:
                 return []
     return []
+
+
+def _task_fields(root):
+    """connections.py's TASK_FIELDS; [] when the clone has none."""
+    return _module_constant(root, 'connections.py', 'TASK_FIELDS')
 
 
 def capabilities(root=ROOT):
@@ -477,6 +482,10 @@ def capabilities(root=ROOT):
         'flags': flags,
         # FORK DIVERGENCE (docs/fork-divergences.md, --connections "apart"): the fields a --connections task may carry.
         'task_fields': {'route.py': _task_fields(root)},
+        # FORK DIVERGENCE (docs/fork-divergences.md, plane repair for a caller that tracks): the value forms a flag
+        # takes beyond a plain number; a flag missing here takes its plain form only.
+        'flag_forms': {'repair_planes.py': {
+            '--max-track-width': _module_constant(root, 'repair_planes.py', 'MAX_TRACK_WIDTH_FORMS')}},
     }
     try:                                    # best-effort, never fatal
         # (This used to insert py_router/ on sys.path so `routing_defaults`
