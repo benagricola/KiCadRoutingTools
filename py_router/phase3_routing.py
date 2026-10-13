@@ -537,6 +537,47 @@ def _phase3_stub_switch_retry(net_id, completed_result, pcb_data, config,
     return None
 
 
+def _tap_search(entry) -> dict:
+    """A failed tap edge's search (single_ended_routing.route_multipoint_taps' failed_edge_blocking entry) in the
+    shape of a single-ended search result: per-direction frontier cells and iterations."""
+    split = entry[2] if len(entry) > 2 and isinstance(entry[2], dict) else {}
+    its = split.get('iterations') or {}
+    return {'blocked_cells_forward': list(split.get('fwd') or []),
+            'blocked_cells_backward': list(split.get('bwd') or []),
+            'iterations_forward': its.get('forward'), 'iterations_backward': its.get('backward')}
+
+
+def _record_tap_searches(state, pcb_data, config, net_id, failed_edge_blocking, remaining_net_ids) -> None:
+    """FORK DIVERGENCE (docs/connections.md, "Failure evidence"): each failed tap edge's search as a `search_failed`
+    net event, as single_ended_loop.py records a failed single-ended search; the last edge's is the net's. Only when
+    the call keeps failure evidence."""
+    if not getattr(config, 'failure_evidence', False):
+        return
+    from failure_evidence import search_facts
+    nets = set(remaining_net_ids) | {net_id}
+    for entry in failed_edge_blocking.values():
+        record_net_event(state, net_id, "search_failed",
+                         search_facts(_tap_search(entry), pcb_data, config, net_id, nets))
+
+
+def _record_tap_boxin(state, pcb_data, config, net_id, failed_edge_blocking) -> None:
+    """FORK DIVERGENCE (docs/connections.md, "Failure evidence"): a net whose tap edges are still failed after the
+    rip ladder gets KRT's `boxed_in_static` verdict when a failed edge's search fits it (static_boxin_hint), as
+    single_ended_loop.py records it for a single-ended net that failed with nothing rippable."""
+    from routing_diagnostics import static_boxin_hint, condense_hint
+    for entry in failed_edge_blocking.values():
+        search = _tap_search(entry)
+        if search['iterations_forward'] is None or search['iterations_backward'] is None:
+            continue
+        hint, boxin = static_boxin_hint(search, config, pcb_data, return_verdict=True)
+        if boxin:
+            hint = condense_hint(hint)
+            if hint:
+                print(f"  {hint}")
+            record_net_event(state, net_id, "boxed_in_static", boxin)
+            return
+
+
 def run_phase3_tap_routing(
     state: RoutingState,
     pcb_data: PCBData,
@@ -685,6 +726,9 @@ def run_phase3_tap_routing(
 
             # Check for failed edges and attempt rip-up if no length matching
             failed_edge_blocking = completed_result.get('failed_edge_blocking', {})
+            # FORK DIVERGENCE (docs/connections.md, "Failure evidence"): recorded before the rip ladder, whose
+            # frontier_blocking then falls in the same failure epoch (failure_evidence._failure_epoch).
+            _record_tap_searches(state, pcb_data, config, net_id, failed_edge_blocking, remaining_net_ids)
             if failed_edge_blocking and not length_matching_active and config.max_rip_up_count > 0:
                 # Try rip-up for failed tap routes
                 retry_result = try_phase3_ripup(
@@ -727,6 +771,8 @@ def run_phase3_tap_routing(
             # authoritatively (issue #292: usb_pd printed FAILED here for a net
             # the JSON_SUMMARY correctly reported connected).
             final_failed_pads = completed_result.get('failed_pads_info', [])
+            if final_failed_pads and failed_edge_blocking:
+                _record_tap_boxin(state, pcb_data, config, net_id, failed_edge_blocking)
             if final_failed_pads:
                 net_name = pcb_data.nets[net_id].name if net_id in pcb_data.nets else f"Net {net_id}"
                 for pad in final_failed_pads:

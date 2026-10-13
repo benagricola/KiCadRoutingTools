@@ -109,6 +109,53 @@ def t_old_failure_facts_do_not_survive_success_or_a_new_search():
               ev['diagnosis'] == 'unknown' and ev['verdicts'] == [] and ev['blocked_by'] == [], ev)
 
 
+def t_a_rescue_that_leaves_the_net_split_keeps_the_failure():
+    from failure_evidence import evidence_of
+    search = {'forward': {'iterations': 98, 'frontier_cells': 12},
+              'backward': {'iterations': 5000, 'frontier_cells': 300}, 'static': []}
+    frontier = {'blocked_by': [{'net': 'WALL', 'blocked_count': 9}]}
+    before = [{'event': 'search_failed', 'details': search},
+              {'event': 'frontier_blocking', 'details': frontier},
+              {'event': 'boxed_in_static', 'details': BOXED}]
+    partial = {'fully_connected': False, 'edges_routed': 1, 'components_before': 3, 'components_after': 2}
+    ev = evidence_of(state({1: before + [{'event': 'rescue_succeeded', 'details': partial}]}), 1)
+    check('a rescue that leaves the net in pieces keeps the search', ev['search'] is not None, ev)
+    check('...its blockers', [b['net'] for b in ev['blocked_by']] == ['WALL'], ev['blocked_by'])
+    check('...and its verdict', ev['diagnosis'] == 'boxed_in_static', ev)
+    full = dict(partial, fully_connected=True, components_after=1)
+    ev = evidence_of(state({1: before + [{'event': 'rescue_succeeded', 'details': full}]}), 1)
+    check('a rescue that joins the net ends the failure', ev['search'] is None and ev['verdicts'] == [], ev)
+
+
+def t_tap_edge_search_is_recorded():
+    """phase3_routing records each failed tap edge's search from its failed_edge_blocking entry, and the verdict
+    when the search fits static_boxin_hint."""
+    from phase3_routing import _record_tap_boxin, _record_tap_searches
+    from failure_evidence import evidence_of
+    from routing_config import GridRouteConfig
+    pcb = make_pcb(nets={1: Net(1, 'VB')})
+    entry = ([(1, 1, 0), (2, 1, 0), (3, 1, 0)], (0.1, 0.1),
+             {'fwd': [(1, 1, 0)], 'bwd': [(2, 1, 0), (3, 1, 0)], 'extra': [(9, 9, 0)],
+              'iterations': {'forward': 98, 'backward': 5000}, 'tgt_cells': [], 'src_cells': []})
+    cfg = GridRouteConfig(layers=['F.Cu', 'B.Cu'])
+    st = N(net_history={}, frontier_blocking={}, route_index=0)
+    _record_tap_searches(st, pcb, cfg, 1, {(0, 1): entry}, [])
+    check('no search is recorded when the call keeps no evidence', st.net_history.get(1) is None, st.net_history)
+    cfg.failure_evidence = True
+    _record_tap_searches(st, pcb, cfg, 1, {(0, 1): entry}, [])
+    _record_tap_boxin(st, pcb, cfg, 1, {(0, 1): entry})
+    ev = evidence_of(st, 1)
+    check('the tap edge search is the net\'s, per direction',
+          ev['search'] == {'forward': {'iterations': 98, 'frontier_cells': 1},
+                           'backward': {'iterations': 5000, 'frontier_cells': 2}}, ev['search'])
+    check('the verdict is recorded', ev['diagnosis'] == 'boxed_in_static'
+          and ev['verdicts'][0]['iterations'] == 5098, ev['verdicts'])
+    many = dict(entry[2], iterations={'forward': 20000, 'backward': 5000})
+    st2 = N(net_history={}, frontier_blocking={}, route_index=0)
+    _record_tap_boxin(st2, pcb, cfg, 1, {(0, 1): (entry[0], entry[1], many)})
+    check('a search past the bound gets no verdict', st2.net_history.get(1) is None, st2.net_history)
+
+
 def t_unrecorded_search_start_is_unknown():
     from failure_evidence import search_facts
     from routing_config import GridRouteConfig
@@ -233,6 +280,8 @@ if __name__ == '__main__':
     t_blockers_keep_where_they_were_found()
     t_a_search_a_later_route_superseded_is_dropped()
     t_old_failure_facts_do_not_survive_success_or_a_new_search()
+    t_a_rescue_that_leaves_the_net_split_keeps_the_failure()
+    t_tap_edge_search_is_recorded()
     t_unrecorded_search_start_is_unknown()
     t_static_records_name_the_pads()
     t_static_tracks_per_net_and_layer()

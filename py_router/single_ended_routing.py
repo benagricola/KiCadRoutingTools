@@ -5024,7 +5024,7 @@ def _route_multipoint_taps_impl(
         # routed one, and then nothing needs explaining.
         with deferred_diagnostics(config) as _edge_diag:
             (path, tap_iterations, forward_blocked, backward_blocked, reversed_tap_path,
-             _, _, necked_down, uniform_width, unblock_vias,
+             tap_fwd_iters, tap_bwd_iters, necked_down, uniform_width, unblock_vias,
              unblock_segments) = _route_with_via_unblock(
                 router, obstacles, config, sources, targets, track_margin,
                 pcb_data, net_id, print_prefix="      ", direction_labels=("forward", "backward"),
@@ -5132,6 +5132,9 @@ def _route_multipoint_taps_impl(
                     blocked_cells, (tgt_x, tgt_y),
                     {'fwd': list(forward_blocked), 'bwd': list(backward_blocked),
                      'extra': list(_via_conflict_extra),
+                     # FORK DIVERGENCE (docs/connections.md, "Failure evidence"): the
+                     # edge's search per direction, for its search_failed record.
+                     'iterations': {'forward': tap_fwd_iters, 'backward': tap_bwd_iters},
                      'tgt_cells': list(targets), 'src_cells': list(sources)})
             continue
 
@@ -5203,6 +5206,9 @@ def _route_multipoint_taps_impl(
                     {'fwd': list(forward_blocked),
                      'bwd': list(backward_blocked),
                      'extra': list(_via_conflict_extra),
+                     # FORK DIVERGENCE (docs/connections.md, "Failure evidence"): the
+                     # edge's search per direction, for its search_failed record.
+                     'iterations': {'forward': tap_fwd_iters, 'backward': tap_bwd_iters},
                      'tgt_cells': list(targets), 'src_cells': list(sources)})
             continue
         # Any fab-floor via dropped INSIDE the boxed target pad to unblock this

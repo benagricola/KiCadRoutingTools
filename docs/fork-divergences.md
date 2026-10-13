@@ -60,6 +60,13 @@ Deliberate differences between this fork and upstream. Each is marked in the cod
   the summary's `net_evidence` (route.py, merged in route_summary.py) and as each failed or `joined_narrow`
   connections record's `evidence`. Each marked `FORK DIVERGENCE`. Described in docs/connections.md, "Failure
   evidence".
+- Tap edges: a failed multipoint tap edge keeps its per-direction iterations in its `failed_edge_blocking` entry
+  (single_ended_routing.py `route_multipoint_taps`; upstream discards them), and phase3_routing.py records each failed
+  edge's search as `search_failed` before the rip ladder (`_record_tap_searches`) and, when the net's tap edges are
+  still failed after it, KRT's `boxed_in_static` verdict for the first failed edge whose search fits
+  `static_boxin_hint` (`_record_tap_boxin`), as the single-ended path does. Upstream records neither for a tap edge.
+- A per-net rescue that leaves the net in pieces (`rescue_succeeded` with `fully_connected: false`) does not end the
+  failure: `failure_evidence._failure_epoch` keeps the search, blockers and verdicts recorded before it.
 - Why: placemat's run loop reads why a connection failed as data, to choose what to move.
 - Test: tests/test_failure_evidence.py, tests/test_connections_evidence.py.
 

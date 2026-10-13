@@ -28,6 +28,14 @@ def _last(history, event):
 _SUCCESS = ('initial_route', 'reroute_succeeded', 'rescue_succeeded', 'terminal_escalation_succeeded')
 
 
+def _succeeded(ev) -> bool:
+    """A success event that ends the failure. A rescue that left the net in pieces (`rescue_succeeded` with
+    `fully_connected` false, net_rescue.py) joined some pads and not others, so the failure it follows still stands."""
+    if ev.get('event') not in _SUCCESS:
+        return False
+    return not (ev.get('event') == 'rescue_succeeded' and (ev.get('details') or {}).get('fully_connected') is False)
+
+
 def _failure_epoch(history):
     """Events after the latest successful route or new failed search.
 
@@ -36,7 +44,7 @@ def _failure_epoch(history):
     """
     start = 0
     for i, ev in enumerate(history or ()):
-        if ev.get('event') in _SUCCESS:
+        if _succeeded(ev):
             start = i + 1
         elif ev.get('event') == 'search_failed':
             start = i
