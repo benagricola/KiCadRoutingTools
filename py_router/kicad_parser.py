@@ -292,6 +292,11 @@ class Pad:
     # but short of the drill is not connected there.
     # connectivity.pad_unflashed_layers reads it. Set by BOTH parse paths.
     unconnected_layer_mode: str = 'keep_all'
+    # The footprint's internal-connection group this pad belongs to
+    # (Footprint.jumper_groups / duplicate_pad_numbers_are_jumpers), as a key
+    # unique on the board, or None. Pads with the same key are joined inside
+    # the part. Set by assign_jumper_groups on BOTH parse paths. APPENDED.
+    jumper_group: Optional[str] = None
 
 
 _VIA_BIRTH_WATCH = None
@@ -570,6 +575,15 @@ class Footprint:
     # parse paths fill them; APPENDED like the fields above.
     attrs: Tuple[str, ...] = ()
     has_model: bool = False
+    # KiCad 10 internal connections: (jumper_pad_groups ("1" "6") ("3" "4"))
+    # lists pad-number groups the PART joins inside its package (a flow-through
+    # ESD array's in and out pins), and (duplicate_pad_numbers_are_jumpers yes)
+    # joins pads that share a number. KiCad's connectivity treats a group as
+    # one item, so neither the ratsnest nor DRC asks for copper between them;
+    # check_net_connectivity does the same through Pad.jumper_group. Both parse
+    # paths fill them; APPENDED like the fields above.
+    jumper_groups: List[List[str]] = field(default_factory=list)
+    duplicate_pad_numbers_are_jumpers: bool = False
 
 
 #: The (attr ...) flags `Footprint.attrs` keeps -- the ones the text form and
@@ -1512,6 +1526,42 @@ def footprint_at_match(fp_text: str):
     """
     j = _footprint_at_start(fp_text)
     return None if j < 0 else AT_NODE_RE.match(fp_text, j)
+
+
+def parse_jumper_pad_groups(fp_text: str) -> Tuple[List[List[str]], bool]:
+    """A footprint block's internal connections: `(groups, duplicates)`.
+
+    `groups` is each `(jumper_pad_groups ("1" "6") ...)` member list with two
+    or more pads; `duplicates` is `(duplicate_pad_numbers_are_jumpers yes)`.
+    """
+    groups: List[List[str]] = []
+    m = re.search(r'\(jumper_pad_groups\b', fp_text)
+    if m:
+        body = fp_text[m.end():find_matching_paren(fp_text, m.start())]
+        for grp in re.findall(r'\(([^()]*)\)', body):
+            nums = [n.strip() for n in re.findall(r'"([^"]*)"', grp) if n.strip()]
+            if len(nums) >= 2:
+                groups.append(nums)
+    dup = re.search(r'\(duplicate_pad_numbers_are_jumpers\s+yes\s*\)', fp_text)
+    return groups, bool(dup)
+
+
+def assign_jumper_groups(footprints) -> None:
+    """Set each pad's `jumper_group` from its footprint's internal connections."""
+    for key, fp in footprints.items():
+        by_num = {}
+        for p in fp.pads:
+            p.jumper_group = None
+            by_num.setdefault(p.pad_number, []).append(p)
+        if fp.duplicate_pad_numbers_are_jumpers:
+            for num, members in by_num.items():
+                if num and len(members) >= 2:
+                    for p in members:
+                        p.jumper_group = f"{key}#n{num}"
+        for i, grp in enumerate(fp.jumper_groups):
+            for num in grp:
+                for p in by_num.get(num, []):
+                    p.jumper_group = f"{key}#g{i}"
 
 
 def find_matching_paren(content: str, open_idx: int) -> int:
@@ -3572,6 +3622,8 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
                                       ref_is_property)
                      if ref_match else None)
 
+        jumper_groups, jumper_dup = parse_jumper_pad_groups(fp_text)
+
         footprint = Footprint(
             reference=reference,
             footprint_name=fp_name,
@@ -3586,6 +3638,8 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
             uuid=fp_uuid,
             sheet_path=fp_path,
             net_tie_groups=net_tie_groups,
+            jumper_groups=jumper_groups,
+            duplicate_pad_numbers_are_jumpers=jumper_dup,
             ref_label=ref_label,
             paste_margin=fp_paste_margin,
             paste_margin_ratio=fp_paste_ratio,
@@ -3834,6 +3888,7 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
 
         footprints[reference] = footprint
 
+    assign_jumper_groups(footprints)
     return footprints, pads_by_net
 
 
@@ -6355,6 +6410,8 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
             uuid=fp_uuid,
             sheet_path=fp_path,
             net_tie_groups=fp_net_tie,
+            duplicate_pad_numbers_are_jumpers=bool(
+                getattr(fp, 'GetDuplicatePadNumbersAreJumpers', lambda: False)()),
             ref_label=fp_ref_label,
             paste_margin=fp_paste_margin,
             paste_margin_ratio=fp_paste_ratio,
@@ -6616,6 +6673,28 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                 nets[net_id].pads.append(pad_obj)
 
         footprints[reference] = footprint
+
+    # Internal-connection groups. This SWIG build returns JumperPadGroups()
+    # and GetJumperPadGroup() as bare std::vector / std::optional pointers
+    # Python cannot read (probed on KiCad 10.0.6), so format the LIVE
+    # footprint with pcbnew's own writer and read the text form, as the text
+    # parser does. Only a footprint with two pads on one net can have a group
+    # that matters; the duplicate-numbers flag is wrapped and comes from the
+    # footprint directly.
+    try:
+        _io = pcbnew.PCB_IO_KICAD_SEXPR()
+        for _live, _key in zip(_live_fps, _live_keys):
+            _fp = footprints.get(_key)
+            if _fp is None:
+                continue
+            _nets = [p.net_id for p in _fp.pads if p.net_id]
+            if len(_nets) == len(set(_nets)):
+                continue
+            _io.Format(_live)
+            _fp.jumper_groups = parse_jumper_pad_groups(_io.GetStringOutput(True))[0]
+    except Exception:
+        pass
+    assign_jumper_groups(footprints)
 
     # #829, mirroring the text path's stamp in parse_kicad_pcb: which
     # footprints draw Edge.Cuts, and which of those are drawing the BOARD's
@@ -7693,6 +7772,16 @@ def compare_pcb_data(from_board: 'PCBData', from_file: 'PCBData', tolerance: flo
         if bnt != fnt:
             diffs.append(f"Footprint {ref} net_tie_groups: board={sorted(map(sorted, bnt))} "
                          f"file={sorted(map(sorted, fnt))}")
+        bjg = {frozenset(g) for g in (getattr(bf, 'jumper_groups', None) or [])}
+        fjg = {frozenset(g) for g in (getattr(ff, 'jumper_groups', None) or [])}
+        if bjg != fjg:
+            diffs.append(f"Footprint {ref} jumper_groups: board={sorted(map(sorted, bjg))} "
+                         f"file={sorted(map(sorted, fjg))}")
+        bdj = getattr(bf, 'duplicate_pad_numbers_are_jumpers', False)
+        fdj = getattr(ff, 'duplicate_pad_numbers_are_jumpers', False)
+        if bdj != fdj:
+            diffs.append(f"Footprint {ref} duplicate_pad_numbers_are_jumpers: "
+                         f"board={bdj} file={fdj}")
         if len(bf.pads) != len(ff.pads):
             diffs.append(f"Footprint {ref} pad count: board={len(bf.pads)} file={len(ff.pads)}")
         else:

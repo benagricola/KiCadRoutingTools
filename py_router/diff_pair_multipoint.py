@@ -223,6 +223,17 @@ def get_diff_pair_terminals(pcb_data: PCBData, p_net_id: int, n_net_id: int
     return [(p_pads[i], n_pads[j]) for (i, j) in _min_cost_matching(cost)]
 
 
+def terminals_joined(a: Tuple[Pad, Pad], b: Tuple[Pad, Pad]) -> bool:
+    """True when the part joins both terminals inside its package: their P
+    pads share an internal-connection group and so do their N pads
+    (Pad.jumper_group; a flow-through ESD array's in and out pins). The chain
+    needs no leg between them."""
+    def same(x, y):
+        key = getattr(x, 'jumper_group', None)
+        return key is not None and key == getattr(y, 'jumper_group', None)
+    return same(a[0], b[0]) and same(a[1], b[1])
+
+
 def _terminal_center(terminal: Tuple[Pad, Pad]) -> Tuple[float, float]:
     pp, nn = terminal
     return ((pp.global_x + nn.global_x) / 2, (pp.global_y + nn.global_y) / 2)
@@ -584,8 +595,14 @@ def candidate_terminal_chains(terminals: List[Tuple[Pad, Pad]],
 
     WRAP_PENALTY = 25.0  # mm-equivalent cost for a forced wrap-around leg
 
+    # Terminals joined inside a part cost nothing to link: the chain passes
+    # through the package (in on one terminal, out on the other).
+    joined = {(a, b) for a in range(n) for b in range(n)
+              if a != b and terminals_joined(terminals[a], terminals[b])}
+
     def chain_score(order):
-        score = sum(math.hypot(centers[a][0] - centers[b][0],
+        score = sum(0.0 if (a, b) in joined else
+                    math.hypot(centers[a][0] - centers[b][0],
                                centers[a][1] - centers[b][1])
                     for a, b in zip(order, order[1:]))
         for k in range(1, len(order) - 1):
@@ -610,7 +627,7 @@ def candidate_terminal_chains(terminals: List[Tuple[Pad, Pad]],
             left = set(range(n)) - {start}
             while left:
                 last = order[-1]
-                nxt = min(left, key=lambda j: math.hypot(
+                nxt = min(left, key=lambda j: 0.0 if (last, j) in joined else math.hypot(
                     centers[last][0] - centers[j][0], centers[last][1] - centers[j][1]))
                 order.append(nxt)
                 left.remove(nxt)
@@ -1062,6 +1079,13 @@ def _route_chain_attempt(state, pair: DiffPairNet, pair_name: str,
         print(f"  Leg {i + 1}/{len(chain) - 1}: "
               f"{term_a[0].component_ref}:{term_a[0].pad_number}/{term_a[1].pad_number} -> "
               f"{term_b[0].component_ref}:{term_b[0].pad_number}/{term_b[1].pad_number}")
+
+        # Joined inside the part (a flow-through ESD array): the package is the
+        # connection, so no copper. The next leg launches fresh from term_b.
+        if terminals_joined(term_a, term_b):
+            print("    joined inside the part - no leg")
+            forced_dir_next = None
+            continue
 
         # An electrically short leg gains nothing from coupling and only tangles
         # the pair through clustered pads - defer it to single-ended routing. The

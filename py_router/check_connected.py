@@ -308,7 +308,8 @@ def _net_pads_connected_by_overlap(pads: List[Pad], copper_layers, tolerance: fl
 
     Castellated modules represent each pin as a through-hole pad plus an SMD
     pad at the same spot; such a net has pads but no segments yet is fully
-    connected, so it must not be reported as unrouted (issue #92).
+    connected, so it must not be reported as unrouted (issue #92). Pads the
+    part joins inside its package (Pad.jumper_group) count as touching.
     """
     if len(pads) < 2:
         return True
@@ -340,6 +341,11 @@ def _net_pads_connected_by_overlap(pads: List[Pad], copper_layers, tolerance: fl
             if dx * dx + dy * dy <= reach * reach and \
                     _pads_copper_touch(pi, pj, tolerance):
                 parent[find(i)] = find(j)
+    first = {}
+    for i, p in enumerate(pads):
+        key = getattr(p, 'jumper_group', None)
+        if key is not None:
+            parent[find(i)] = find(first.setdefault(key, i))
     return len({find(i) for i in range(len(pads))}) == 1
 
 
@@ -1390,6 +1396,18 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
                 if dx * dx + dy * dy <= reach * reach and \
                         _pads_copper_touch(pad, other, tolerance):
                     _union(pad_repr_id[idx], pad_repr_id[jdx])
+
+    # Pads the part joins inside its package (KiCad 10 jumper_pad_groups or
+    # duplicate_pad_numbers_are_jumpers; see Pad.jumper_group) are one item,
+    # as in KiCad's own connectivity: copper reaching either reaches both.
+    _jumper_first = {}
+    for idx in pad_repr_id:
+        key = getattr(pads[idx], 'jumper_group', None)
+        if key is None:
+            continue
+        first = _jumper_first.setdefault(key, idx)
+        if first != idx:
+            _union(pad_repr_id[first], pad_repr_id[idx])
 
     # A via dropped *inside* an SMD pad's copper connects that pad even when the
     # via centre is offset from the pad centre — e.g. a via-in-pad at the end of
