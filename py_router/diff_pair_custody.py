@@ -25,6 +25,7 @@ be imported by diff_pair_loop / reroute_loop without cycles.
 """
 from __future__ import annotations
 
+import math
 from typing import Dict, List, Optional, Tuple
 
 from terminal_colors import RED, GREEN, RESET
@@ -135,6 +136,69 @@ def audit_pair_members(pcb_data, diff_pairs_list, tolerance: float = 0.02) -> Di
             rec[tag] = bool(r.get('connected'))
         audit[pair_name] = rec
     return audit
+
+
+def _point_seg_dist(px, py, s) -> float:
+    dx, dy = s.end_x - s.start_x, s.end_y - s.start_y
+    d2 = dx * dx + dy * dy
+    t = 0.0 if d2 == 0 else max(0.0, min(1.0, ((px - s.start_x) * dx + (py - s.start_y) * dy) / d2))
+    return math.hypot(px - (s.start_x + t * dx), py - (s.start_y + t * dy))
+
+
+def member_uncoupled_mm(segments, net_id: int, partner_id: int, spacing: float, step: float = 0.05) -> float:
+    """FORK DIVERGENCE (docs/fork-divergences.md, "Uncoupled length per pair member"): the length of `net_id`'s
+    tracks that do not run beside its partner's, sampled every `step` mm. A point is coupled when a partner track on
+    its layer passes within 1.5 x the pair's centre spacing (`spacing`, track width + gap)."""
+    reach = 1.5 * spacing
+    mine = [s for s in segments if s.net_id == net_id]
+    theirs: Dict[object, list] = {}
+    for s in segments:
+        if s.net_id == partner_id:
+            theirs.setdefault(s.layer, []).append(s)
+    out = 0.0
+    for s in mine:
+        length = math.hypot(s.end_x - s.start_x, s.end_y - s.start_y)
+        if length == 0:
+            continue
+        n = max(1, int(math.ceil(length / step)))
+        near = theirs.get(s.layer, [])
+        for k in range(n):
+            t = (k + 0.5) / n
+            px, py = s.start_x + t * (s.end_x - s.start_x), s.start_y + t * (s.end_y - s.start_y)
+            if not any(_point_seg_dist(px, py, o) <= reach for o in near):
+                out += length / n
+    return out
+
+
+def member_open_mm(pcb_data, net_id: int) -> float:
+    """FORK DIVERGENCE (docs/fork-divergences.md, "Uncoupled length per pair member"): the straight-line length that
+    would join `net_id`'s pieces on the current board, pad to nearest pad (a spanning tree over its connected
+    pieces). 0 for a connected member. What a later single-ended pass routes is at least this long."""
+    from check_connected import check_net_connectivity
+    pads = pcb_data.pads_by_net.get(net_id, [])
+    if len(pads) < 2:
+        return 0.0
+    segs = [s for s in pcb_data.segments if s.net_id == net_id]
+    vias = [v for v in pcb_data.vias if v.net_id == net_id]
+    zones = [z for z in (getattr(pcb_data, 'zones', []) or []) if z.net_id == net_id]
+    r = check_net_connectivity(net_id, segs, vias, pads, zones, tolerance=0.02)
+    if r.get('connected'):
+        return 0.0
+    pieces: Dict[object, list] = {}
+    for loc, root in (r.get('pad_components') or {}).items():
+        pieces.setdefault(root, []).append((loc[0], loc[1]))
+    groups = list(pieces.values())
+    if len(groups) < 2:
+        return 0.0
+
+    def gap(a, b):
+        return min(math.hypot(x1 - x2, y1 - y2) for x1, y1 in a for x2, y2 in b)
+    joined, rest, total = [groups[0]], groups[1:], 0.0
+    while rest:
+        d, k = min((min(gap(j, g) for j in joined), k) for k, g in enumerate(rest))
+        total += d
+        joined.append(rest.pop(k))
+    return total
 
 
 def build_pair_reports(state, diff_pair_ids_to_route, member_audit,
@@ -250,6 +314,17 @@ def build_pair_reports(state, diff_pair_ids_to_route, member_audit,
         # routed). The terminals are where P/N geometry breaks, which is
         # where intra-pair skew comes from -- so a caller holding a skew
         # budget needs to see this, and `successful` never showed it.
+        # FORK DIVERGENCE (docs/fork-divergences.md, "Uncoupled length per pair member"): what the pair ships
+        # uncoupled, per member, and the coupled minimum a leg is measured against.
+        _cfg = state.config
+        _spacing = _cfg.track_width + _cfg.diff_pair_gap
+        rep['uncoupled_mm'] = {
+            tag: round(member_uncoupled_mm(state.pcb_data.segments, nid, other, _spacing), 3)
+            for tag, nid, other in (('p', pair.p_net_id, pair.n_net_id), ('n', pair.n_net_id, pair.p_net_id))}
+        rep['open_mm'] = {tag: round(member_open_mm(state.pcb_data, nid), 3)
+                          for tag, nid in (('p', pair.p_net_id), ('n', pair.n_net_id))}
+        from diff_pair_multipoint import diff_pair_min_coupled_length
+        rep['min_coupled_mm'] = round(diff_pair_min_coupled_length(_cfg), 3)
         if any(rr.get('hybrid_escape') for rr in (_rr_p, _rr_n) if rr):
             rep['coupled_terminals'] = False
             rep['escape'] = 'hybrid'

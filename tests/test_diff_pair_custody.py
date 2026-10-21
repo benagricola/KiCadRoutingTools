@@ -53,7 +53,10 @@ def test_classifier():
 
 def _fake_state():
     return SimpleNamespace(routed_results={}, diff_pair_single_ended_nets={},
-                           pair_diagnostics={}, casualty_custody={})
+                           pair_diagnostics={}, casualty_custody={},
+                           config=SimpleNamespace(track_width=0.1, diff_pair_gap=0.1,
+                                                  diff_pair_centerline_setback=None),
+                           pcb_data=SimpleNamespace(segments=[], vias=[], zones=[], pads_by_net={}))
 
 
 def test_custody_recording():

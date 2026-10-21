@@ -382,3 +382,22 @@ nets. Open or unattributed regions use the existing frontier-ranked ladder.
 - Replayed on that board (the four VBIKE tasks at 2.4651 mm on F.Cu and B.Cu): all four routed, 2.4651 mm on F.Cu.
 - Test: tests/test_copper_graphic_net_conducts.py, tests/test_filled_copper_graphic_area.py (`7b`),
   tests/test_check_weird.py (art soft joint).
+
+## Uncoupled length per pair member
+
+- Upstream: a pair's record in JSON_SUMMARY.pair_reports gives its outcome, a failure reason and stage, and
+  `escape: "hybrid"` for a coupled middle with single-ended terminal legs (py_router/diff_pair_custody.py
+  `build_pair_reports`). How much copper a member ships uncoupled, and the coupled minimum a short leg is deferred
+  under, are printed as log lines only ("best plan still ships 9.5mm uncoupled leg copper",
+  diff_pair_routing.py; "electrically short (< 3.0mm coupled)", diff_pair_loop.py).
+- Fork: each record also carries `uncoupled_mm` and `open_mm`, each `{"p": mm, "n": mm}`, and `min_coupled_mm`.
+  `uncoupled_mm` is the length of the member's tracks on the board at the end of the call that do not run beside
+  its partner: sampled every 0.05 mm, a point is coupled when a partner track on its layer passes within 1.5 times
+  the pair's centre spacing (track width + gap) (`member_uncoupled_mm`). `open_mm` is the straight-line length that
+  would join the member's pieces, pad to nearest pad over a spanning tree, 0 for a connected member
+  (`member_open_mm`): what a later single-ended pass must route, at the least. `min_coupled_mm` is
+  `diff_pair_min_coupled_length` for the call's config, the leg length under which a leg is left single-ended.
+  The keys are additive; nothing in the router reads them.
+- Why: placemat judges a pair phase on whether each pair is coupled end to end, and lets a project allow a short
+  uncoupled length (a USB-C receptacle's A/B bridge). The log lines carry no pair name in a form a caller can join.
+- Test: tests/test_pair_uncoupled_length.py.
