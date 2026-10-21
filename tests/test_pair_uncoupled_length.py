@@ -57,3 +57,19 @@ def test_the_report_carries_the_lengths_and_the_coupled_minimum():
     assert abs(rep['uncoupled_mm']['p'] - 3.5) < 0.06 and rep['uncoupled_mm']['n'] < 1e-6
     assert rep['open_mm'] == {'p': 0.0, 'n': 0.0}
     assert rep['min_coupled_mm'] == 3.0
+
+
+def test_the_coupled_minimum_is_the_pairs_own_by_its_net_class_geometry():
+    from routing_config import GridRouteConfig
+    pads = {P: [_pad(0, 0, P), _pad(10, 0, P)], N: [_pad(0, 0.2, N), _pad(10, 0.2, N)]}
+    board = SimpleNamespace(segments=[], vias=[], zones=[], pads_by_net=pads)
+    cfg = GridRouteConfig(track_width=0.1, diff_pair_gap=0.1)
+    state = SimpleNamespace(routed_results={}, diff_pair_single_ended_nets={}, pair_diagnostics={},
+                            casualty_custody={}, config=cfg, pcb_data=board, pair_diff_geom={P: (0.3, 0.3)})
+    pair = SimpleNamespace(p_net_id=P, n_net_id=N, p_net_name='D_P', n_net_name='D_N')
+    rep, = build_pair_reports(state, [('D', pair)], {'D': {'p': True, 'n': True}})
+    from diff_pair_multipoint import diff_pair_min_coupled_length
+    from dataclasses import replace
+    assert rep['min_coupled_mm'] == round(diff_pair_min_coupled_length(replace(cfg, track_width=0.3,
+                                                                               diff_pair_gap=0.3)), 3)
+    assert rep['min_coupled_mm'] != round(diff_pair_min_coupled_length(cfg), 3)

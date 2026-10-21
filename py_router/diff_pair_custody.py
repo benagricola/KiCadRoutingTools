@@ -316,7 +316,13 @@ def build_pair_reports(state, diff_pair_ids_to_route, member_audit,
         # budget needs to see this, and `successful` never showed it.
         # FORK DIVERGENCE (docs/fork-divergences.md, "Uncoupled length per pair member"): what the pair ships
         # uncoupled, per member, and the coupled minimum a leg is measured against.
+        # The pair's own geometry, as diff_pair_loop routes it (#435 pair_diff_geom: its net class's width and gap).
         _cfg = state.config
+        _pgeom = getattr(state, 'pair_diff_geom', None)
+        if _pgeom:
+            from dataclasses import replace
+            _dw, _dg = _pgeom.get(pair.p_net_id, (_cfg.track_width, _cfg.diff_pair_gap))
+            _cfg = replace(_cfg, track_width=_dw, diff_pair_gap=_dg)
         _spacing = _cfg.track_width + _cfg.diff_pair_gap
         rep['uncoupled_mm'] = {
             tag: round(member_uncoupled_mm(state.pcb_data.segments, nid, other, _spacing), 3)
