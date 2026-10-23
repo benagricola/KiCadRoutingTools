@@ -199,6 +199,19 @@ def _setback_ladder(setback, spacing_mm, pad_gap_half, config):
         s = max(s, floor)
         if all(abs(s - e) > 1e-6 for e in ladder):
             ladder.append(s)
+    # Fork divergence: a terminal whose two pads stand well apart for the
+    # pair's pitch straddles something - a middle pad, often with its own via
+    # just beyond it (an ESD array's ground between the lines) - and the
+    # coupled pair can only start past it. Rungs past 2x reach out to twice
+    # the half separation plus a via and a clearance, tried only once every
+    # nearer rung has failed.
+    if pad_gap_half > 2 * spacing_mm:
+        reach = 2 * pad_gap_half + config.via_size + config.clearance
+        step = max(0.5 * setback, config.grid_step)
+        s = ladder[-1] + step
+        while s <= reach + 1e-9:
+            ladder.append(s)
+            s += step
     return ladder
 
 
@@ -2988,12 +3001,14 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
     # ends. Search inward from the terminal for the CLOSEST cell whose swath is clear.
     _swath_r = max(1, diff_pair_spacing_grid)
 
-    def _closest_launch(gx0, gy0, ox, oy, layer):
+    def _closest_launch(gx0, gy0, ox, oy, layer, skip=0):
         """Closest cell to (gx0,gy0), stepping toward (ox,oy), whose
         diff-pair-wide swath is clear on `layer` -- couple as far as possible, the
-        single-ended leg spans the small remaining gap. Returns (cx,cy) or None."""
+        single-ended leg spans the small remaining gap. `skip`: steps already
+        ruled out (a launch pushed on past the pair's own via). Returns (cx,cy)
+        or None."""
         steps = max(int(math.hypot(ox - gx0, oy - gy0)), 1)
-        for k in range(0, steps + 1):
+        for k in range(min(skip, steps), steps + 1):
             cx = int(round(gx0 + (ox - gx0) * k / steps))
             cy = int(round(gy0 + (oy - gy0) * k / steps))
             if not any(obstacles.is_blocked(cx + dxx, cy + dyy, layer)
@@ -3066,10 +3081,25 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
     # of a cleaner (usually inner) layer, but a pair that self-grazes on EVERY layer
     # still couples on its least-bad layer instead of dropping to single-ended.
     _selfgraze_fallback = None
-    for a_layer, b_layer in layer_pairs:
+    # Fork divergence: a coupled middle that starts between the pair's own two
+    # escape vias (staggered along a pin row, so the midpoint is clear on the
+    # obstacle map, which holds neither half) can pass a track too near the
+    # partner's via. That combo is tried again with the launch at that end
+    # pushed on toward the other end, a step at a time, up to _PUSH_MAX_MM:
+    # the single-ended legs fork round the vias. A combo that routes, or fails
+    # any other way, is untouched.
+    _PUSH_STEP = max(1, int(round(0.2 / config.grid_step)))
+    _PUSH_MAX = int(round(2.0 / config.grid_step))
+    _launch_push = {}           # (a_layer, b_layer) -> [skip at source, skip at target]
+    _last_graze = [None]        # the foreign copper the last rejected assembly grazed
+    _combo_queue = list(layer_pairs)
+    while _combo_queue:
+        a_layer, b_layer = _combo_queue.pop(0)
+        _skip = _launch_push.setdefault((a_layer, b_layer), [0, 0])
+        _last_graze[0] = None
         # Couple as close to each terminal as this candidate's launch layer allows.
-        _sl = _closest_launch(s_gx0, s_gy0, t_gx0, t_gy0, a_layer)
-        _tl = _closest_launch(t_gx0, t_gy0, s_gx0, s_gy0, b_layer)
+        _sl = _closest_launch(s_gx0, s_gy0, t_gx0, t_gy0, a_layer, _skip[0])
+        _tl = _closest_launch(t_gx0, t_gy0, s_gx0, s_gy0, b_layer, _skip[1])
         if _sl is None or _tl is None:
             _rej(a_layer, b_layer, "no clear diff-pair-wide launch swath at a terminal")
             continue
@@ -3239,6 +3269,7 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
                 return None, "coupled middle P/N tracks cross"
             _gz = _connector_grazes_foreign_copper(mid_segs, pcb_data, p_net_id, n_net_id, config)
             if _gz:
+                _last_graze[0] = _gz
                 return None, "coupled middle " + _graze_reason(_gz)
 
             # Attach each terminal to its middle near-end with point-to-point single-ended
@@ -3506,6 +3537,16 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
             elif _reject_reason is None:
                 _reject_reason = _why
         if not cands:
+            _gz = _last_graze[0]
+            _obj = _gz[1] if _gz else None
+            if (_gz and _gz[0] == 'via' and getattr(_obj, 'net_id', None) in (p_net_id, n_net_id)
+                    and hasattr(_obj, 'x')):
+                # the middle grazed the pair's own via: push the nearer launch on past it
+                end = 0 if (math.hypot(_obj.x - csx, _obj.y - csy) <= math.hypot(_obj.x - ctx, _obj.y - cty)) else 1
+                if _skip[end] + _PUSH_STEP <= _PUSH_MAX:
+                    _skip[end] += _PUSH_STEP
+                    _combo_queue.insert(0, (a_layer, b_layer))
+                    continue
             _rej(a_layer, b_layer, _reject_reason or "hybrid assembly failed")
             continue
         # Select the better legs: fewest intra-pair P/N overlaps first (a clean

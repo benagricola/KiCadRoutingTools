@@ -359,6 +359,76 @@ def _fake_pad(ref_pad: Pad, x: float, y: float, layer: str) -> Pad:
         rect_rotation=getattr(ref_pad, 'rect_rotation', 0.0))
 
 
+def _lane_end_via(pcb_data, pad: Pad, layer: str):
+    """The via at the far end of `pad`'s own pre-existing copper that reaches
+    `layer`, or None: a drawn escape (a riser from the pad to a via) already
+    carries the pad onto `layer`, so a leg launches there rather than at a pad
+    on a layer the leg may not use. Followed from the pad by endpoint adjacency
+    and via jumps (as _terminal_island_taps follows a terminal's island); of
+    the vias reached that span `layer`, the farthest from the pad, ties to the
+    lowest (x, y)."""
+    TOL = 0.06
+    reach = max(pad.size_x, pad.size_y) / 2 + TOL
+    segs = [g for g in pcb_data.segments if g.net_id == pad.net_id]
+    vias = [v for v in pcb_data.vias if v.net_id == pad.net_id]
+    copper = getattr(pcb_data.board_info, 'copper_layers', None) or []
+    cu_index = {name: i for i, name in enumerate(copper)}
+
+    def spans(v):
+        vl = [cu_index[l] for l in (v.layers or ['F.Cu', 'B.Cu']) if l in cu_index]
+        return bool(vl) and layer in cu_index and min(vl) <= cu_index[layer] <= max(vl)
+
+    def touch(x, y, pts):
+        return any(math.hypot(x - px, y - py) <= TOL for px, py in pts)
+    # the pad's own copper starts where a segment meets the pad
+    in_s = [math.hypot(g.start_x - pad.global_x, g.start_y - pad.global_y) <= reach or
+            math.hypot(g.end_x - pad.global_x, g.end_y - pad.global_y) <= reach for g in segs]
+    if not any(in_s):
+        return None
+    in_v = [False] * len(vias)
+    pts = [p for g, i in zip(segs, in_s) if i for p in ((g.start_x, g.start_y), (g.end_x, g.end_y))]
+    changed = True
+    while changed:
+        changed = False
+        for i, g in enumerate(segs):
+            if not in_s[i] and (touch(g.start_x, g.start_y, pts) or touch(g.end_x, g.end_y, pts)):
+                in_s[i] = changed = True
+                pts += [(g.start_x, g.start_y), (g.end_x, g.end_y)]
+        for i, v in enumerate(vias):
+            if not in_v[i] and touch(v.x, v.y, pts):
+                in_v[i] = changed = True
+                pts.append((v.x, v.y))
+    reached = [v for i, v in enumerate(vias) if in_v[i] and spans(v)]
+    if not reached:
+        return None
+    return min(reached, key=lambda v: (-math.hypot(v.x - pad.global_x, v.y - pad.global_y), v.x, v.y))
+
+
+def _lane_end_terminals(state, terminals, target_layer):
+    """`terminals` with each one whose pads may not carry the leg (their layer
+    is forbidden in this run) moved to the vias their drawn escapes end on, on
+    `target_layer` (_lane_end_via): stand-in pads, as a relocation's stub ends
+    are, but on copper already there, so nothing is added. A terminal stays
+    where only one half has such a via. Returns (new_terminals, moved)."""
+    config = state.config
+    costs = config.get_layer_costs()
+    out, moved = list(terminals), 0
+    for i, (pp, nn) in enumerate(terminals):
+        own = _pad_layer(pp, config)
+        k = config.layers.index(own) if own in config.layers else -1
+        if 0 <= k < len(costs) and costs[k] >= 0:
+            continue                                # the pads' own layer carries the leg
+        vp = _lane_end_via(state.pcb_data, pp, target_layer)
+        vn = _lane_end_via(state.pcb_data, nn, target_layer)
+        if vp is None or vn is None:
+            continue
+        out[i] = (_fake_pad(pp, vp.x, vp.y, target_layer), _fake_pad(nn, vn.x, vn.y, target_layer))
+        moved += 1
+        print(f"    Terminal {pp.component_ref}:{pp.pad_number}/{nn.pad_number} launches from its "
+              f"drawn escape's vias on {target_layer} ({vp.x:.3f}, {vp.y:.3f}) / ({vn.x:.3f}, {vn.y:.3f})")
+    return out, moved
+
+
 def _candidate_relocation_layers(state, terminals, obstacles, max_layers=3):
     """Rank shared target layers for relocating blocked terminals: a layer is a
     candidate if it is clearly more open than at least one terminal's own layer.
@@ -711,8 +781,14 @@ def _terminal_stub_endpoint(pcb_data: PCBData, terminal: Tuple[Pad, Pad],
                 return [(v.x, v.y, li) for li in range(len(config.layers))]
             return None
         ends = find_stub_free_ends(comp, [pad])
+        # A tip on a FORBIDDEN layer (negative --layer-costs) can carry no
+        # track, so no leg launches there: a stand-in at a drawn escape's via
+        # (_lane_end_terminals) floods back along the escape to the real pad
+        # on such a layer, and must fall back to its own endpoint instead.
+        costs = config.get_layer_costs()
         return [(fx, fy, config.layers.index(flayer))
-                for fx, fy, flayer in ends if flayer in config.layers]
+                for fx, fy, flayer in ends if flayer in config.layers
+                and not (config.layers.index(flayer) < len(costs) and costs[config.layers.index(flayer)] < 0)]
 
     p_tips, n_tips = tip(pp), tip(nn)
     if not p_tips or not n_tips:
@@ -848,6 +924,18 @@ def route_multipoint_diff_pair(state, pair: DiffPairNet, pair_name: str,
                 return legs, m, se_legs
             _cleanup_fans(pcb_data, fans)
         return None, None, []
+
+    # A terminal on a layer this run may not route has a drawn escape to a
+    # via: launch from the via before dropping new ones (no copper is added).
+    costs = config.get_layer_costs()
+    for layer in [l for k, l in enumerate(config.layers) if k < len(costs) and costs[k] >= 0]:
+        moved_terms, moved = _lane_end_terminals(state, terminals, layer)
+        if not moved:
+            continue
+        print(f"  Retrying chain with {moved} terminal(s) on their drawn escapes' vias ({layer})...")
+        leg_results, merged, se = _route_terminal_set(state, pair, pair_name, moved_terms)
+        if leg_results is not None:
+            return leg_results, merged, se
 
     if obstacles is not None:
         leg_results, merged, se = _try_relocated(terminals)
