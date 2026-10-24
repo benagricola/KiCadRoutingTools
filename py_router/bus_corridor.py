@@ -81,6 +81,80 @@ def _sample_dense(path: List[Tuple[int, int, int]], step: int = 1
     return out
 
 
+# Fork: mm of the corridor at each end over which a member keeps the lateral
+# offset its pad has from the guide's pad; between the two ends the offset
+# moves linearly from the launch value to the arrival value.
+LANE_HOLD_MM = 5.0
+
+
+def lane_paths(group, rep, corridor, grid_step):
+    """Fork: {net_id: path} -- the corridor shifted sideways for each member
+    by where its pad sits across the guide's pad (a river keeps its lanes).
+
+    Every member used to be attracted to the one centerline, so the member
+    routed first took it and crossed the launch of every pad between it and
+    the guide: on a fine-pitch row the member left behind was walled in by
+    its neighbours' tracks. A member's lane is the corridor offset by the
+    signed distance of its pad from the guide's pad, measured across the
+    corridor's direction at that end, held for LANE_HOLD_MM and moved
+    linearly to the offset at the other end in between. The guide keeps the
+    corridor itself."""
+    import math
+    out = {}
+    n = len(corridor)
+    if n < 3 or rep not in group.net_ids:
+        return out
+    by_target = group.clique_endpoint == "target"
+    starts = group.target_positions if by_target else group.source_positions
+    ends = group.source_positions if by_target else group.target_positions
+    if len(starts) != len(group.net_ids) or len(ends) != len(group.net_ids):
+        return out
+    r = group.net_ids.index(rep)
+    cum = [0.0]
+    for a, b in zip(corridor, corridor[1:]):
+        cum.append(cum[-1] + math.hypot(b[0] - a[0], b[1] - a[1]) * grid_step)
+    total = cum[-1]
+    if total <= 0.0:
+        return out
+    k = max(1, min(n - 1, int(round(1.0 / grid_step))))
+
+    def normal(a, b):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        h = math.hypot(dx, dy)
+        return (-dy / h, dx / h) if h else None
+    n_start = normal(corridor[0], corridor[k])
+    n_end = normal(corridor[n - 1 - k], corridor[n - 1])
+    if n_start is None or n_end is None:
+        return out
+    w = 3
+    tangents = []
+    for j in range(n):
+        t = normal(corridor[max(0, j - w)], corridor[min(n - 1, j + w)])
+        tangents.append(t if t is not None else n_start)
+    hold = min(LANE_HOLD_MM, total / 3.0)
+    for i, nid in enumerate(group.net_ids):
+        if i == r:
+            continue
+        s_off = ((starts[i][0] - starts[r][0]) * n_start[0]
+                 + (starts[i][1] - starts[r][1]) * n_start[1])
+        e_off = ((ends[i][0] - ends[r][0]) * n_end[0]
+                 + (ends[i][1] - ends[r][1]) * n_end[1])
+        path = []
+        for j, (gx, gy, ly) in enumerate(corridor):
+            if cum[j] <= hold:
+                o = s_off
+            elif cum[j] >= total - hold:
+                o = e_off
+            else:
+                f = (cum[j] - hold) / (total - 2.0 * hold)
+                o = s_off + (e_off - s_off) * f
+            nx, ny = tangents[j]
+            path.append((int(round(gx + nx * o / grid_step)),
+                         int(round(gy + ny * o / grid_step)), ly))
+        out[nid] = path
+    return out
+
+
 def _cell_at_setback(dense, setback_cells):
     """Index of the first cell of `dense` at least `setback_cells` grid cells
     (path length) from its start, or None when the path is shorter. Cells of a
@@ -145,7 +219,7 @@ def plan_bus_corridors(pcb_data, config, bus_groups: List[BusGroup],
     from single_ended_routing import route_net_with_obstacles
     from net_queries import calculate_route_length
 
-    corridors: Dict[str, List[Tuple[int, int, int]]] = {}
+    corridors: Dict[object, List[Tuple[int, int, int]]] = {}
     demoted: List[str] = []
     if not bus_groups:
         return corridors, demoted
@@ -279,6 +353,10 @@ def plan_bus_corridors(pcb_data, config, bus_groups: List[BusGroup],
             continue
         corridors[g.name] = (_dense if _dense is not None
                              else _sample_dense(result['path'], step=1))
+        # Fork: a lane per member, kept under (group, net id) in the same dict.
+        for _nid, _lane in lane_paths(g, rep, corridors[g.name],
+                                      config.grid_step).items():
+            corridors[(g.name, _nid)] = _lane
         lay = sorted({p[2] for p in result['path']})
         print(f"  {g.name}: corridor via {rep_name} at rung {k} "
               f"(room for {k} sibling(s)/side), {length:.1f}mm, "

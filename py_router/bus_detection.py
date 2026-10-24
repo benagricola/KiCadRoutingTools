@@ -465,6 +465,9 @@ def bus_attraction_context(
     bg = (bus_net_to_group or {}).get(net_id)
     if bg is None:
         return None, False
-    attr = ((bus_corridors or {}).get(bg.name)
+    # Fork: a member's own lane (bus_corridor.lane_paths) before the shared
+    # centerline, so the members keep their sides of the corridor.
+    attr = ((bus_corridors or {}).get((bg.name, net_id))
+            or (bus_corridors or {}).get(bg.name)
             or get_attraction_neighbor(bg, net_id, routed_paths or {}))
     return attr, (bg.clique_endpoint == "target")
