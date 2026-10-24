@@ -52,6 +52,12 @@ MAX_RUNG = 3
 # PROBE ONLY makes the planned corridor layer-coherent; members still pay
 # normal via costs. Override with KICAD_BUS_CORRIDOR_VIA_MULT (1 = off).
 CORRIDOR_VIA_COST_MULT = 4.0
+# Fork: setbacks (mm) tried for a wide rung that cannot leave the terminals.
+# A rung's sibling room is measured only past the setback: the corridor runs
+# at the rung-0 path from each terminal to the setback point, and the wide
+# probe routes between the two setback points. A 0.4 mm-pitch pin row has no
+# room for a wide track at the pins, so without it only rung 0 ever routes.
+CORRIDOR_SETBACKS_MM = (1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0)
 
 
 def _sample_dense(path: List[Tuple[int, int, int]], step: int = 1
@@ -73,6 +79,56 @@ def _sample_dense(path: List[Tuple[int, int, int]], step: int = 1
             out.append((int(round(x1 + dx * t)), int(round(y1 + dy * t)), l1))
     out.append(path[-1])
     return out
+
+
+def _cell_at_setback(dense, setback_cells):
+    """Index of the first cell of `dense` at least `setback_cells` grid cells
+    (path length) from its start, or None when the path is shorter. Cells of a
+    layer change are skipped so the setback point is a plain track cell."""
+    import math
+    cum = 0.0
+    for i in range(1, len(dense)):
+        cum += math.hypot(dense[i][0] - dense[i - 1][0],
+                          dense[i][1] - dense[i - 1][1])
+        if cum >= setback_cells and dense[i][2] == dense[i - 1][2] and (
+                i + 1 >= len(dense) or dense[i + 1][2] == dense[i][2]):
+            return i
+    return None
+
+
+def _setback_probe(pcb_data, rep, cfg_k, group_map, base_path, setback_mm,
+                   grid_step):
+    """Fork: route the wide probe between two points `setback_mm` along the
+    rung-0 path from its ends, and stitch the rung-0 path back on at both
+    ends. Returns (result, dense_path, extra_length_mm) or None."""
+    import math
+    from single_ended_routing import route_net_with_obstacles
+    from routing_config import GridCoord
+    dense = _sample_dense(base_path, step=1)
+    cells = setback_mm / grid_step
+    i = _cell_at_setback(dense, cells)
+    j_rev = _cell_at_setback(list(reversed(dense)), cells)
+    if i is None or j_rev is None:
+        return None
+    j = len(dense) - 1 - j_rev
+    if i >= j:
+        return None
+    coord = GridCoord(grid_step)
+
+    def row(c):
+        x, y = coord.to_float(c[0], c[1])
+        return (c[0], c[1], c[2], x, y)
+    probe_map = group_map.clone_fresh()
+    result = route_net_with_obstacles(
+        pcb_data, rep, cfg_k, probe_map,
+        sources_override=[row(dense[i])], targets_override=[row(dense[j])])
+    if not result or result.get('failed') or not result.get('path'):
+        return None
+    head, tail = dense[:i], dense[j + 1:]
+    extra = sum(math.hypot(a[0] - b[0], a[1] - b[1])
+                for seq in (dense[:i + 1], dense[j:])
+                for a, b in zip(seq, seq[1:])) * grid_step
+    return result, head + _sample_dense(result['path'], step=1) + tail, extra
 
 
 def plan_bus_corridors(pcb_data, config, bus_groups: List[BusGroup],
@@ -115,8 +171,10 @@ def plan_bus_corridors(pcb_data, config, bus_groups: List[BusGroup],
         for _sib in all_member_ids:
             if _sib != rep:
                 add_net_pads_as_obstacles(group_map, pcb_data, _sib, config)
-        best = None      # (score, k, length, result)
-        for k in range(k_max, -1, -1):
+        best = None      # (score, k, length, result, dense_path)
+        probes = {}      # rung -> (result, length) of a full-length probe
+
+        def _cfg(k):
             # Probe via the wide-power mechanism: a track k sibling-rooms
             # wider per side keeps that much margin from every obstacle on
             # the shared map. Neck-down is disabled so the rung fails
@@ -129,32 +187,66 @@ def plan_bus_corridors(pcb_data, config, bus_groups: List[BusGroup],
             # layer-change price than member routing, so the skeleton stays
             # on one layer unless a change is genuinely unavoidable.
             via_mult = env_knobs.BUS_CORRIDOR_PROBE_VIA_MULT
-            cfg_k = replace(
+            return replace(
                 config, power_tap_neckdown=False,
                 via_cost=int(round(config.via_cost * via_mult)),
                 power_net_widths={**config.power_net_widths,
                                   rep: config.track_width + 2 * k * room_mm})
+
+        def _plain(k):
+            if k in probes:
+                return probes[k]
             result = route_net_with_obstacles(
-                pcb_data, rep, cfg_k, group_map,
+                pcb_data, rep, _cfg(k), group_map,
                 reverse_direction=(g.clique_endpoint == "target"))
             if not result or result.get('failed') or not result.get('path'):
+                probes[k] = None
+            else:
+                probes[k] = (result, calculate_route_length(
+                    result['new_segments'], result.get('new_vias', []),
+                    pcb_data))
+            return probes[k]
+
+        for k in range(k_max, -1, -1):
+            found = _plain(k)
+            dense = None
+            if found is None and k > 0:
+                # Fork: the wide rung cannot leave the terminals (a fine-pitch
+                # row). Measure its room only past a setback from them.
+                base = _plain(0)
+                for sb in (CORRIDOR_SETBACKS_MM if base else ()):
+                    sp = _setback_probe(pcb_data, rep, _cfg(k), group_map,
+                                        base[0]['path'], sb, config.grid_step)
+                    if sp is None:
+                        continue
+                    result, sdense, extra = sp
+                    slen = calculate_route_length(
+                        result['new_segments'], result.get('new_vias', []),
+                        pcb_data) + extra
+                    if verbose:
+                        print(f"  {g.name}: rung {k} past a {sb:.1f}mm "
+                              f"setback: {slen:.1f}mm")
+                    # The shortest setback that routes wins; a longer
+                    # setback only replaces it by being shorter.
+                    if found is None or slen < found[1]:
+                        found, dense = (result, slen), sdense
+            if found is None:
                 if verbose:
                     print(f"  {g.name}: rung {k} (+{k * room_mm:.2f}mm "
                           f"clearance) no route")
                 continue
-            length = calculate_route_length(
-                result['new_segments'], result.get('new_vias', []), pcb_data)
+            result, length = found
             score = length + (k_max - k) * room_mm * ROOM_WEIGHT
             if verbose:
                 print(f"  {g.name}: rung {k} routes, length {length:.1f}mm, "
                       f"score {score:.1f}")
             if best is None or score < best[0]:
-                best = (score, k, length, result)
+                best = (score, k, length, result, dense)
         if best is None:
             print(f"  {g.name}: no corridor at any rung -- falling back to "
                   f"neighbor attraction")
             continue
-        _score, k, length, result = best
+        _score, k, length, result, _dense = best
         # Demotion rule: a bus whose CENTERLINE still needs more than
         # KICAD_BUS_MAX_CORRIDOR_LAYER_CHANGES (default 1) layer changes at
         # the stiff probe price has no laminar lane to offer -- routing it
@@ -167,7 +259,7 @@ def plan_bus_corridors(pcb_data, config, bus_groups: List[BusGroup],
         # topology), not wander. Only changes in the middle demote. The
         # path is simplified waypoints, so measure geometric distance.
         import math as _math
-        _path = result['path']
+        _path = _dense if _dense is not None else result['path']
         _cum = [0.0]
         for i in range(1, len(_path)):
             _cum.append(_cum[-1] + _math.hypot(
@@ -185,7 +277,8 @@ def plan_bus_corridors(pcb_data, config, bus_groups: List[BusGroup],
                   f"(> {_max_changes}) even at the laminar probe price -- "
                   f"DEMOTED, members route as plain nets")
             continue
-        corridors[g.name] = _sample_dense(result['path'], step=1)
+        corridors[g.name] = (_dense if _dense is not None
+                             else _sample_dense(result['path'], step=1))
         lay = sorted({p[2] for p in result['path']})
         print(f"  {g.name}: corridor via {rep_name} at rung {k} "
               f"(room for {k} sibling(s)/side), {length:.1f}mm, "

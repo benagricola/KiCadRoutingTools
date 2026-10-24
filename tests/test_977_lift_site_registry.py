@@ -94,6 +94,10 @@ REGISTRY = {
         NOT_ROUTED, 'corridor probe: it routes representatives to SCORE rungs '
                     'and the copper is discarded (an unlifted probe can only '
                     'mis-score a group, never ship copper)'),
+    ('py_router/bus_corridor.py', '_setback_probe'): (
+        NOT_ROUTED, 'corridor probe between setback points: a copy of the '
+                    'probe map, the copper is discarded like '
+                    'plan_bus_corridors'),
     ('py_router/global_plan.py', 'plan_global_routes'): (
         NOT_ROUTED, 'rough global plan probe; produces a net order and '
                     'reservation stamps, no copper'),
