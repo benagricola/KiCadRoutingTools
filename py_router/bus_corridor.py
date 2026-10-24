@@ -38,7 +38,7 @@ import env_knobs
 from typing import Dict, List, Optional, Tuple
 
 from bus_detection import BusGroup, get_bus_routing_order
-from obstacle_map import build_base_obstacle_map
+from obstacle_map import add_net_pads_as_obstacles, build_base_obstacle_map
 
 # A missing sibling-room costs this many mm of detour before the planner
 # prefers the narrower corridor: k rungs below k_max is penalized like
@@ -106,6 +106,15 @@ def plan_bus_corridors(pcb_data, config, bus_groups: List[BusGroup],
         rep = get_bus_routing_order(g)[0]
         rep_name = pcb_data.nets[rep].name if rep in pcb_data.nets else str(rep)
         k_max = min(MAX_RUNG, max(1, (len(g.net_ids)) // 2))
+        # The probe map leaves every member out so that their stubs do not
+        # veto the corridor, but their PADS stay where they are: a probe that
+        # runs its terminal across a sibling's pin is refused by the terminal
+        # graze gate (which measures against all foreign copper), so every rung
+        # fails at a fine-pitch row a plain member route leaves cleanly.
+        group_map = probe_map.clone_fresh()
+        for _sib in all_member_ids:
+            if _sib != rep:
+                add_net_pads_as_obstacles(group_map, pcb_data, _sib, config)
         best = None      # (score, k, length, result)
         for k in range(k_max, -1, -1):
             # Probe via the wide-power mechanism: a track k sibling-rooms
@@ -126,7 +135,7 @@ def plan_bus_corridors(pcb_data, config, bus_groups: List[BusGroup],
                 power_net_widths={**config.power_net_widths,
                                   rep: config.track_width + 2 * k * room_mm})
             result = route_net_with_obstacles(
-                pcb_data, rep, cfg_k, probe_map,
+                pcb_data, rep, cfg_k, group_map,
                 reverse_direction=(g.clique_endpoint == "target"))
             if not result or result.get('failed') or not result.get('path'):
                 if verbose:
