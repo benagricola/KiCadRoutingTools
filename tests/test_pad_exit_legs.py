@@ -17,7 +17,7 @@ sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, 'py_router'))
 sys.path.insert(0, os.path.join(REPO, 'py_tools'))
 
-from kicad_parser import Pad, Net, PCBData, BoardInfo, Segment
+from kicad_parser import Pad, Net, PCBData, BoardInfo, Segment, Footprint
 from pcb_modification import pad_exit_legs
 from routing_config import GridRouteConfig
 
@@ -114,10 +114,46 @@ def test_blocked_exit_is_left_alone():
     check("the route is unchanged", len(pcb.segments) == 2)
 
 
+def test_two_pad_part_is_entered_through_its_outer_end():
+    """A resistor along x at (12, 10)-(12.6, 10); its pad 1 track arrives from
+    the left 0.1 mm off the resistor's axis and steps into the pad at 45
+    degrees. It should step earlier and enter pad 1 along the axis, from the
+    left (the end away from pad 2)."""
+    r1 = _pad('R1', 12.0, 10.0, 1, '/SIG', 0.46, 0.4)
+    r2 = _pad('R1', 12.6, 10.0, 2, '/OTHER', 0.46, 0.4)
+    r1.pad_number, r2.pad_number = '1', '2'
+    src = _pad('U9', 6.0, 10.1, 1, '/SIG', 0.5, 0.5)
+    segs = [Segment(start_x=6.0, start_y=10.1, end_x=11.9, end_y=10.1, width=W,
+                    layer='F.Cu', net_id=1),
+            Segment(start_x=11.9, start_y=10.1, end_x=12.0, end_y=10.0, width=W,
+                    layer='F.Cu', net_id=1)]
+    fp = Footprint(reference='R1', footprint_name='t:R', x=12.3, y=10.0, rotation=0.0,
+                   layer='F.Cu', pads=[r1, r2])
+    pcb = PCBData(footprints={'R1': fp}, nets={1: Net(1, '/SIG'), 2: Net(2, '/OTHER')},
+                  segments=segs, vias=[],
+                  board_info=BoardInfo(layers={}, copper_layers=['F.Cu', 'B.Cu'],
+                                       board_bounds=(0.0, 0.0, 200.0, 200.0)),
+                  pads_by_net={1: [src, r1], 2: [r2]})
+    cfg = GridRouteConfig(track_width=W, clearance=0.127, via_size=0.45, via_drill=0.2,
+                          layers=['F.Cu', 'B.Cu'])
+    n, _strip, _added = pad_exit_legs([], pcb, None, cfg)
+    check("the resistor pad changed", n == 1, n)
+    into = [s for s in pcb.segments if s.net_id == 1 and
+            (abs(s.end_x - 12.0) < 1e-6 and abs(s.end_y - 10.0) < 1e-6
+             or abs(s.start_x - 12.0) < 1e-6 and abs(s.start_y - 10.0) < 1e-6)]
+    check("one segment reaches the pad centre", len(into) == 1, len(into))
+    if into:
+        s = into[0]
+        far = (s.start_x, s.start_y) if abs(s.end_x - 12.0) < 1e-6 else (s.end_x, s.end_y)
+        check("it comes in along the resistor's axis from the outer end",
+              abs(far[1] - 10.0) < 1e-9 and far[0] <= 12.0 - (0.23 + W / 2) + 1e-6, far)
+
+
 def main():
     test_track_leaves_along_the_long_axis()
     test_square_pad_is_left_alone()
     test_blocked_exit_is_left_alone()
+    test_two_pad_part_is_entered_through_its_outer_end()
     print(f"\n{len(fails)} failure(s)" if fails else "\nall passed")
     return 1 if fails else 0
 

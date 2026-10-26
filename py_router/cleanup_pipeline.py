@@ -556,7 +556,7 @@ def run_post_route_cleanup(results, pcb_data, scope_net_ids, config, *,
                   f"{_sm_stats.get('spans', 0)} staircase span(s) on "
                   f"{_sm_nets} net(s), -{_sm_stats.get('saved_mm', 0.0):.2f} mm "
                   f"of copper (#536)")
-        # Fork: tracks leave elongated pads along the pad's long axis.
+        # Fork: tracks leave pads square through an end (pad_exit_legs).
         _px_n, _px_strip, _px_added = pad_exit_legs(
             results, pcb_data, _sub_scope, config,
             keep_input_copper=keep_input_copper,
@@ -565,8 +565,8 @@ def run_post_route_cleanup(results, pcb_data, scope_net_ids, config, *,
         _trace('pad_exit')
         strip.extend(_px_strip)
         if _px_n:
-            print(f"{label}Pad exit legs: {_px_n} track(s) now leave their pad "
-                  f"along its long axis")
+            print(f"{label}Pad exits: {_px_n} track(s) now leave their pad "
+                  f"square through an end")
 
     # FINAL copper step (#319 ordering): nothing below may remove copper.
     # KICAD_NO_SOFT_JOINT_BRIDGE=1 is an A/B ablation knob (like
