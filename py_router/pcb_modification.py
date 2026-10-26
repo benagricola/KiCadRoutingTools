@@ -5672,6 +5672,256 @@ def _collapse_collinear_vertices(vpts, max_deviation: float, pad_cover=None):
         kept_idx = _geometric_collapse(vpts, max_deviation, forced)
 
 
+# Fork: pads at least this many times longer than wide get an exit leg.
+PAD_EXIT_MIN_ASPECT = 1.5
+# Fork: how far along the route (mm, past the exit point) an exit leg may
+# rejoin it.
+PAD_EXIT_REACH_MM = 5.0
+
+
+def pad_exit_legs(results, pcb_data: PCBData, scope_net_ids, config,
+                  keep_input_copper: bool = False, skip_net_ids=None):
+    """Fork: a track leaves an elongated pad along the pad's long axis.
+
+    A route ends on its pad's centre but may turn there, so on a long thin
+    pad (an FFC or QFN finger) the track crosses the pad at an angle instead
+    of running down the middle of its narrow dimension. Here the track from
+    the centre runs along the long axis until its copper is clear of the pad
+    end, then rejoins the route with octolinear legs, turning no more than
+    45 degrees at each bend; of the rejoins that clear, the one whose whole
+    track has the fewest bends wins, then the shortest. The new copper must keep
+    the pair clearance (single_ended_routing._slid_run_clears); a pad whose
+    route is touched by other same-net copper on the replaced part, or that
+    cannot rejoin within PAD_EXIT_REACH_MM, is left as routed.
+
+    Returns (changed_pads, original_to_remove, added_segments)."""
+    from collections import defaultdict
+    from check_connected import check_net_connectivity
+    from single_ended_routing import _slid_run_clears
+
+    skip = set(skip_net_ids or ())
+    routed = {}
+    for r in results:
+        for sg in r.get('new_segments') or []:
+            routed[id(sg)] = r
+    # _octolinear_bends rounds its bend to 0.1 um, so a 45-degree leg can be
+    # a few thousandths of a radian off.
+    cos45 = math.cos(math.radians(45.0)) - 1e-3
+
+    def unit(dx, dy):
+        h = math.hypot(dx, dy)
+        return (dx / h, dy / h) if h > 1e-9 else None
+
+    def vk(x, y):
+        return (round(x, 4), round(y, 4))
+
+    changed = 0
+    original_to_remove = []
+    added = []
+    removed_routed = set()
+    for net_id, pads in list(pcb_data.pads_by_net.items()):
+        if net_id in skip or (scope_net_ids is not None and net_id not in scope_net_ids):
+            continue
+        for pad in pads:
+            if getattr(pad, 'polygons', None) or pad.shape not in ('rect', 'roundrect', 'oval'):
+                continue
+            if getattr(pad, 'drill', 0.0):
+                continue
+            big, small = max(pad.size_x, pad.size_y), min(pad.size_x, pad.size_y)
+            if small <= 0 or big / small < PAD_EXIT_MIN_ASPECT:
+                continue
+            rr = math.radians(getattr(pad, 'rect_rotation', 0.0) or 0.0)
+            ax = ((math.cos(rr), math.sin(rr)) if pad.size_x >= pad.size_y
+                  else (-math.sin(rr), math.cos(rr)))
+            ox, oy = pad.global_x, pad.global_y
+            net_segs = [sg for sg in pcb_data.segments if sg.net_id == net_id]
+            net_vias = [v for v in pcb_data.vias if v.net_id == net_id]
+            at = [sg for sg in net_segs
+                  if (math.hypot(sg.start_x - ox, sg.start_y - oy) < 1e-4
+                      or math.hypot(sg.end_x - ox, sg.end_y - oy) < 1e-4)
+                  and sg.layer in pad.layers]
+            if len(at) != 1 or any(math.hypot(v.x - ox, v.y - oy) < 1e-4 for v in net_vias):
+                continue
+            first = at[0]
+            layer, w = first.layer, first.width
+            inc = defaultdict(list)
+            for sg in net_segs:
+                inc[vk(sg.start_x, sg.start_y)].append(sg)
+                inc[vk(sg.end_x, sg.end_y)].append(sg)
+            via_keys = {vk(v.x, v.y) for v in net_vias}
+            # Walk the route from the centre through plain two-segment joints.
+            poly, chain = [(ox, oy)], []
+            sg, cur = first, vk(ox, oy)
+            exit_d = big / 2.0 + w / 2.0
+            while sg is not None:
+                if sg.layer != layer or abs(sg.width - w) > 1e-6:
+                    break
+                if vk(sg.start_x, sg.start_y) == cur:
+                    nxt = (sg.end_x, sg.end_y)
+                else:
+                    nxt = (sg.start_x, sg.start_y)
+                chain.append(sg)
+                poly.append(nxt)
+                cur = vk(*nxt)
+                total = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(poly, poly[1:]))
+                if total > exit_d + PAD_EXIT_REACH_MM:
+                    break
+                others = [t for t in inc[cur] if t is not sg]
+                if len(others) != 1 or cur in via_keys:
+                    break
+                sg = others[0]
+            if len(poly) < 2:
+                continue
+            # Which way the route leaves: along +axis or -axis.
+            proj = 0.0
+            for q in poly[1:]:
+                proj = (q[0] - ox) * ax[0] + (q[1] - oy) * ax[1]
+                if abs(proj) > 1e-6:
+                    break
+            if abs(proj) <= 1e-6:
+                continue
+            a = ax if proj > 0 else (-ax[0], -ax[1])
+            d0 = unit(poly[1][0] - ox, poly[1][1] - oy)
+            l0 = math.hypot(poly[1][0] - ox, poly[1][1] - oy)
+            if d0 and d0[0] * a[0] + d0[1] * a[1] > 1 - 1e-6 and l0 >= exit_d - 1e-6:
+                continue                     # already leaves along the axis
+            ex, ey = ox + exit_d * a[0], oy + exit_d * a[1]
+            # Rejoin candidates along the route. The rejoin kept is the one
+            # whose whole track (exit leg, connector, rest of the walked route)
+            # has the fewest bends, then the shortest; a straight-through joint
+            # is not a bend.
+            dirs_after = []
+            for i in range(len(poly) - 1):
+                dirs_after.append(unit(poly[i + 1][0] - poly[i][0], poly[i + 1][1] - poly[i][1]))
+
+            def bends(ds):
+                return sum(1 for u, v in zip(ds, ds[1:])
+                           if u and v and u[0] * v[0] + u[1] * v[1] < 1 - 1e-6)
+            cands = []
+            acc = 0.0
+            for i in range(len(poly) - 1):
+                p0, p1 = poly[i], poly[i + 1]
+                L = math.hypot(p1[0] - p0[0], p1[1] - p0[1])
+                n = max(1, int(L / (config.grid_step / 2.0)))
+                for k in range(1, n + 1):
+                    t = k / n
+                    q = (p0[0] + (p1[0] - p0[0]) * t, p0[1] + (p1[1] - p0[1]) * t)
+                    rest = dirs_after[i:] if k < n else dirs_after[i + 1:]
+                    rest_len = (L * (1 - t)) + sum(
+                        math.hypot(poly[j + 1][0] - poly[j][0], poly[j + 1][1] - poly[j][1])
+                        for j in range(i + 1, len(poly) - 1))
+                    for inter in _octolinear_bends((ex, ey), q):
+                        pts = [(ex, ey)] + inter + [q]
+                        legs = [unit(b[0] - a_[0], b[1] - a_[1]) for a_, b in zip(pts, pts[1:])]
+                        legs = [d for d in legs if d is not None]
+                        ds = [a] + legs + rest
+                        if any(u[0] * v[0] + u[1] * v[1] < cos45
+                               for u, v in zip(ds, ds[1:]) if u and v):
+                            continue
+                        length = exit_d + sum(math.hypot(b[0] - a_[0], b[1] - a_[1])
+                                              for a_, b in zip(pts, pts[1:])) + rest_len
+                        cands.append((bends(ds), round(length, 6), i, q, pts))
+                acc += L
+            cands.sort(key=lambda c: (c[0], c[1]))
+            best = None
+            for _b, _l, i, q, pts in cands:
+                new_pts = [(ox, oy)] + pts
+                if all(_slid_run_clears(pcb_data, net_id, config, layer,
+                                        p_[0], p_[1], r_[0], r_[1])
+                       for p_, r_ in zip(new_pts, new_pts[1:])
+                       if math.hypot(r_[0] - p_[0], r_[1] - p_[1]) > 1e-6):
+                    best = (i, q, new_pts)
+                    break
+            if best is None:
+                continue
+            i, q, new_pts = best
+            removed = chain[:i + 1]
+            if keep_input_copper and any(id(t) not in routed for t in removed):
+                continue
+            # The replaced stretch must carry no other same-net copper.
+            gone = poly[:i + 1] + [q]
+            ids = {id(t) for t in removed}
+            touched = False
+            for t in net_segs:
+                if id(t) in ids:
+                    continue
+                for px_, py_ in ((t.start_x, t.start_y), (t.end_x, t.end_y)):
+                    if math.hypot(px_ - q[0], py_ - q[1]) < 1e-4:
+                        continue
+                    if any(_pt_seg_dist(px_, py_, g0[0], g0[1], g1[0], g1[1])
+                           < (t.width + w) / 2.0 for g0, g1 in zip(gone, gone[1:])):
+                        touched = True
+            for v in net_vias:
+                if math.hypot(v.x - q[0], v.y - q[1]) < (v.size + w) / 2.0:
+                    continue                 # joined at the rejoin point
+                if any(_pt_seg_dist(v.x, v.y, g0[0], g0[1], g1[0], g1[1])
+                       < (v.size + w) / 2.0 for g0, g1 in zip(gone, gone[1:])):
+                    touched = True
+            for op in pads:
+                if op is pad:
+                    continue
+                from check_drc import point_to_pad_distance
+                if point_to_pad_distance(q[0], q[1], op) <= w / 2.0:
+                    continue                 # joined at the rejoin point
+                if any(_pt_seg_dist(op.global_x, op.global_y, g0[0], g0[1], g1[0], g1[1])
+                       < math.hypot(op.size_x, op.size_y) / 2.0 + w / 2.0
+                       for g0, g1 in zip(gone, gone[1:])):
+                    touched = True
+            if touched:
+                continue
+            new_segs = [Segment(start_x=p_[0], start_y=p_[1], end_x=r_[0], end_y=r_[1],
+                                width=w, layer=layer, net_id=net_id)
+                        for p_, r_ in zip(new_pts, new_pts[1:])
+                        if math.hypot(r_[0] - p_[0], r_[1] - p_[1]) > 1e-6]
+            tail = poly[i + 1]
+            if math.hypot(tail[0] - q[0], tail[1] - q[1]) > 1e-6:
+                new_segs.append(Segment(start_x=q[0], start_y=q[1], end_x=tail[0],
+                                        end_y=tail[1], width=w, layer=layer, net_id=net_id))
+            before = check_net_connectivity(net_id, net_segs, net_vias, pads, [],
+                                            pcb_data=pcb_data)
+            trial = [t for t in net_segs if id(t) not in ids] + new_segs
+            after = check_net_connectivity(net_id, trial, net_vias, pads, [],
+                                           pcb_data=pcb_data)
+            if ((before.get('connected') and not after.get('connected'))
+                    or len(after.get('disconnected_pads') or [])
+                    > len(before.get('disconnected_pads') or [])):
+                continue
+            res = None
+            for t in removed:
+                if id(t) in routed:
+                    removed_routed.add(id(t))
+                    res = res or routed[id(t)]
+                else:
+                    original_to_remove.append(t)
+            if res is None:
+                res = {'new_segments': [], 'new_vias': [], 'cleanup': 'pad_exit'}
+                results.append(res)
+                for t in new_segs:
+                    routed[id(t)] = res
+            res['new_segments'] = list(res.get('new_segments') or []) + new_segs
+            added.extend(new_segs)
+            pcb_data.segments = [t for t in pcb_data.segments if id(t) not in ids] + new_segs
+            if hasattr(pcb_data, '_foreign_seg_arr_cache'):
+                pcb_data._foreign_seg_arr_cache = None
+            changed += 1
+    if removed_routed:
+        for r in results:
+            sgs = r.get('new_segments')
+            if sgs:
+                r['new_segments'] = [t for t in sgs if id(t) not in removed_routed]
+    if changed:
+        try:
+            delattr(pcb_data, '_plane_fill_models')
+        except AttributeError:
+            pass
+        try:
+            import plane_fill_model as _pfm
+            _pfm._MODELS_BY_ZONE_ID.clear()
+        except Exception:
+            pass
+    return changed, original_to_remove, added
+
+
 def merge_collinear_segments(results, pcb_data: PCBData, scope_net_ids=None,
                              keep_input_copper: bool = False,
                              max_deviation: float = 1e-6,
