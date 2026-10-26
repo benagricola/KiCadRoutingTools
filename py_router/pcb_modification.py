@@ -5672,6 +5672,202 @@ def _collapse_collinear_vertices(vpts, max_deviation: float, pad_cover=None):
         kept_idx = _geometric_collapse(vpts, max_deviation, forced)
 
 
+# Fork: a via whose track branch is at most this long (mm) beside a same-net
+# pad is tied to the pad instead (pad_takes_junction).
+PAD_JUNCTION_VIA_REACH_MM = 1.5
+
+
+def pad_takes_junction(results, pcb_data: PCBData, scope_net_ids, config,
+                       keep_input_copper: bool = False, skip_net_ids=None):
+    """Fork: a pad, not the track beside it, takes the junction to a nearby via.
+
+    A route can end at a via next to its pad and reach the pad by a short
+    branch off the track, so the track runs past (often along the pad's edge)
+    to the via and the pad hangs off it. Where a junction of three branches
+    has one branch ending at a same-net pad's centre within the pad's reach
+    and another ending at a via within PAD_JUNCTION_VIA_REACH_MM, the via's
+    branch is replaced by octolinear copper from the pad's centre to the via
+    and the track ends in the pad. Taken only where the new copper keeps the
+    pair clearance (single_ended_routing._slid_run_clears) and the net's
+    connectivity does not degrade.
+
+    Returns (changed, original_to_remove, added_segments)."""
+    from collections import defaultdict
+    from check_connected import check_net_connectivity
+    from single_ended_routing import _slid_run_clears
+    from check_drc import point_to_pad_distance
+
+    skip = set(skip_net_ids or ())
+    routed = {}
+    for r in results:
+        for sg in r.get('new_segments') or []:
+            routed[id(sg)] = r
+
+    def vk(x, y):
+        return (round(x, 4), round(y, 4))
+
+    changed = 0
+    original_to_remove = []
+    added = []
+    removed_routed = set()
+    for net_id, pads in list(pcb_data.pads_by_net.items()):
+        if net_id in skip or (scope_net_ids is not None and net_id not in scope_net_ids):
+            continue
+        vias = [v for v in pcb_data.vias if v.net_id == net_id]
+        if not vias:
+            continue
+        # A branch that starts partway along a segment joins it at no vertex;
+        # split the segment there so the junction is one. The copper is the
+        # same; merge_collinear_segments rejoins any split left unused.
+        segs0 = [t for t in pcb_data.segments if t.net_id == net_id]
+        for t in segs0:
+            if keep_input_copper and id(t) not in routed:
+                continue
+            for o in segs0:
+                if o is t or o.layer != t.layer:
+                    continue
+                for ex_, ey_ in ((o.start_x, o.start_y), (o.end_x, o.end_y)):
+                    if (min(math.hypot(ex_ - t.start_x, ey_ - t.start_y),
+                            math.hypot(ex_ - t.end_x, ey_ - t.end_y)) > 1e-4
+                            and _pt_seg_dist(ex_, ey_, t.start_x, t.start_y,
+                                             t.end_x, t.end_y) < 1e-4):
+                        a_ = Segment(start_x=t.start_x, start_y=t.start_y, end_x=ex_, end_y=ey_,
+                                     width=t.width, layer=t.layer, net_id=net_id)
+                        b_ = Segment(start_x=ex_, start_y=ey_, end_x=t.end_x, end_y=t.end_y,
+                                     width=t.width, layer=t.layer, net_id=net_id)
+                        r = routed.get(id(t))
+                        if r is not None:
+                            r['new_segments'] = [x for x in r['new_segments'] if x is not t] + [a_, b_]
+                        else:
+                            original_to_remove.append(t)
+                            r = {'new_segments': [a_, b_], 'new_vias': [], 'cleanup': 'pad_junction'}
+                            results.append(r)
+                        routed[id(a_)] = routed[id(b_)] = r
+                        pcb_data.segments = [x for x in pcb_data.segments if x is not t] + [a_, b_]
+                        added.extend([a_, b_])
+                        break
+                else:
+                    continue
+                break
+        if hasattr(pcb_data, '_foreign_seg_arr_cache'):
+            pcb_data._foreign_seg_arr_cache = None
+        # Each via is relinked at most once, so the rescan ends.
+        taken = set()
+        done = False
+        while not done:
+            done = True
+            net_segs = [t for t in pcb_data.segments if t.net_id == net_id]
+            inc = defaultdict(list)
+            for t in net_segs:
+                inc[(t.layer, vk(t.start_x, t.start_y))].append(t)
+                inc[(t.layer, vk(t.end_x, t.end_y))].append(t)
+            via_at = {vk(v.x, v.y): v for v in vias}
+
+            def walk(layer, start, first):
+                """Follow plain two-segment joints from start along first.
+                Returns (end point, segments, length)."""
+                segs, cur, t, L = [], start, first, 0.0
+                while True:
+                    segs.append(t)
+                    nxt = (vk(t.end_x, t.end_y) if vk(t.start_x, t.start_y) == cur
+                           else vk(t.start_x, t.start_y))
+                    L += math.hypot(t.end_x - t.start_x, t.end_y - t.start_y)
+                    cur = nxt
+                    others = [o for o in inc[(layer, cur)] if o is not t]
+                    if len(others) != 1 or cur in via_at:
+                        return cur, segs, L
+                    t = others[0]
+
+            for (layer, j), tees in list(inc.items()):
+                if len(tees) != 3 or j in via_at:
+                    continue
+                branches = [walk(layer, j, t) for t in tees]
+                pad_b = via_b = None
+                for k, (end, segs, L) in enumerate(branches):
+                    for pad in pads:
+                        if layer not in pad.layers and not getattr(pad, 'drill', 0.0):
+                            continue
+                        if (math.hypot(end[0] - pad.global_x, end[1] - pad.global_y) < 1e-3
+                                and L <= math.hypot(pad.size_x, pad.size_y) / 2.0 + segs[0].width):
+                            pad_b = (k, pad)
+                    if (end in via_at and L <= PAD_JUNCTION_VIA_REACH_MM
+                            and id(via_at[end]) not in taken):
+                        via_b = (k, via_at[end])
+                if not pad_b or not via_b or pad_b[0] == via_b[0]:
+                    continue
+                (kp, pad), (kv, via) = pad_b, via_b
+                gone = branches[kv][1]
+                if any(len(inc[(layer, vk(x, y))]) > 2
+                       for t in gone[1:] for x, y in ((t.start_x, t.start_y),)):
+                    continue
+                if keep_input_copper and any(id(t) not in routed for t in gone):
+                    continue
+                w = gone[0].width
+                P, X = (pad.global_x, pad.global_y), (via.x, via.y)
+                best = None
+                for inter in _octolinear_bends(P, X):
+                    pts = [P] + inter + [X]
+                    legs = [(a_, b) for a_, b in zip(pts, pts[1:])
+                            if math.hypot(b[0] - a_[0], b[1] - a_[1]) > 1e-6]
+                    if all(_slid_run_clears(pcb_data, net_id, config, layer,
+                                            a_[0], a_[1], b[0], b[1]) for a_, b in legs):
+                        L = sum(math.hypot(b[0] - a_[0], b[1] - a_[1]) for a_, b in legs)
+                        if best is None or L < best[0]:
+                            best = (L, legs)
+                if best is None:
+                    continue
+                new_segs = [Segment(start_x=a_[0], start_y=a_[1], end_x=b[0], end_y=b[1],
+                                    width=w, layer=layer, net_id=net_id) for a_, b in best[1]]
+                ids = {id(t) for t in gone}
+                before = check_net_connectivity(net_id, net_segs, vias, pads, [],
+                                                pcb_data=pcb_data)
+                trial = [t for t in net_segs if id(t) not in ids] + new_segs
+                after = check_net_connectivity(net_id, trial, vias, pads, [],
+                                               pcb_data=pcb_data)
+                if ((before.get('connected') and not after.get('connected'))
+                        or len(after.get('disconnected_pads') or [])
+                        > len(before.get('disconnected_pads') or [])
+                        or (after.get('num_components') or 1) > (before.get('num_components') or 1)):
+                    continue
+                res = None
+                for t in gone:
+                    if id(t) in routed:
+                        removed_routed.add(id(t))
+                        res = res or routed[id(t)]
+                    else:
+                        original_to_remove.append(t)
+                if res is None:
+                    res = {'new_segments': [], 'new_vias': [], 'cleanup': 'pad_junction'}
+                    results.append(res)
+                for t in new_segs:
+                    routed[id(t)] = res
+                res['new_segments'] = list(res.get('new_segments') or []) + new_segs
+                added.extend(new_segs)
+                pcb_data.segments = [t for t in pcb_data.segments if id(t) not in ids] + new_segs
+                if hasattr(pcb_data, '_foreign_seg_arr_cache'):
+                    pcb_data._foreign_seg_arr_cache = None
+                taken.add(id(via))
+                changed += 1
+                done = False
+                break
+    if removed_routed:
+        for r in results:
+            sgs = r.get('new_segments')
+            if sgs:
+                r['new_segments'] = [t for t in sgs if id(t) not in removed_routed]
+    if changed:
+        try:
+            delattr(pcb_data, '_plane_fill_models')
+        except AttributeError:
+            pass
+        try:
+            import plane_fill_model as _pfm
+            _pfm._MODELS_BY_ZONE_ID.clear()
+        except Exception:
+            pass
+    return changed, original_to_remove, added
+
+
 # Fork: pads at least this many times longer than wide get an exit leg.
 PAD_EXIT_MIN_ASPECT = 1.5
 # Fork: a leg shorter than this many track widths (or PAD_EXIT_SHORT_LEG_MM)
@@ -5691,17 +5887,21 @@ def pad_exit_legs(results, pcb_data: PCBData, scope_net_ids, config,
     pad (an FFC or QFN finger) the track crosses the pad at an angle instead
     of running down the middle of its narrow dimension, and on a two-pad part
     (a resistor, a capacitor) it comes into a pad's side at 45 degrees. Here
-    the track from the centre runs along an allowed exit (see exits(): a
-    two-pad part's outer end, along the part's axis; an elongated pad's long
-    axis) until its copper is clear of the pad, then rejoins the route with
-    octolinear legs, turning no more than 45 degrees at each bend, adding no
-    jog (a short S step, see PAD_EXIT_SHORT_LEG_*). Of
-    the rejoins that clear, the one whose whole track has the fewest short
-    legs wins, then the fewest bends, then the shortest. The new copper must keep the pair clearance
-    (single_ended_routing._slid_run_clears). A rejoin may not land in another
-    pad that has an exit rule of its own, nor replace route touched by other
-    same-net copper; a pad with no such rejoin within PAD_EXIT_REACH_MM is
-    left as routed.
+    the track from the centre runs along an allowed exit (see exits(): any
+    edge of a two-pad part's pad but the one facing the other pad; an
+    elongated pad's long axis) until its copper is clear of the pad, then
+    rejoins the route with octolinear legs, turning no more than 45 degrees
+    at each bend, adding no jog (a short S step, see PAD_EXIT_SHORT_LEG_*).
+    A two-pad part's pad also takes no more bends (a right angle counting as
+    two) and no less room than its route had. Of the rejoins that clear, the
+    one whose whole track has the fewest short legs wins, then the fewest
+    bends, then the shortest. The new copper must keep the pair clearance
+    (single_ended_routing._slid_run_clears). Where several tracks meet the
+    centre, the exit serves the longest. A rejoin may land in another pad
+    only at its centre, and not in one with an axis exit or one already
+    left square; it may not replace route touched by other same-net copper
+    or vias, and a same-net pad it passes over must stay joined. A pad with
+    no such rejoin within PAD_EXIT_REACH_MM is left as routed.
 
     Returns (changed_pads, original_to_remove, added_segments)."""
     from collections import defaultdict
@@ -5730,8 +5930,8 @@ def pad_exit_legs(results, pcb_data: PCBData, scope_net_ids, config,
     def exits(pad):
         """(allowed exit directions, pad x axis, pad y axis, kind), or None.
         A pad at least PAD_EXIT_MIN_ASPECT long is left along its long axis,
-        either way ('axis'); a shorter pad of a two-pad part through its
-        outer end, along the part's axis ('front')."""
+        either way ('axis'); a shorter pad of a two-pad part square through
+        any edge but the one facing the part's other pad ('front')."""
         if getattr(pad, 'polygons', None) or pad.shape not in ('rect', 'roundrect', 'oval'):
             return None
         if getattr(pad, 'drill', 0.0):
@@ -5752,10 +5952,12 @@ def pad_exit_legs(results, pcb_data: PCBData, scope_net_ids, config,
             out = unit(pad.global_x - mates[0].global_x, pad.global_y - mates[0].global_y)
             if out is None:
                 return None
-            # The pad's own axis nearest the part's, so the leg meets an edge square.
-            ax = max((lx, ly, (-lx[0], -lx[1]), (-ly[0], -ly[1])),
-                     key=lambda d: d[0] * out[0] + d[1] * out[1])
-            return [ax], lx, ly, 'front'
+            # Any edge but the one facing the other pad, entered square
+            # through its midpoint along the pad's own axes.
+            inner = min((lx, ly, (-lx[0], -lx[1]), (-ly[0], -ly[1])),
+                        key=lambda d: d[0] * out[0] + d[1] * out[1])
+            return [d for d in (lx, ly, (-lx[0], -lx[1]), (-ly[0], -ly[1]))
+                    if d is not inner], lx, ly, 'front'
         return None
 
     changed = 0
@@ -5777,15 +5979,31 @@ def pad_exit_legs(results, pcb_data: PCBData, scope_net_ids, config,
                   if (math.hypot(sg.start_x - ox, sg.start_y - oy) < 1e-4
                       or math.hypot(sg.end_x - ox, sg.end_y - oy) < 1e-4)
                   and sg.layer in pad.layers]
-            if len(at) != 1 or any(math.hypot(v.x - ox, v.y - oy) < 1e-4 for v in net_vias):
+            if not at or any(math.hypot(v.x - ox, v.y - oy) < 1e-4 for v in net_vias):
                 continue
-            first = at[0]
-            layer, w = first.layer, first.width
             inc = defaultdict(list)
             for sg in net_segs:
                 inc[vk(sg.start_x, sg.start_y)].append(sg)
                 inc[vk(sg.end_x, sg.end_y)].append(sg)
             via_keys = {vk(v.x, v.y) for v in net_vias}
+
+            def reach(sg):
+                """Length of the plain run from the centre along sg."""
+                cur, L = vk(ox, oy), 0.0
+                for _ in range(200):
+                    nxt = ((sg.end_x, sg.end_y) if vk(sg.start_x, sg.start_y) == cur
+                           else (sg.start_x, sg.start_y))
+                    L += math.hypot(sg.end_x - sg.start_x, sg.end_y - sg.start_y)
+                    cur = vk(*nxt)
+                    others = [t for t in inc[cur] if t is not sg]
+                    if len(others) != 1 or cur in via_keys:
+                        break
+                    sg = others[0]
+                return L
+            # Where more than one track meets the centre (a via tied to the
+            # pad, a branch), the longest is the route the exit serves.
+            first = max(at, key=reach)
+            layer, w = first.layer, first.width
             # Walk the route from the centre through plain two-segment joints.
             poly, chain = [(ox, oy)], []
             sg, cur = first, vk(ox, oy)
@@ -5832,9 +6050,11 @@ def pad_exit_legs(results, pcb_data: PCBData, scope_net_ids, config,
                                            poly[i + 1][1] - poly[i][1]))
 
             def bends(ds):
+                """Bends in 45-degree steps: a right angle counts as two."""
                 ds = [d for d in ds if d]
-                return sum(1 for u, v in zip(ds, ds[1:])
-                           if u[0] * v[0] + u[1] * v[1] < 1 - 1e-6)
+                return sum(int(round(math.degrees(math.acos(max(-1.0, min(1.0,
+                               u[0] * v[0] + u[1] * v[1])))) / 45.0))
+                           for u, v in zip(ds, ds[1:]))
             bends_now = bends(dirs_after)
             short = max(PAD_EXIT_SHORT_LEG_MM, PAD_EXIT_SHORT_LEG_WIDTHS * w)
 
@@ -5875,7 +6095,10 @@ def pad_exit_legs(results, pcb_data: PCBData, scope_net_ids, config,
                             for j in range(i + 1, len(poly) - 1))
                         for inter in _octolinear_bends((ex, ey), q):
                             pts = [(ex, ey)] + inter + [q]
+                            # A connector leg narrower than the track is
+                            # no chamfer: the turn is read across it.
                             legs = [unit(b[0] - a_[0], b[1] - a_[1])
+                                    if math.hypot(b[0] - a_[0], b[1] - a_[1]) >= w else None
                                     for a_, b in zip(pts, pts[1:])]
                             legs = [d for d in legs if d is not None]
                             ds = [a] + legs + rest
@@ -5919,6 +6142,8 @@ def pad_exit_legs(results, pcb_data: PCBData, scope_net_ids, config,
                     for px_, py_ in ((t.start_x, t.start_y), (t.end_x, t.end_y)):
                         if math.hypot(px_ - q[0], py_ - q[1]) < 1e-4:
                             continue
+                        if point_to_pad_distance(px_, py_, pad) <= t.width / 2.0:
+                            continue             # held by this pad's own copper
                         if any(_pt_seg_dist(px_, py_, g0[0], g0[1], g1[0], g1[1])
                                < (t.width + w) / 2.0 for g0, g1 in segs_g):
                             return True
@@ -5932,14 +6157,15 @@ def pad_exit_legs(results, pcb_data: PCBData, scope_net_ids, config,
                     if op is pad:
                         continue
                     if point_to_pad_distance(q[0], q[1], op) <= w / 2.0:
+                        if math.hypot(q[0] - op.global_x, q[1] - op.global_y) > 1e-3:
+                            return True          # a pad is joined at its centre
                         rule = exits(op)
                         if rule is not None and (rule[3] == 'axis' or square(op, rule[0])):
                             return True          # it keeps its own exit
                         continue                 # joined at the rejoin point
-                    if any(_pt_seg_dist(op.global_x, op.global_y, g0[0], g0[1], g1[0], g1[1])
-                           < math.hypot(op.size_x, op.size_y) / 2.0 + w / 2.0
-                           for g0, g1 in segs_g):
-                        return True
+                    # A same-net pad the replaced stretch passes over is left
+                    # to the connectivity check below: it fails only when
+                    # that stretch was the pad's one link.
                 return False
 
             best = None

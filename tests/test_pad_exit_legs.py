@@ -136,6 +136,68 @@ def test_exit_adds_no_jog():
     check("no exit that leaves an S jog is laid", before == after, after)
 
 
+def test_same_net_pad_beside_the_route_does_not_block():
+    """A same-net test point sits beside the route's diagonal, with its own
+    link to the route. Replacing the diagonal leaves the test point joined,
+    so the exit is laid."""
+    pcb, cfg = _board()
+    pcb.pads_by_net[1].append(_pad('TP1', 10.6, 10.2, 1, '/SIG', 0.5, 0.5))
+    pcb.segments.append(Segment(start_x=10.6, start_y=10.2, end_x=11.5, end_y=10.2,
+                                width=W, layer='F.Cu', net_id=1))
+    pcb.segments.append(Segment(start_x=11.5, start_y=10.2, end_x=11.5, end_y=13.5,
+                                width=W, layer='F.Cu', net_id=1))
+    pcb.segments.append(Segment(start_x=11.5, start_y=13.5, end_x=10.5, end_y=13.5,
+                                width=W, layer='F.Cu', net_id=1))
+    n, _strip, _added = pad_exit_legs([], pcb, None, cfg)
+    check("the long pad gets its exit", n == 1, n)
+
+
+def test_no_right_angle_behind_a_stub():
+    """A wide pad (1.5 x 1.0 mm, long along x) whose route leaves its centre
+    on a diagonal. An exit along x that rejoins the diagonal through a
+    connector starting with a stub shorter than half the track turns a
+    right angle at the stub, which is not a 45-degree bend. A foreign pad
+    blocks the clean rejoin, so the stubbed one is all that is left."""
+    w = 0.2
+    pts = [(128.8, 101.3), (129.0, 101.5), (129.6, 102.1), (129.8, 102.1),
+           (130.7, 103.0), (130.7, 106.0)]
+    segs = [Segment(start_x=a[0], start_y=a[1], end_x=b[0], end_y=b[1], width=w,
+                    layer='F.Cu', net_id=1) for a, b in zip(pts, pts[1:])]
+    pads = {1: [_pad('C13', 129.0, 101.5, 1, '/SIG', 1.5, 1.0),
+                _pad('U2', 130.7, 106.0, 1, '/SIG', 0.5, 0.5),
+                _pad('U3', 128.8, 101.3, 1, '/SIG', 0.2, 0.2)],
+            2: [_pad('C13', 129.0, 103.5, 2, '/OTHER', 1.5, 1.0)],
+            3: [_pad('TP9', 130.3, 101.9, 3, '/NB', 0.2, 0.2)]}
+    pcb = PCBData(footprints={}, nets={1: Net(1, '/SIG'), 2: Net(2, '/OTHER'), 3: Net(3, '/NB')},
+                  segments=segs, vias=[],
+                  board_info=BoardInfo(layers={}, copper_layers=['F.Cu', 'B.Cu'],
+                                       board_bounds=(0.0, 0.0, 200.0, 200.0)),
+                  pads_by_net=pads)
+    cfg = GridRouteConfig(track_width=w, clearance=0.15, via_size=0.6, via_drill=0.3,
+                          layers=['F.Cu', 'B.Cu'])
+    pad_exit_legs([], pcb, None, cfg)
+    legs = []
+    for sg in pcb.segments:
+        if sg.net_id == 1 and math.hypot(sg.end_x - sg.start_x, sg.end_y - sg.start_y) >= w / 2:
+            legs.append(sg)
+    right = []
+    for a in legs:
+        for b in legs:
+            if a is b:
+                continue
+            ends_a = ((a.start_x, a.start_y), (a.end_x, a.end_y))
+            ends_b = ((b.start_x, b.start_y), (b.end_x, b.end_y))
+            near = [(p, q) for p in ends_a for q in ends_b if math.hypot(p[0] - q[0], p[1] - q[1]) < w / 2]
+            if not near:
+                continue
+            u = (a.end_x - a.start_x, a.end_y - a.start_y)
+            v = (b.end_x - b.start_x, b.end_y - b.start_y)
+            c = abs(u[0] * v[0] + u[1] * v[1]) / (math.hypot(*u) * math.hypot(*v))
+            if c < 1e-3:
+                right.append(((a.start_x, a.start_y, a.end_x, a.end_y), (b.start_x, b.start_y, b.end_x, b.end_y)))
+    check("no right angle hides behind a sub-width stub", not right, right)
+
+
 def _resistor_board(neighbour_y=None, late_step=True):
     """A resistor along x at (12, 10)-(12.6, 10); its pad 1 track arrives from
     the left 0.1 mm off the resistor's axis. With `late_step` it steps onto
@@ -235,6 +297,8 @@ def main():
     test_square_pad_is_left_alone()
     test_blocked_exit_is_left_alone()
     test_exit_adds_no_jog()
+    test_same_net_pad_beside_the_route_does_not_block()
+    test_no_right_angle_behind_a_stub()
     test_two_pad_part_is_entered_through_its_outer_end()
     test_front_entry_can_be_switched_off()
     test_front_entry_adds_no_bend()

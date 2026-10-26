@@ -50,6 +50,7 @@ from pcb_modification import (
     neck_wide_segments_grazing_pads,
     smooth_octolinear_chains,
     pad_exit_legs,
+    pad_takes_junction,
     close_soft_joints,
     merge_collinear_segments,
     CLOSE_SOFT_JOINT_KINDS,
@@ -540,6 +541,18 @@ def run_post_route_cleanup(results, pcb_data, scope_net_ids, config, *,
     else:
         _sm_on = _sm_env in ('1', 'true', 'on')
     if _sm_on:
+        # Fork: a pad takes the junction to a nearby via, before the shape
+        # passes tidy the track into it.
+        _pj_n, _pj_strip, _pj_added = pad_takes_junction(
+            results, pcb_data, _sub_scope, config,
+            keep_input_copper=keep_input_copper,
+            skip_net_ids=_smooth_skip_net_ids(pcb_data))
+        counts['pad_junctions'] = _pj_n
+        _trace('pad_junction')
+        strip.extend(_pj_strip)
+        if _pj_n:
+            print(f"{label}Pad junctions: {_pj_n} via(s) now hang off their pad, "
+                  f"not off the track beside it")
         _prog("octolinear smoothing")
         _sm_n, _sm_nets, _sm_strip, _sm_added, _sm_stats = smooth_octolinear_chains(
             results, pcb_data, _sub_scope, clearance=config.clearance,
