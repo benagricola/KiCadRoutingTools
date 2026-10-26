@@ -51,6 +51,7 @@ from pcb_modification import (
     smooth_octolinear_chains,
     pad_exit_legs,
     pad_takes_junction,
+    straighten_pad_links,
     close_soft_joints,
     merge_collinear_segments,
     CLOSE_SOFT_JOINT_KINDS,
@@ -580,6 +581,18 @@ def run_post_route_cleanup(results, pcb_data, scope_net_ids, config, *,
         if _px_n:
             print(f"{label}Pad exits: {_px_n} track(s) now leave their pad "
                   f"square through an end")
+        # Fork: the copper between two nearby pads of a net becomes a
+        # straighter link where one clears and no pour is cut into more
+        # pieces. After the pad exits, so it keeps the square ones.
+        _sl_n, _sl_strip, _sl_added = straighten_pad_links(
+            results, pcb_data, _sub_scope, config,
+            keep_input_copper=keep_input_copper,
+            skip_net_ids=_smooth_skip_net_ids(pcb_data))
+        counts['straightened_links'] = _sl_n
+        _trace('straighten')
+        strip.extend(_sl_strip)
+        if _sl_n:
+            print(f"{label}Pad links: {_sl_n} wandering link(s) between nearby pads straightened")
 
     # FINAL copper step (#319 ordering): nothing below may remove copper.
     # KICAD_NO_SOFT_JOINT_BRIDGE=1 is an A/B ablation knob (like

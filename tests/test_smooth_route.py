@@ -248,7 +248,11 @@ def test_pipeline_gate():
         return pcb, out
 
     def ran(pcb, out):
-        return out.counts.get('smoothed_spans', 0) >= 1 and len(pcb.segments) < 20
+        # Fork: straighten_pad_links runs under the same gate, first, and on
+        # this pad-to-pad staircase leaves the smoother nothing to do.
+        shaped = (out.counts.get('smoothed_spans', 0)
+                  + out.counts.get('straightened_links', 0))
+        return shaped >= 1 and len(pcb.segments) < 20
 
     old = os.environ.pop('KICAD_SMOOTH_ROUTE', None)
     try:

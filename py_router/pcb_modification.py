@@ -5677,6 +5677,47 @@ def _collapse_collinear_vertices(vpts, max_deviation: float, pad_cover=None):
 PAD_JUNCTION_VIA_REACH_MM = 1.5
 
 
+def _split_at_tees(results, pcb_data, net_id, routed, keep_input_copper,
+                   original_to_remove, added, tag='pad_junction'):
+    """Fork: a branch that starts partway along a segment joins it at no
+    vertex; split the segment there so the junction is one. The copper is the
+    same; merge_collinear_segments rejoins any split left unused. `routed`
+    maps id(segment) to its result and is kept current; a split of input
+    copper goes into a new result tagged `tag`."""
+    segs0 = [t for t in pcb_data.segments if t.net_id == net_id]
+    for t in segs0:
+        if keep_input_copper and id(t) not in routed:
+            continue
+        for o in segs0:
+            if o is t or o.layer != t.layer:
+                continue
+            for ex_, ey_ in ((o.start_x, o.start_y), (o.end_x, o.end_y)):
+                if (min(math.hypot(ex_ - t.start_x, ey_ - t.start_y),
+                        math.hypot(ex_ - t.end_x, ey_ - t.end_y)) > 1e-4
+                        and _pt_seg_dist(ex_, ey_, t.start_x, t.start_y,
+                                         t.end_x, t.end_y) < 1e-4):
+                    a_ = Segment(start_x=t.start_x, start_y=t.start_y, end_x=ex_, end_y=ey_,
+                                 width=t.width, layer=t.layer, net_id=net_id)
+                    b_ = Segment(start_x=ex_, start_y=ey_, end_x=t.end_x, end_y=t.end_y,
+                                 width=t.width, layer=t.layer, net_id=net_id)
+                    r = routed.get(id(t))
+                    if r is not None:
+                        r['new_segments'] = [x for x in r['new_segments'] if x is not t] + [a_, b_]
+                    else:
+                        original_to_remove.append(t)
+                        r = {'new_segments': [a_, b_], 'new_vias': [], 'cleanup': tag}
+                        results.append(r)
+                    routed[id(a_)] = routed[id(b_)] = r
+                    pcb_data.segments = [x for x in pcb_data.segments if x is not t] + [a_, b_]
+                    added.extend([a_, b_])
+                    break
+            else:
+                continue
+            break
+    if hasattr(pcb_data, '_foreign_seg_arr_cache'):
+        pcb_data._foreign_seg_arr_cache = None
+
+
 def pad_takes_junction(results, pcb_data: PCBData, scope_net_ids, config,
                        keep_input_copper: bool = False, skip_net_ids=None):
     """Fork: a pad, not the track beside it, takes the junction to a nearby via.
@@ -5716,39 +5757,8 @@ def pad_takes_junction(results, pcb_data: PCBData, scope_net_ids, config,
         vias = [v for v in pcb_data.vias if v.net_id == net_id]
         if not vias:
             continue
-        # A branch that starts partway along a segment joins it at no vertex;
-        # split the segment there so the junction is one. The copper is the
-        # same; merge_collinear_segments rejoins any split left unused.
-        segs0 = [t for t in pcb_data.segments if t.net_id == net_id]
-        for t in segs0:
-            if keep_input_copper and id(t) not in routed:
-                continue
-            for o in segs0:
-                if o is t or o.layer != t.layer:
-                    continue
-                for ex_, ey_ in ((o.start_x, o.start_y), (o.end_x, o.end_y)):
-                    if (min(math.hypot(ex_ - t.start_x, ey_ - t.start_y),
-                            math.hypot(ex_ - t.end_x, ey_ - t.end_y)) > 1e-4
-                            and _pt_seg_dist(ex_, ey_, t.start_x, t.start_y,
-                                             t.end_x, t.end_y) < 1e-4):
-                        a_ = Segment(start_x=t.start_x, start_y=t.start_y, end_x=ex_, end_y=ey_,
-                                     width=t.width, layer=t.layer, net_id=net_id)
-                        b_ = Segment(start_x=ex_, start_y=ey_, end_x=t.end_x, end_y=t.end_y,
-                                     width=t.width, layer=t.layer, net_id=net_id)
-                        r = routed.get(id(t))
-                        if r is not None:
-                            r['new_segments'] = [x for x in r['new_segments'] if x is not t] + [a_, b_]
-                        else:
-                            original_to_remove.append(t)
-                            r = {'new_segments': [a_, b_], 'new_vias': [], 'cleanup': 'pad_junction'}
-                            results.append(r)
-                        routed[id(a_)] = routed[id(b_)] = r
-                        pcb_data.segments = [x for x in pcb_data.segments if x is not t] + [a_, b_]
-                        added.extend([a_, b_])
-                        break
-                else:
-                    continue
-                break
+        _split_at_tees(results, pcb_data, net_id, routed, keep_input_copper,
+                       original_to_remove, added)
         if hasattr(pcb_data, '_foreign_seg_arr_cache'):
             pcb_data._foreign_seg_arr_cache = None
         # Each via is relinked at most once, so the rescan ends.
@@ -5868,6 +5878,492 @@ def pad_takes_junction(results, pcb_data: PCBData, scope_net_ids, config,
     return changed, original_to_remove, added
 
 
+def _pad_exit_rule(pcb_data, pad, front_entry):
+    """Fork: (allowed exit directions, pad x axis, pad y axis, kind), or None.
+    A pad at least PAD_EXIT_MIN_ASPECT long is left along its long axis,
+    either way ('axis'); with `front_entry`, a shorter pad of a two-pad part
+    square through any edge but the one facing the part's other pad
+    ('front')."""
+    def unit(dx, dy):
+        h = math.hypot(dx, dy)
+        return (dx / h, dy / h) if h > 1e-9 else None
+    if getattr(pad, 'polygons', None) or pad.shape not in ('rect', 'roundrect', 'oval'):
+        return None
+    if getattr(pad, 'drill', 0.0):
+        return None
+    big, small = max(pad.size_x, pad.size_y), min(pad.size_x, pad.size_y)
+    if small <= 0:
+        return None
+    rr = math.radians(getattr(pad, 'rect_rotation', 0.0) or 0.0)
+    lx, ly = (math.cos(rr), math.sin(rr)), (-math.sin(rr), math.cos(rr))
+    fp = pcb_data.footprints.get(pad.component_ref) if pad.component_ref else None
+    mates = [o for o in (fp.pads if fp else [])
+             if o is not pad and getattr(o, 'pad_type', '') != 'np_thru_hole'
+             and any(L.endswith('.Cu') for L in (o.layers or []))]
+    if big / small >= PAD_EXIT_MIN_ASPECT:
+        ax = lx if pad.size_x >= pad.size_y else ly
+        return [ax, (-ax[0], -ax[1])], lx, ly, 'axis'
+    if len(mates) == 1 and front_entry:
+        out = unit(pad.global_x - mates[0].global_x, pad.global_y - mates[0].global_y)
+        if out is None:
+            return None
+        # Any edge but the one facing the other pad, entered square
+        # through its midpoint along the pad's own axes.
+        inner = min((lx, ly, (-lx[0], -lx[1]), (-ly[0], -ly[1])),
+                    key=lambda d: d[0] * out[0] + d[1] * out[1])
+        return [d for d in (lx, ly, (-lx[0], -lx[1]), (-ly[0], -ly[1]))
+                if d is not inner], lx, ly, 'front'
+    return None
+
+
+def _exit_reach(pad, d, lx, ly, w):
+    """Fork: how far along d a track of width w runs from the centre of pad
+    (axes lx, ly) before its copper is clear of the pad."""
+    return (abs(d[0] * lx[0] + d[1] * lx[1]) * pad.size_x / 2.0
+            + abs(d[0] * ly[0] + d[1] * ly[1]) * pad.size_y / 2.0 + w / 2.0)
+
+
+# Fork: pads of one net at most this far apart (mm) may have the copper
+# between them replaced by a straighter link.
+STRAIGHTEN_REACH_MM = 5.0
+# Fork: a direct link this close (degrees) to an octolinear direction counts
+# as one; pad centres are rarely exactly on a grid line.
+STRAIGHTEN_SKEW_DEG = 1.0
+
+
+def _pour_pieces(pcb_data, layer, net_id, segments):
+    """Fork: fill pieces of every foreign pour on `layer` with `segments` as
+    the board's copper: {zone id: piece count}, from the plane fill model
+    (ZoneFillModel, KiCad's fill rules)."""
+    from plane_fill_model import ZoneFillModel
+    keep = pcb_data.segments
+    pcb_data.segments = segments
+    try:
+        out = {}
+        for z in getattr(pcb_data, 'zones', None) or []:
+            if z.layer != layer or z.net_id == net_id or not z.polygon:
+                continue
+            m = ZoneFillModel(pcb_data, z)
+            if m.ok:
+                out[id(z)] = int(m._n)
+        return out
+    finally:
+        pcb_data.segments = keep
+
+
+def straighten_pad_links(results, pcb_data: PCBData, scope_net_ids, config,
+                         keep_input_copper: bool = False, skip_net_ids=None):
+    """Fork: the copper between two pads of a net is replaced by a straighter
+    link when one clears.
+
+    A route can wander between two nearby pads (a soft cost such as plane
+    fragility steering it over a hump), and a third pad's branch may hang off
+    the wander. For each pair of same-net pads on one layer at most
+    STRAIGHTEN_REACH_MM apart, the plain copper path between them (through no
+    other pad or via) is compared with a direct octolinear link between the
+    centres (_octolinear_bends; a direct line within STRAIGHTEN_SKEW_DEG of
+    octolinear counts). The link replaces the path when it clears
+    (single_ended_routing._slid_run_clears), has fewer bends than the copper
+    as laid (a right angle counting as two) and is no longer. It keeps pad
+    exits (_pad_exit_rule): it leaves an elongated pad along its axis, and a
+    two-pad part's pad square wherever the old copper did, so it runs after
+    pad_exit_legs. Branches that hung off the removed
+    path are rehung: a branch serving one pad and nothing else is redrawn as
+    a link from that pad to the nearest new copper or pad centre; any other
+    branch is joined from where it hung. Kept only where the net's
+    connectivity holds and no foreign pour on the layer is cut into more
+    pieces than before (_pour_pieces).
+
+    Returns (changed, original_to_remove, added_segments)."""
+    from collections import defaultdict
+    from check_connected import check_net_connectivity
+    from single_ended_routing import _slid_run_clears
+    from check_drc import point_to_pad_distance
+    import env_knobs
+    front_entry = env_knobs.PAD_FRONT_ENTRY
+
+    skip = set(skip_net_ids or ())
+    routed = {}
+    for r in results:
+        for sg in r.get('new_segments') or []:
+            routed[id(sg)] = r
+
+    def vk(x, y):
+        return (round(x, 4), round(y, 4))
+
+    def unit(dx, dy):
+        h = math.hypot(dx, dy)
+        return (dx / h, dy / h) if h > 1e-9 else None
+
+    def square(pad, pts, w):
+        """True when polyline pts, starting at pad's centre, leaves it along
+        an exit its rule allows until clear of it; None when it has no rule."""
+        rule = _pad_exit_rule(pcb_data, pad, front_entry)
+        if rule is None:
+            return None
+        allowed, lx, ly, _kind = rule
+        if math.hypot(pts[0][0] - pad.global_x, pts[0][1] - pad.global_y) > 1e-3:
+            return False
+        for a, b in zip(pts, pts[1:]):
+            d, l0 = unit(b[0] - a[0], b[1] - a[1]), math.hypot(b[0] - a[0], b[1] - a[1])
+            if d is None:
+                continue
+            return any(d[0] * e[0] + d[1] * e[1] > 1 - 1e-6 and l0 >= _exit_reach(pad, e, lx, ly, w) - 1e-6
+                       for e in allowed)
+        return False
+
+    def left_square(pad, segs, w):
+        """True when copper in segs leaves pad square: a straight run from
+        its centre (collinear segments walked through) along an allowed exit."""
+        c = vk(pad.global_x, pad.global_y)
+        for t in segs:
+            ends = (vk(t.start_x, t.start_y), vk(t.end_x, t.end_y))
+            if c not in ends:
+                continue
+            far = ends[1] if ends[0] == c else ends[0]
+            d = unit(far[0] - c[0], far[1] - c[1])
+            while d:
+                nxt = [o for o in segs if o is not t and far in (vk(o.start_x, o.start_y), vk(o.end_x, o.end_y))]
+                if len(nxt) != 1:
+                    break
+                o = nxt[0]
+                f2 = vk(o.end_x, o.end_y) if vk(o.start_x, o.start_y) == far else vk(o.start_x, o.start_y)
+                d2 = unit(f2[0] - far[0], f2[1] - far[1])
+                if not d2 or d2[0] * d[0] + d2[1] * d[1] < 1 - 1e-6:
+                    break
+                t, far = o, f2
+            if square(pad, [(pad.global_x, pad.global_y), far], w):
+                return True
+        return False
+
+    def keeps_exit(pad, was_square, new_pts, w):
+        """A new link leaves an elongated pad along its axis, and a two-pad
+        part's pad square wherever the old copper did."""
+        rule = _pad_exit_rule(pcb_data, pad, front_entry)
+        if rule is None:
+            return True
+        if rule[3] == 'axis' or was_square:
+            return bool(square(pad, new_pts, w))
+        return True
+
+    def bends(pts, w):
+        """Bends of polyline pts in 45-degree steps; legs shorter than half
+        the track have no direction."""
+        ds = [unit(b[0] - a[0], b[1] - a[1]) for a, b in zip(pts, pts[1:])
+              if math.hypot(b[0] - a[0], b[1] - a[1]) >= w / 2.0]
+        ds = [d for d in ds if d]
+        return sum(int(round(math.degrees(math.acos(max(-1.0, min(1.0,
+                       u[0] * v[0] + u[1] * v[1])))) / 45.0))
+                   for u, v in zip(ds, ds[1:]))
+
+    def length(pts):
+        return sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(pts, pts[1:]))
+
+    def links(A, B):
+        """Candidate link polylines from A to B, fewest points first."""
+        dx, dy = B[0] - A[0], B[1] - A[1]
+        out = []
+        ang = math.degrees(math.atan2(dy, dx)) % 45.0
+        if min(ang, 45.0 - ang) <= STRAIGHTEN_SKEW_DEG:
+            out.append([A, B])
+        for inter in _octolinear_bends(A, B):
+            pl = [A] + inter + [B]
+            if pl not in out:
+                out.append(pl)
+        return out
+
+    def clears(net_id, layer, pts):
+        return all(_slid_run_clears(pcb_data, net_id, config, layer, a[0], a[1], b[0], b[1])
+                   for a, b in zip(pts, pts[1:]) if math.hypot(b[0] - a[0], b[1] - a[1]) > 1e-6)
+
+    changed = 0
+    original_to_remove = []
+    added = []
+    removed_routed = set()
+    for net_id, pads in list(pcb_data.pads_by_net.items()):
+        if net_id in skip or (scope_net_ids is not None and net_id not in scope_net_ids):
+            continue
+        if len(pads) < 2:
+            continue
+        _split_at_tees(results, pcb_data, net_id, routed, keep_input_copper,
+                       original_to_remove, added, tag='straighten')
+        tried = set()
+        done = False
+        while not done:
+            done = True
+            net_segs = [t for t in pcb_data.segments if t.net_id == net_id]
+            vias = [v for v in pcb_data.vias if v.net_id == net_id]
+            via_keys = {vk(v.x, v.y) for v in vias}
+            for layer in sorted({t.layer for t in net_segs}):
+                lsegs = [t for t in net_segs if t.layer == layer]
+                lpads = [p for p in pads if layer in (p.layers or ()) or getattr(p, 'drill', 0.0)]
+                inc = defaultdict(list)
+                for t in lsegs:
+                    inc[vk(t.start_x, t.start_y)].append(t)
+                    inc[vk(t.end_x, t.end_y)].append(t)
+                # Each node inside a pad's copper belongs to that pad.
+                owner = {}
+                for n in inc:
+                    for k, p in enumerate(lpads):
+                        if point_to_pad_distance(n[0], n[1], p) <= 1e-6:
+                            owner[n] = k
+                            break
+                pairs = sorted(((math.hypot(a.global_x - b.global_x, a.global_y - b.global_y), i, j)
+                                for i, a in enumerate(lpads) for j, b in enumerate(lpads)
+                                if i < j and math.hypot(a.global_x - b.global_x,
+                                                        a.global_y - b.global_y) <= STRAIGHTEN_REACH_MM))
+                for _d, i, j in pairs:
+                    key = (layer, i, j)
+                    if key in tried:
+                        continue
+                    tried.add(key)
+                    A, B = lpads[i], lpads[j]
+                    Ac, Bc = (A.global_x, A.global_y), (B.global_x, B.global_y)
+                    # Shortest plain copper path from A's nodes to B's,
+                    # through no other pad and no via.
+                    import heapq
+                    dist, prev, heap = {}, {}, []
+                    for n, k in owner.items():
+                        if k == i:
+                            dist[n] = 0.0
+                            heapq.heappush(heap, (0.0, n))
+                    goal = None
+                    while heap:
+                        d0, n = heapq.heappop(heap)
+                        if d0 > dist.get(n, math.inf):
+                            continue
+                        if owner.get(n) == j:
+                            goal = n
+                            break
+                        if (n in via_keys or owner.get(n) not in (None, i)) and d0 > 0:
+                            continue
+                        for t in inc[n]:
+                            m = vk(t.end_x, t.end_y) if vk(t.start_x, t.start_y) == n else vk(t.start_x, t.start_y)
+                            nd = d0 + math.hypot(t.end_x - t.start_x, t.end_y - t.start_y)
+                            if nd < dist.get(m, math.inf) - 1e-12:
+                                dist[m] = nd
+                                prev[m] = (n, t)
+                                heapq.heappush(heap, (nd, m))
+                    if goal is None:
+                        continue
+                    path, nodes, n = [], [goal], goal
+                    while n in prev:
+                        n, t = prev[n]
+                        path.append(t)
+                        nodes.append(n)
+                    path.reverse()
+                    nodes.reverse()
+                    if not path or len({round(t.width, 6) for t in path}) != 1:
+                        continue
+                    if keep_input_copper and any(id(t) not in routed for t in path):
+                        continue
+                    w = path[0].width
+                    # Scored by the copper as laid: a leg from the centre
+                    # inside the pad is not seen.
+                    old_pts = list(nodes)
+                    sq_a, sq_b = left_square(A, lsegs, w), left_square(B, lsegs, w)
+                    # Old copper may stop short of a pad's centre; the new
+                    # links run centre to centre, so the length rule below
+                    # credits them those stubs.
+                    allow = (math.hypot(nodes[0][0] - Ac[0], nodes[0][1] - Ac[1])
+                             + math.hypot(nodes[-1][0] - Bc[0], nodes[-1][1] - Bc[1]))
+                    old_b, old_l = bends(old_pts, w), length(old_pts)
+                    best = None
+                    for pl in links(Ac, Bc):
+                        b_, l_ = bends(pl, w), length(pl)
+                        if b_ >= old_b or l_ > old_l + allow + 1e-6:
+                            continue
+                        if not (keeps_exit(A, sq_a, pl, w) and keeps_exit(B, sq_b, pl[::-1], w)):
+                            continue
+                        if not clears(net_id, layer, pl):
+                            continue
+                        if best is None or (b_, l_) < (best[0], best[1]):
+                            best = (b_, l_, pl)
+                    if best is None:
+                        continue
+                    gone = {id(t) for t in path}
+                    new_segs = [Segment(start_x=a[0], start_y=a[1], end_x=b[0], end_y=b[1],
+                                        width=w, layer=layer, net_id=net_id)
+                                for a, b in zip(best[2], best[2][1:])
+                                if math.hypot(b[0] - a[0], b[1] - a[1]) > 1e-6]
+                    # Rehang the branches that hung off the path's inner nodes.
+                    trial = [t for t in lsegs if id(t) not in gone] + new_segs
+                    targets = [Ac, Bc] + [p for t in new_segs for p in ((t.start_x, t.start_y), (t.end_x, t.end_y))]
+                    tinc = defaultdict(list)
+                    for t in trial:
+                        tinc[vk(t.start_x, t.start_y)].append(t)
+                        tinc[vk(t.end_x, t.end_y)].append(t)
+                    main, stack = set(), [vk(*Ac), vk(*Bc)] + [n for n, k in owner.items() if k in (i, j)]
+                    while stack:
+                        n = stack.pop()
+                        if n in main:
+                            continue
+                        main.add(n)
+                        for t in tinc.get(n, ()):
+                            for m in (vk(t.start_x, t.start_y), vk(t.end_x, t.end_y)):
+                                if m not in main:
+                                    stack.append(m)
+                    ok = True
+                    for hang in nodes[1:-1]:
+                        if hang in main or not tinc.get(hang):
+                            continue
+                        comp, stack = set(), [hang]
+                        while stack:
+                            n = stack.pop()
+                            if n in comp:
+                                continue
+                            comp.add(n)
+                            for t in tinc.get(n, ()):
+                                for m in (vk(t.start_x, t.start_y), vk(t.end_x, t.end_y)):
+                                    if m not in comp:
+                                        stack.append(m)
+                        csegs = [t for t in trial if vk(t.start_x, t.start_y) in comp]
+                        cpads = sorted({owner[n] for n in comp if n in owner})
+                        cvias = [n for n in comp if n in via_keys]
+                        if len(cpads) == 1 and not cvias:
+                            P = lpads[cpads[0]]
+                            src, drop = (P.global_x, P.global_y), {id(t) for t in csegs}
+                            allow += min(math.hypot(n[0] - src[0], n[1] - src[1])
+                                         for n in comp if owner.get(n) == cpads[0])
+                        else:
+                            src, drop = hang, set()
+                        cand = None
+                        sq_p = drop and left_square(P, csegs, w)
+                        for tgt in targets:
+                            for pl in links(src, tgt):
+                                if drop and not keeps_exit(P, sq_p, pl, w):
+                                    continue
+                                if clears(net_id, layer, pl):
+                                    c = (bends(pl, w), length(pl), pl)
+                                    if cand is None or c[:2] < cand[:2]:
+                                        cand = c
+                        if cand is None:
+                            ok = False
+                            break
+                        link = [Segment(start_x=a[0], start_y=a[1], end_x=b[0], end_y=b[1],
+                                        width=w, layer=layer, net_id=net_id)
+                                for a, b in zip(cand[2], cand[2][1:])
+                                if math.hypot(b[0] - a[0], b[1] - a[1]) > 1e-6]
+                        if drop and keep_input_copper and any(id(t) not in routed for t in csegs):
+                            ok = False
+                            break
+                        gone |= drop
+                        new_segs += link
+                        trial = [t for t in trial if id(t) not in drop] + link
+                        for t in link:
+                            for m in (vk(t.start_x, t.start_y), vk(t.end_x, t.end_y)):
+                                main.add(m)
+                        main |= comp
+                    if not ok:
+                        continue
+                    # Old copper left ending near the change (a stub into a
+                    # pad, a duplicated run) goes too: any dead end, not in a
+                    # pad or at a via, within 1 mm of the old path or the
+                    # new links.
+                    near = list(nodes) + [p for t in new_segs for p in ((t.start_x, t.start_y), (t.end_x, t.end_y))]
+                    bx0 = min(p[0] for p in near) - 1.0
+                    bx1 = max(p[0] for p in near) + 1.0
+                    by0 = min(p[1] for p in near) - 1.0
+                    by1 = max(p[1] for p in near) + 1.0
+                    while True:
+                        live = [t for t in net_segs if id(t) not in gone] + new_segs
+                        nbr = defaultdict(set)
+                        for t in live:
+                            if t.layer == layer:
+                                a_, b_ = vk(t.start_x, t.start_y), vk(t.end_x, t.end_y)
+                                if a_ != b_:
+                                    nbr[a_].add(b_)
+                                    nbr[b_].add(a_)
+                        stub = None
+                        for n, ms in nbr.items():
+                            if len(ms) != 1 or n in via_keys or not (bx0 <= n[0] <= bx1 and by0 <= n[1] <= by1):
+                                continue
+                            m = next(iter(ms))
+                            inside = [p for p in lpads if point_to_pad_distance(n[0], n[1], p) <= 1e-6]
+                            # A dead end in a pad goes only with a stub wholly
+                            # inside that pad, short of its centre.
+                            if inside and not (point_to_pad_distance(m[0], m[1], inside[0]) <= 1e-6
+                                               and math.hypot(n[0] - inside[0].global_x,
+                                                              n[1] - inside[0].global_y) > 1e-3):
+                                continue
+                            stub = (n, m)
+                            break
+                        if stub is None:
+                            break
+                        pair = {stub[0], stub[1]}
+                        hit = [t for t in live if t.layer == layer
+                               and {vk(t.start_x, t.start_y), vk(t.end_x, t.end_y)} == pair]
+                        if any(any(t is x for x in new_segs) for t in hit) or \
+                                (keep_input_copper and any(id(t) not in routed for t in hit)):
+                            break
+                        gone |= {id(t) for t in hit}
+                    # A joint the path shared inside a pad, off its centre,
+                    # would be left with the other copper entering the pad
+                    # apart from the new link: leave the route as it is.
+                    live = [t for t in net_segs if id(t) not in gone and t.layer == layer]
+                    if any(math.hypot(e[0] - c[0], e[1] - c[1]) > 1e-3
+                           and any(e in (vk(t.start_x, t.start_y), vk(t.end_x, t.end_y)) for t in live)
+                           for e, c in ((nodes[0], Ac), (nodes[-1], Bc))):
+                        continue
+                    full_old = net_segs
+                    full_new = [t for t in net_segs if id(t) not in gone] + new_segs
+                    seg_len = lambda ts: sum(math.hypot(t.end_x - t.start_x, t.end_y - t.start_y) for t in ts)
+                    if seg_len(full_new) > seg_len(full_old) + allow + 1e-6:
+                        continue             # the whole change must not add copper
+                    before = check_net_connectivity(net_id, full_old, vias, pads, [], pcb_data=pcb_data)
+                    after = check_net_connectivity(net_id, full_new, vias, pads, [], pcb_data=pcb_data)
+                    if ((before.get('connected') and not after.get('connected'))
+                            or len(after.get('disconnected_pads') or [])
+                            > len(before.get('disconnected_pads') or [])
+                            or (after.get('num_components') or 1) > (before.get('num_components') or 1)):
+                        continue
+                    others = [t for t in pcb_data.segments if t.net_id != net_id]
+                    p_old = _pour_pieces(pcb_data, layer, net_id, others + full_old)
+                    p_new = _pour_pieces(pcb_data, layer, net_id, others + full_new)
+                    if any(p_new.get(z, 0) > n_ for z, n_ in p_old.items()):
+                        continue
+                    res = None
+                    for t in net_segs:
+                        if id(t) not in gone:
+                            continue
+                        if id(t) in routed:
+                            removed_routed.add(id(t))
+                            res = res or routed[id(t)]
+                        else:
+                            original_to_remove.append(t)
+                    if res is None:
+                        res = {'new_segments': [], 'new_vias': [], 'cleanup': 'straighten'}
+                        results.append(res)
+                    for t in new_segs:
+                        routed[id(t)] = res
+                    res['new_segments'] = list(res.get('new_segments') or []) + new_segs
+                    added.extend(new_segs)
+                    pcb_data.segments = [t for t in pcb_data.segments if id(t) not in gone] + new_segs
+                    if hasattr(pcb_data, '_foreign_seg_arr_cache'):
+                        pcb_data._foreign_seg_arr_cache = None
+                    changed += 1
+                    done = False
+                    break
+                if not done:
+                    break
+    if removed_routed:
+        for r in results:
+            sgs = r.get('new_segments')
+            if sgs:
+                r['new_segments'] = [t for t in sgs if id(t) not in removed_routed]
+    if changed:
+        try:
+            delattr(pcb_data, '_plane_fill_models')
+        except AttributeError:
+            pass
+        try:
+            import plane_fill_model as _pfm
+            _pfm._MODELS_BY_ZONE_ID.clear()
+        except Exception:
+            pass
+    return changed, original_to_remove, added
+
+
 # Fork: pads at least this many times longer than wide get an exit leg.
 PAD_EXIT_MIN_ASPECT = 1.5
 # Fork: a leg shorter than this many track widths (or PAD_EXIT_SHORT_LEG_MM)
@@ -5928,37 +6424,7 @@ def pad_exit_legs(results, pcb_data: PCBData, scope_net_ids, config,
         return (round(x, 4), round(y, 4))
 
     def exits(pad):
-        """(allowed exit directions, pad x axis, pad y axis, kind), or None.
-        A pad at least PAD_EXIT_MIN_ASPECT long is left along its long axis,
-        either way ('axis'); a shorter pad of a two-pad part square through
-        any edge but the one facing the part's other pad ('front')."""
-        if getattr(pad, 'polygons', None) or pad.shape not in ('rect', 'roundrect', 'oval'):
-            return None
-        if getattr(pad, 'drill', 0.0):
-            return None
-        big, small = max(pad.size_x, pad.size_y), min(pad.size_x, pad.size_y)
-        if small <= 0:
-            return None
-        rr = math.radians(getattr(pad, 'rect_rotation', 0.0) or 0.0)
-        lx, ly = (math.cos(rr), math.sin(rr)), (-math.sin(rr), math.cos(rr))
-        fp = pcb_data.footprints.get(pad.component_ref) if pad.component_ref else None
-        mates = [o for o in (fp.pads if fp else [])
-                 if o is not pad and getattr(o, 'pad_type', '') != 'np_thru_hole'
-                 and any(L.endswith('.Cu') for L in (o.layers or []))]
-        if big / small >= PAD_EXIT_MIN_ASPECT:
-            ax = lx if pad.size_x >= pad.size_y else ly
-            return [ax, (-ax[0], -ax[1])], lx, ly, 'axis'
-        if len(mates) == 1 and front_entry:
-            out = unit(pad.global_x - mates[0].global_x, pad.global_y - mates[0].global_y)
-            if out is None:
-                return None
-            # Any edge but the one facing the other pad, entered square
-            # through its midpoint along the pad's own axes.
-            inner = min((lx, ly, (-lx[0], -lx[1]), (-ly[0], -ly[1])),
-                        key=lambda d: d[0] * out[0] + d[1] * out[1])
-            return [d for d in (lx, ly, (-lx[0], -lx[1]), (-ly[0], -ly[1]))
-                    if d is not inner], lx, ly, 'front'
-        return None
+        return _pad_exit_rule(pcb_data, pad, front_entry)
 
     changed = 0
     original_to_remove = []
