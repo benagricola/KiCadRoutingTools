@@ -5674,6 +5674,10 @@ def _collapse_collinear_vertices(vpts, max_deviation: float, pad_cover=None):
 
 # Fork: pads at least this many times longer than wide get an exit leg.
 PAD_EXIT_MIN_ASPECT = 1.5
+# Fork: a leg shorter than this many track widths (or PAD_EXIT_SHORT_LEG_MM)
+# whose two bends turn opposite ways reads as a jog; an exit may not add one.
+PAD_EXIT_SHORT_LEG_WIDTHS = 3.0
+PAD_EXIT_SHORT_LEG_MM = 0.3
 # Fork: how far along the route (mm, past the exit point) an exit leg may
 # rejoin it.
 PAD_EXIT_REACH_MM = 5.0
@@ -5690,9 +5694,10 @@ def pad_exit_legs(results, pcb_data: PCBData, scope_net_ids, config,
     the track from the centre runs along an allowed exit (see exits(): a
     two-pad part's outer end, along the part's axis; an elongated pad's long
     axis) until its copper is clear of the pad, then rejoins the route with
-    octolinear legs, turning no more than 45 degrees at each bend. Of the
-    rejoins that clear, the one whose whole track has the fewest bends wins,
-    then the shortest. The new copper must keep the pair clearance
+    octolinear legs, turning no more than 45 degrees at each bend, adding no
+    jog (a short S step, see PAD_EXIT_SHORT_LEG_*). Of
+    the rejoins that clear, the one whose whole track has the fewest short
+    legs wins, then the fewest bends, then the shortest. The new copper must keep the pair clearance
     (single_ended_routing._slid_run_clears). A rejoin may not land in another
     pad that has an exit rule of its own, nor replace route touched by other
     same-net copper; a pad with no such rejoin within PAD_EXIT_REACH_MM is
@@ -5701,8 +5706,10 @@ def pad_exit_legs(results, pcb_data: PCBData, scope_net_ids, config,
     Returns (changed_pads, original_to_remove, added_segments)."""
     from collections import defaultdict
     from check_connected import check_net_connectivity
-    from single_ended_routing import _slid_run_clears
+    from single_ended_routing import _slid_run_clears, _run_room
     from check_drc import point_to_pad_distance
+    import env_knobs
+    front_entry = env_knobs.PAD_FRONT_ENTRY
 
     skip = set(skip_net_ids or ())
     routed = {}
@@ -5721,10 +5728,10 @@ def pad_exit_legs(results, pcb_data: PCBData, scope_net_ids, config,
         return (round(x, 4), round(y, 4))
 
     def exits(pad):
-        """(allowed exit directions, pad x axis, pad y axis), or None. A
-        two-pad part's pad is left through its outer end, along the part's
-        axis; any other pad at least PAD_EXIT_MIN_ASPECT long along its long
-        axis, either way."""
+        """(allowed exit directions, pad x axis, pad y axis, kind), or None.
+        A pad at least PAD_EXIT_MIN_ASPECT long is left along its long axis,
+        either way ('axis'); a shorter pad of a two-pad part through its
+        outer end, along the part's axis ('front')."""
         if getattr(pad, 'polygons', None) or pad.shape not in ('rect', 'roundrect', 'oval'):
             return None
         if getattr(pad, 'drill', 0.0):
@@ -5738,17 +5745,17 @@ def pad_exit_legs(results, pcb_data: PCBData, scope_net_ids, config,
         mates = [o for o in (fp.pads if fp else [])
                  if o is not pad and getattr(o, 'pad_type', '') != 'np_thru_hole'
                  and any(L.endswith('.Cu') for L in (o.layers or []))]
-        if len(mates) == 1:
+        if big / small >= PAD_EXIT_MIN_ASPECT:
+            ax = lx if pad.size_x >= pad.size_y else ly
+            return [ax, (-ax[0], -ax[1])], lx, ly, 'axis'
+        if len(mates) == 1 and front_entry:
             out = unit(pad.global_x - mates[0].global_x, pad.global_y - mates[0].global_y)
             if out is None:
                 return None
             # The pad's own axis nearest the part's, so the leg meets an edge square.
             ax = max((lx, ly, (-lx[0], -lx[1]), (-ly[0], -ly[1])),
                      key=lambda d: d[0] * out[0] + d[1] * out[1])
-            return [ax], lx, ly
-        if big / small >= PAD_EXIT_MIN_ASPECT:
-            ax = lx if pad.size_x >= pad.size_y else ly
-            return [ax, (-ax[0], -ax[1])], lx, ly
+            return [ax], lx, ly, 'front'
         return None
 
     changed = 0
@@ -5762,7 +5769,7 @@ def pad_exit_legs(results, pcb_data: PCBData, scope_net_ids, config,
             ex_rule = exits(pad)
             if ex_rule is None:
                 continue
-            allowed, lx, ly = ex_rule
+            allowed, lx, ly, kind = ex_rule
             ox, oy = pad.global_x, pad.global_y
             net_segs = [sg for sg in pcb_data.segments if sg.net_id == net_id]
             net_vias = [v for v in pcb_data.vias if v.net_id == net_id]
@@ -5814,13 +5821,43 @@ def pad_exit_legs(results, pcb_data: PCBData, scope_net_ids, config,
             # whose whole track (exit leg, connector, rest of the walked route)
             # has the fewest bends, then the shortest; a straight-through joint
             # is not a bend.
+            # A leg shorter than half the track width (a sub-cell stub onto a
+            # pad or a junction) has no direction to bend from.
             dirs_after = []
             for i in range(len(poly) - 1):
-                dirs_after.append(unit(poly[i + 1][0] - poly[i][0], poly[i + 1][1] - poly[i][1]))
+                if math.hypot(poly[i + 1][0] - poly[i][0], poly[i + 1][1] - poly[i][1]) < w / 2.0:
+                    dirs_after.append(None)
+                else:
+                    dirs_after.append(unit(poly[i + 1][0] - poly[i][0],
+                                           poly[i + 1][1] - poly[i][1]))
 
             def bends(ds):
+                ds = [d for d in ds if d]
                 return sum(1 for u, v in zip(ds, ds[1:])
-                           if u and v and u[0] * v[0] + u[1] * v[1] < 1 - 1e-6)
+                           if u[0] * v[0] + u[1] * v[1] < 1 - 1e-6)
+            bends_now = bends(dirs_after)
+            short = max(PAD_EXIT_SHORT_LEG_MM, PAD_EXIT_SHORT_LEG_WIDTHS * w)
+
+            def shorts(pl):
+                """Jogs in polyline pl: a leg shorter than `short` whose two
+                bends turn opposite ways (an S step), or a chamfer (a short leg
+                turning the same way twice) narrower than the track, which
+                reads as a sharp corner. The first leg, the one in the pad, is
+                not counted."""
+                pl = [p_ for k_, p_ in enumerate(pl)
+                      if k_ == 0 or math.hypot(p_[0] - pl[k_ - 1][0], p_[1] - pl[k_ - 1][1]) > 1e-6]
+                n_ = 0
+                for k in range(1, len(pl) - 2):
+                    a_, b, c, d = pl[k - 1], pl[k], pl[k + 1], pl[k + 2]
+                    leg = math.hypot(c[0] - b[0], c[1] - b[1])
+                    if leg >= short:
+                        continue
+                    t1 = (b[0] - a_[0]) * (c[1] - b[1]) - (b[1] - a_[1]) * (c[0] - b[0])
+                    t2 = (c[0] - b[0]) * (d[1] - c[1]) - (c[1] - b[1]) * (d[0] - c[0])
+                    if t1 * t2 < -1e-12 or leg < w:
+                        n_ += 1
+                return n_
+            shorts_now = shorts(poly)
             cands = []
             for a in allowed:
                 exit_a = exit_of(a)
@@ -5842,17 +5879,37 @@ def pad_exit_legs(results, pcb_data: PCBData, scope_net_ids, config,
                                     for a_, b in zip(pts, pts[1:])]
                             legs = [d for d in legs if d is not None]
                             ds = [a] + legs + rest
+                            dsf = [d for d in ds if d]
                             if any(u[0] * v[0] + u[1] * v[1] < cos45
-                                   for u, v in zip(ds, ds[1:]) if u and v):
+                                   for u, v in zip(dsf, dsf[1:])):
                                 continue
                             length = exit_a + sum(math.hypot(b[0] - a_[0], b[1] - a_[1])
                                                   for a_, b in zip(pts, pts[1:])) + rest_len
-                            cands.append((bends(ds), round(length, 6), i, q, pts))
-            cands.sort(key=lambda c: (c[0], c[1]))
+                            if kind == 'front' and bends(ds) > bends_now:
+                                continue         # a front entry adds no bend
+                            whole = [(ox, oy)] + pts + ([] if k == n else [p1]) + poly[i + 2:]
+                            js = shorts(whole)
+                            if js > shorts_now:
+                                continue         # nor a jog
+                            cands.append((js, bends(ds), round(length, 6), i, q, pts))
+            cands.sort(key=lambda c: (c[0], c[1], c[2]))
+
+            def square(op, dirs):
+                """True when a track already leaves pad op along one of dirs."""
+                for t in net_segs:
+                    for (sx_, sy_), (fx_, fy_) in (((t.start_x, t.start_y), (t.end_x, t.end_y)),
+                                                   ((t.end_x, t.end_y), (t.start_x, t.start_y))):
+                        if math.hypot(sx_ - op.global_x, sy_ - op.global_y) < 1e-4:
+                            d = unit(fx_ - sx_, fy_ - sy_)
+                            if d and any(d[0] * e[0] + d[1] * e[1] > 1 - 1e-6 for e in dirs):
+                                return True
+                return False
 
             def touched(i, q):
                 """True when the stretch replaced up to q carries other
-                same-net copper, or q lands in a pad with its own exit rule."""
+                same-net copper, or q lands in a long pad (one with its own
+                exit along its axis) or in a two-pad part's pad already left
+                square."""
                 gone = poly[:i + 1] + [q]
                 ids = {id(t) for t in chain[:i + 1]}
                 segs_g = list(zip(gone, gone[1:]))
@@ -5875,7 +5932,8 @@ def pad_exit_legs(results, pcb_data: PCBData, scope_net_ids, config,
                     if op is pad:
                         continue
                     if point_to_pad_distance(q[0], q[1], op) <= w / 2.0:
-                        if exits(op) is not None:
+                        rule = exits(op)
+                        if rule is not None and (rule[3] == 'axis' or square(op, rule[0])):
                             return True          # it keeps its own exit
                         continue                 # joined at the rejoin point
                     if any(_pt_seg_dist(op.global_x, op.global_y, g0[0], g0[1], g1[0], g1[1])
@@ -5885,18 +5943,31 @@ def pad_exit_legs(results, pcb_data: PCBData, scope_net_ids, config,
                 return False
 
             best = None
-            for _b, _l, i, q, pts in cands:
+            for _j, _b, _l, i, q, pts in cands:
                 if keep_input_copper and any(id(t) not in routed for t in chain[:i + 1]):
                     continue
                 if touched(i, q):
                     continue
                 new_pts = [(ox, oy)] + pts
-                if all(_slid_run_clears(pcb_data, net_id, config, layer,
-                                        p_[0], p_[1], r_[0], r_[1])
-                       for p_, r_ in zip(new_pts, new_pts[1:])
-                       if math.hypot(r_[0] - p_[0], r_[1] - p_[1]) > 1e-6):
-                    best = (i, q, new_pts)
-                    break
+                legs_new = [(p_, r_) for p_, r_ in zip(new_pts, new_pts[1:])
+                            if math.hypot(r_[0] - p_[0], r_[1] - p_[1]) > 1e-6]
+                if not all(_slid_run_clears(pcb_data, net_id, config, layer,
+                                            p_[0], p_[1], r_[0], r_[1])
+                           for p_, r_ in legs_new):
+                    continue
+                if kind == 'front':
+                    # A front entry also needs room: it may not come closer
+                    # to other copper than the route it replaces did.
+                    old_pts = poly[:i + 1] + [q]
+                    before = min(_run_room(pcb_data, net_id, config, layer, p_, r_)
+                                 for p_, r_ in zip(old_pts, old_pts[1:])
+                                 if math.hypot(r_[0] - p_[0], r_[1] - p_[1]) > 1e-6)
+                    after = min(_run_room(pcb_data, net_id, config, layer, p_, r_)
+                                for p_, r_ in legs_new)
+                    if after < before - 1e-6:
+                        continue
+                best = (i, q, new_pts)
+                break
             if best is None:
                 continue
             i, q, new_pts = best

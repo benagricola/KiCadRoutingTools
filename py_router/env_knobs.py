@@ -262,6 +262,10 @@ def refresh() -> None:
     # shortcut may inflict are the plane finalize / kicad-oracle recheck's
     # job, which runs after cleanup on both fronts.
     g['SMOOTH_ROUTE'] = _s('KICAD_SMOOTH_ROUTE', '')
+    # Fork: a two-pad part's pad entered through its outer end, along the
+    # part's axis, where that adds no bend and keeps the old clearance
+    # (pcb_modification.pad_exit_legs). On by default; '0' off.
+    g['PAD_FRONT_ENTRY'] = _s('KICAD_PAD_FRONT_ENTRY', '1') != '0'
     # #600 improvement gate: refuse to ship a board this run made WORSE (more
     # previously-connected nets broken than newly connected). '0' disables --
     # for A/B, and for the rare case where an operator genuinely wants the

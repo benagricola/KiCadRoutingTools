@@ -114,46 +114,131 @@ def test_blocked_exit_is_left_alone():
     check("the route is unchanged", len(pcb.segments) == 2)
 
 
-def test_two_pad_part_is_entered_through_its_outer_end():
+def test_exit_adds_no_jog():
+    """The route leaves a long pad on a short diagonal and runs down 0.1 mm off
+    the pad's axis to another long pad. Any exit along the axis would have to
+    step back across by 0.1 mm: a short S jog. The route stays."""
+    segs = [Segment(start_x=10.0, start_y=10.0, end_x=10.1, end_y=10.1, width=W,
+                    layer='F.Cu', net_id=1),
+            Segment(start_x=10.1, start_y=10.1, end_x=10.1, end_y=14.0, width=W,
+                    layer='F.Cu', net_id=1)]
+    pads = {1: [_pad('U1', 10.0, 10.0, 1, '/SIG', 0.3, 1.25),
+                _pad('U2', 10.1, 14.0, 1, '/SIG', 0.3, 1.25)]}
+    pcb = PCBData(footprints={}, nets={1: Net(1, '/SIG')}, segments=segs, vias=[],
+                  board_info=BoardInfo(layers={}, copper_layers=['F.Cu', 'B.Cu'],
+                                       board_bounds=(0.0, 0.0, 200.0, 200.0)),
+                  pads_by_net=pads)
+    cfg = GridRouteConfig(track_width=W, clearance=0.127, via_size=0.45, via_drill=0.2,
+                          layers=['F.Cu', 'B.Cu'])
+    before = sorted((s.start_x, s.start_y, s.end_x, s.end_y) for s in pcb.segments)
+    pad_exit_legs([], pcb, None, cfg)
+    after = sorted((s.start_x, s.start_y, s.end_x, s.end_y) for s in pcb.segments)
+    check("no exit that leaves an S jog is laid", before == after, after)
+
+
+def _resistor_board(neighbour_y=None, late_step=True):
     """A resistor along x at (12, 10)-(12.6, 10); its pad 1 track arrives from
-    the left 0.1 mm off the resistor's axis and steps into the pad at 45
-    degrees. It should step earlier and enter pad 1 along the axis, from the
-    left (the end away from pad 2)."""
+    the left 0.1 mm off the resistor's axis. With `late_step` it steps onto
+    the axis inside the pad (two bends); without, it comes straight in on a
+    45-degree diagonal from the lower left (no bend). With `neighbour_y`, a foreign track runs along
+    y = neighbour_y beside the route's approach."""
     r1 = _pad('R1', 12.0, 10.0, 1, '/SIG', 0.46, 0.4)
     r2 = _pad('R1', 12.6, 10.0, 2, '/OTHER', 0.46, 0.4)
     r1.pad_number, r2.pad_number = '1', '2'
-    src = _pad('U9', 6.0, 10.1, 1, '/SIG', 0.5, 0.5)
-    segs = [Segment(start_x=6.0, start_y=10.1, end_x=11.9, end_y=10.1, width=W,
-                    layer='F.Cu', net_id=1),
-            Segment(start_x=11.9, start_y=10.1, end_x=12.0, end_y=10.0, width=W,
-                    layer='F.Cu', net_id=1)]
+    src = _pad('U9', *((6.0, 10.1) if late_step else (9.0, 13.0)), 1, '/SIG', 0.5, 0.5)
+    if late_step:
+        pts = [(6.0, 10.1), (11.85, 10.1), (11.95, 10.0), (12.0, 10.0)]
+    else:
+        pts = [(9.0, 13.0), (12.0, 10.0)]
+    segs = [Segment(start_x=a[0], start_y=a[1], end_x=b[0], end_y=b[1], width=W,
+                    layer='F.Cu', net_id=1) for a, b in zip(pts, pts[1:])]
+    if neighbour_y is not None:
+        segs.append(Segment(start_x=6.0, start_y=neighbour_y, end_x=11.6, end_y=neighbour_y,
+                            width=W, layer='F.Cu', net_id=3))
     fp = Footprint(reference='R1', footprint_name='t:R', x=12.3, y=10.0, rotation=0.0,
                    layer='F.Cu', pads=[r1, r2])
-    pcb = PCBData(footprints={'R1': fp}, nets={1: Net(1, '/SIG'), 2: Net(2, '/OTHER')},
+    pcb = PCBData(footprints={'R1': fp},
+                  nets={1: Net(1, '/SIG'), 2: Net(2, '/OTHER'), 3: Net(3, '/NB')},
                   segments=segs, vias=[],
                   board_info=BoardInfo(layers={}, copper_layers=['F.Cu', 'B.Cu'],
                                        board_bounds=(0.0, 0.0, 200.0, 200.0)),
                   pads_by_net={1: [src, r1], 2: [r2]})
     cfg = GridRouteConfig(track_width=W, clearance=0.127, via_size=0.45, via_drill=0.2,
                           layers=['F.Cu', 'B.Cu'])
-    n, _strip, _added = pad_exit_legs([], pcb, None, cfg)
-    check("the resistor pad changed", n == 1, n)
+    return pcb, cfg
+
+
+def _entry(pcb):
     into = [s for s in pcb.segments if s.net_id == 1 and
             (abs(s.end_x - 12.0) < 1e-6 and abs(s.end_y - 10.0) < 1e-6
              or abs(s.start_x - 12.0) < 1e-6 and abs(s.start_y - 10.0) < 1e-6)]
-    check("one segment reaches the pad centre", len(into) == 1, len(into))
-    if into:
-        s = into[0]
-        far = (s.start_x, s.start_y) if abs(s.end_x - 12.0) < 1e-6 else (s.end_x, s.end_y)
-        check("it comes in along the resistor's axis from the outer end",
-              abs(far[1] - 10.0) < 1e-9 and far[0] <= 12.0 - (0.23 + W / 2) + 1e-6, far)
+    if len(into) != 1:
+        return None
+    s = into[0]
+    return (s.start_x, s.start_y) if abs(s.end_x - 12.0) < 1e-6 else (s.end_x, s.end_y)
+
+
+def _front(on):
+    import env_knobs
+    env_knobs.PAD_FRONT_ENTRY = on
+
+
+def test_two_pad_part_is_entered_through_its_outer_end():
+    _front(True)
+    try:
+        pcb, cfg = _resistor_board()
+        n, _strip, _added = pad_exit_legs([], pcb, None, cfg)
+    finally:
+        _front(False)
+    check("the resistor pad changed", n == 1, n)
+    far = _entry(pcb)
+    check("it comes in along the resistor's axis from the outer end",
+          far is not None and abs(far[1] - 10.0) < 1e-9
+          and far[0] <= 12.0 - (0.23 + W / 2) + 1e-6, far)
+
+
+def test_front_entry_can_be_switched_off():
+    _front(False)
+    try:
+        pcb, cfg = _resistor_board()
+        n, _strip, _added = pad_exit_legs([], pcb, None, cfg)
+    finally:
+        _front(True)
+    check("with the setting off the resistor keeps its route", n == 0, n)
+
+
+def test_front_entry_adds_no_bend():
+    """A straight diagonal into the pad has no bend; entering square from the
+    outer end would need one, so the route stays."""
+    _front(True)
+    pcb, cfg = _resistor_board(late_step=False)
+    n, _strip, _added = pad_exit_legs([], pcb, None, cfg)
+    check("a front entry that would add a bend is not taken", n == 0, n)
+
+
+def test_front_entry_needs_room():
+    """A foreign track along y = 9.7 beside the approach: the route at
+    y = 10.1 clears it by 0.27 mm, a front entry along the axis (y = 10.0)
+    by 0.17 mm. A front entry may not come closer than the route it
+    replaces, so the route stays."""
+    _front(True)
+    try:
+        pcb, cfg = _resistor_board(neighbour_y=9.7)
+        n, _strip, _added = pad_exit_legs([], pcb, None, cfg)
+    finally:
+        _front(False)
+    check("a front entry that would come closer to other copper is not taken", n == 0, n)
 
 
 def main():
     test_track_leaves_along_the_long_axis()
     test_square_pad_is_left_alone()
     test_blocked_exit_is_left_alone()
+    test_exit_adds_no_jog()
     test_two_pad_part_is_entered_through_its_outer_end()
+    test_front_entry_can_be_switched_off()
+    test_front_entry_adds_no_bend()
+    test_front_entry_needs_room()
     print(f"\n{len(fails)} failure(s)" if fails else "\nall passed")
     return 1 if fails else 0
 

@@ -1191,6 +1191,25 @@ def _slid_run_clears(pcb_data, net_id, config, layer, x1, y1, x2, y2):
     return True
 
 
+def _run_room(pcb_data, net_id, config, layer, a, b):
+    """Fork: the smallest edge gap (mm) from a track a->b on `layer` to foreign
+    pads, tracks and vias, less this pair's clearance. Negative is a
+    clearance breach; a bigger number is more room."""
+    base, ncl = _pair_floor(config, net_id, layer)
+    w = config.get_net_track_width(net_id, layer)
+    x1, y1 = a
+    x2, y2 = b
+    d = min(_seg_foreign_pad_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
+                                  base_clearance=base, net_clearances=ncl),
+            _seg_foreign_seg_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
+                                  net_clearances=ncl, base_clearance=base,
+                                  track_clearances=getattr(config, 'track_clearances', None)
+                                  or None),
+            _seg_foreign_via_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
+                                  net_clearances=ncl, base_clearance=base))
+    return d - base - w / 2.0
+
+
 def _slide_terminal_onto_exact(path, term_idx, neighbor_idx, next_idx, original,
                                pts, pcb_data, net_id, config, layer_names):
     """Fork: run a route's first straight run through its off-grid pad's centre.
