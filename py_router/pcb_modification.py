@@ -4334,6 +4334,11 @@ def prune_grazing_segments(results, pcb_data: PCBData, scope_net_ids=None,
 # _SMOOTH_DEGENERATE_LEG mm is neither emitted nor counted.
 _SMOOTH_TIE_TOL = 1e-9
 _SMOOTH_DEGENERATE_LEG = 1e-5
+# Fork: a right-angle corner the shortcut phases leave is cut by a 45-degree
+# chamfer whose legs are these fractions of the shorter of the corner's two
+# legs, the largest that clears. A chamfer shorter than the track width is not
+# tried.
+_SMOOTH_CHAMFER_FRACTIONS = (1.0, 0.75, 0.5, 0.35, 0.25)
 #: A pad field is a CORRIDOR when the space between adjacent pads admits fewer
 #: than this many routing channels -- one channel being `track_width + 2 *
 #: clearance`, what it costs to thread one track between two pieces of copper.
@@ -5391,6 +5396,72 @@ def smooth_octolinear_chains(results, pcb_data: PCBData, scope_net_ids=None,
                                    else None for k in range(n)]
                         tagged = apply(tagged, collapse([(t[0], t[1]) for t in tagged],
                                                         leg_pos, True))
+
+                        # Fork: chamfer the right-angle corners the shortcut
+                        # phases left. A shortcut joins existing vertices, so a
+                        # corner whose whole-leg shortcut grazes something keeps
+                        # its 90 degrees; a smaller 45-degree cut across it
+                        # often clears. The cut leaves the corner's legs short
+                        # of the corner, so a cut whose removed part holds a
+                        # same-net touch or pad gives way to a smaller one.
+                        def chamfered(tagged):
+                            out = [tagged[0]]
+                            for p in range(1, len(tagged) - 1):
+                                ax, ay = out[-1][0], out[-1][1]
+                                px, py = tagged[p][0], tagged[p][1]
+                                bx, by = tagged[p + 1][0], tagged[p + 1][1]
+                                l1 = math.hypot(ax - px, ay - py)
+                                l2 = math.hypot(bx - px, by - py)
+                                if l1 < 1e-9 or l2 < 1e-9:
+                                    out.append(tagged[p])
+                                    continue
+                                u1 = ((ax - px) / l1, (ay - py) / l1)
+                                u2 = ((bx - px) / l2, (by - py) / l2)
+                                if abs(u1[0] * u2[0] + u1[1] * u2[1]) > 1e-6:
+                                    out.append(tagged[p])
+                                    continue
+                                cut = None
+                                for f in _SMOOTH_CHAMFER_FRACTIONS:
+                                    c = min(l1, l2) * f
+                                    if c < w:
+                                        break
+                                    c1 = (px + c * u1[0], py + c * u1[1])
+                                    c2 = (px + c * u2[0], py + c * u2[1])
+                                    gone = ((c1, (px, py)), ((px, py), c2))
+                                    pinned = False
+                                    for tx, ty, r, _ks in touch_list:
+                                        if any(_pt_seg_dist(tx, ty, g[0][0], g[0][1],
+                                                            g[1][0], g[1][1]) < r
+                                               for g in gone):
+                                            pinned = True
+                                            break
+                                    if not pinned:
+                                        for pad, _ks in pad_list:
+                                            r = pad_reach(pad) + w / 2.0 + COINCIDENCE_TOL
+                                            if any(_pt_seg_dist(pad.global_x, pad.global_y,
+                                                                g[0][0], g[0][1],
+                                                                g[1][0], g[1][1]) < r
+                                                   for g in gone):
+                                                pinned = True
+                                                break
+                                    if pinned:
+                                        continue
+                                    if clears_m(c1[0], c1[1], c2[0], c2[1]):
+                                        cut = (c1, c2)
+                                        break
+                                if cut is None:
+                                    out.append(tagged[p])
+                                    continue
+                                c1, c2 = cut
+                                if math.hypot(c1[0] - ax, c1[1] - ay) > _SMOOTH_DEGENERATE_LEG:
+                                    out.append((c1[0], c1[1], None))
+                                if math.hypot(c2[0] - bx, c2[1] - by) > _SMOOTH_DEGENERATE_LEG:
+                                    out.append((c2[0], c2[1], None))
+                                stats['chamfers'] = stats.get('chamfers', 0) + 1
+                            out.append(tagged[-1])
+                            return out
+
+                        tagged = chamfered(tagged)
 
                         # Back onto ORIGINAL vertex indices: each run between two
                         # surviving original vertices that is not the untouched
