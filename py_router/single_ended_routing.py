@@ -1133,6 +1133,118 @@ def _merge_terminal_to_exact(path, term_idx, neighbor_idx, original, pts,
     return True
 
 
+def _slid_run_clears(pcb_data, net_id, config, layer, x1, y1, x2, y2):
+    """Fork: True when a track from (x1, y1) to (x2, y2) on `layer` keeps the
+    pair clearance from foreign pads, tracks, vias and holes, the board edge
+    and every track keep-out. The checks a terminal slide needs before it
+    moves a run the grid already cleared."""
+    from check_drc import (board_edge_geometry, _point_on_board,
+                           _segment_to_rings_distance)
+    base, ncl = _pair_floor(config, net_id, layer)
+    w = config.get_net_track_width(net_id, layer)
+    need = base + w / 2.0 - 1e-6
+    if _seg_foreign_pad_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
+                             base_clearance=base, net_clearances=ncl) < need:
+        return False
+    if _seg_foreign_seg_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
+                             net_clearances=ncl, base_clearance=base,
+                             track_clearances=getattr(config, 'track_clearances', None)
+                             or None) < need:
+        return False
+    if _seg_foreign_via_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
+                             net_clearances=ncl, base_clearance=base) < need:
+        return False
+    from routing_defaults import NPTH_TO_TRACK_CLEARANCE
+    hole = max(base, NPTH_TO_TRACK_CLEARANCE)
+    if _seg_foreign_hole_dist(pcb_data, net_id, x1, y1, x2, y2,
+                              base_clearance=hole) < hole + w / 2.0 - 1e-6:
+        return False
+    info = getattr(pcb_data, 'board_info', None)
+    if info is not None:
+        rings, outer, cutouts = board_edge_geometry(info)
+        if rings:
+            edge = max(base, getattr(config, 'board_edge_clearance', 0.0) or 0.0)
+            if not (_point_on_board(x1, y1, outer, cutouts)
+                    and _point_on_board(x2, y2, outer, cutouts)):
+                return False
+            if _segment_to_rings_distance(x1, y1, x2, y2, rings) < edge + w / 2.0 - 1e-6:
+                return False
+        from obstacle_map import point_in_polygon, point_to_polygon_edge_distance
+        for ko in (getattr(info, 'keepouts', None) or []):
+            if ko.get('tracks_allowed', True) or len(ko.get('polygon') or []) < 3:
+                continue
+            kls = ko.get('layers') or set()
+            if kls and not (layer in kls or '*.Cu' in kls or (
+                    layer in ('F.Cu', 'B.Cu') and bool({'F&B.Cu', 'F&B'} & set(kls)))):
+                continue
+            rings_k = [ko['polygon']] + [h for h in (ko.get('holes') or []) if len(h) >= 3]
+            n = max(2, int(math.hypot(x2 - x1, y2 - y1) / 0.02) + 1)
+            for q in range(n + 1):
+                px, py = x1 + (x2 - x1) * q / n, y1 + (y2 - y1) * q / n
+                inside = False
+                for r in rings_k:
+                    if point_in_polygon(px, py, r):
+                        inside = not inside
+                if inside or any(point_to_polygon_edge_distance(px, py, r) < base + w / 2.0
+                                 for r in rings_k):
+                    return False
+    return True
+
+
+def _slide_terminal_onto_exact(path, term_idx, neighbor_idx, next_idx, original,
+                               pts, pcb_data, net_id, config, layer_names):
+    """Fork: run a route's first straight run through its off-grid pad's centre.
+
+    A grid route ends on the grid cell nearest an off-grid pad, and the caller
+    joins that cell to the exact point with a short stub, so the track runs
+    beside the pad's centre with a sub-cell jog at the pad (seen at a 0.5 mm
+    FFC row and a QFN turned 45 degrees). _merge_terminal_to_exact moves only
+    the terminal point, which tilts the run, and declines a run longer than a
+    cell for that reason (keks #158). Here the run keeps its direction: it is
+    moved sideways onto the line through the exact point, and its far bend
+    slides along the next segment's line, so the next segment keeps its
+    direction too. Taken only when both moved segments clear (see
+    _slid_run_clears). Returns True if slid (the caller then skips the stub)."""
+    if original is None or len(path) < 3:
+        return False
+    lay = path[term_idx][2]
+    if path[neighbor_idx][2] != lay or path[next_idx][2] != lay:
+        return False
+    ox, oy, ol = original
+    if layer_names[lay] != ol:
+        return False
+    fx, fy = pts[term_idx]
+    nx, ny = pts[neighbor_idx]
+    mx, my = pts[next_idx]
+    if math.hypot(ox - fx, oy - fy) < 1e-6:
+        return False
+    if math.hypot(ox - fx, oy - fy) > 1.5 * config.grid_step:
+        return False
+    ul = math.hypot(nx - fx, ny - fy)
+    vl = math.hypot(mx - nx, my - ny)
+    if ul < 1e-9 or vl < 1e-9:
+        return False
+    ux, uy = (nx - fx) / ul, (ny - fy) / ul
+    vx, vy = (mx - nx) / vl, (my - ny) / vl
+    den = vx * uy - vy * ux
+    if abs(den) < 1e-6:
+        return False
+    # The run's new line: through (ox, oy) along u. The bend moves to where it
+    # meets the next segment's line, N + t*v.
+    t = ((ox - nx) * uy - (oy - ny) * ux) / den
+    bx, by = nx + t * vx, ny + t * vy
+    if t >= vl - 1e-6:
+        return False
+    if (bx - ox) * ux + (by - oy) * uy <= 1e-6:
+        return False
+    if not (_slid_run_clears(pcb_data, net_id, config, ol, ox, oy, bx, by)
+            and _slid_run_clears(pcb_data, net_id, config, ol, bx, by, mx, my)):
+        return False
+    pts[term_idx] = (ox, oy)
+    pts[neighbor_idx] = (bx, by)
+    return True
+
+
 def print_route_stats(stats: dict, print_prefix: str = "  "):
     """Print A* routing statistics in a readable format.
 
@@ -2293,7 +2405,15 @@ def route_net_with_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
     new_segments = []
     new_vias = []
 
-    if start_original:
+    # Fork: a run that would leave its pad beside the centre slides onto it.
+    pts = [coord.to_float(p[0], p[1]) for p in path]
+    slid_start = _slide_terminal_onto_exact(
+        path, 0, 1, 2, start_original, pts, pcb_data, net_id, config, layer_names)
+    slid_end = _slide_terminal_onto_exact(
+        path, len(path) - 1, len(path) - 2, len(path) - 3, end_original, pts,
+        pcb_data, net_id, config, layer_names)
+
+    if start_original and not slid_start:
         first_grid_x, first_grid_y = coord.to_float(path_start[0], path_start[1])
         orig_x, orig_y, orig_layer = start_original
         if abs(orig_x - first_grid_x) > 0.001 or abs(orig_y - first_grid_y) > 0.001:
@@ -2310,10 +2430,11 @@ def route_net_with_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
         gx1, gy1, layer1 = path[i]
         gx2, gy2, layer2 = path[i + 1]
 
-        x1, y1 = coord.to_float(gx1, gy1)
-        x2, y2 = coord.to_float(gx2, gy2)
+        x1, y1 = pts[i]
+        x2, y2 = pts[i + 1]
 
         if layer1 != layer2:
+            x1, y1 = coord.to_float(gx1, gy1)
             # Check if layer change is at an existing through-hole pad
             # If so, skip creating a via - the pad provides the layer transition
             if (gx1, gy1) not in through_hole_positions:
@@ -2339,7 +2460,7 @@ def route_net_with_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
                 )
                 new_segments.append(seg)
 
-    if end_original:
+    if end_original and not slid_end:
         last_grid_x, last_grid_y = coord.to_float(path_end[0], path_end[1])
         orig_x, orig_y, orig_layer = end_original
         if abs(orig_x - last_grid_x) > 0.001 or abs(orig_y - last_grid_y) > 0.001:
@@ -5505,6 +5626,15 @@ def _path_to_segments_vias(
                                                pcb_data, net_id, config, layer_names)
         merge_end = _merge_terminal_to_exact(path, len(path) - 1, len(path) - 2, end_original, pts,
                                              pcb_data, net_id, config, layer_names)
+        # Fork: a run that would leave the pad beside its centre slides onto it.
+        if not merge_start:
+            merge_start = _slide_terminal_onto_exact(
+                path, 0, 1, 2, start_original, pts, pcb_data, net_id, config,
+                layer_names)
+        if not merge_end:
+            merge_end = _slide_terminal_onto_exact(
+                path, len(path) - 1, len(path) - 2, len(path) - 3, end_original,
+                pts, pcb_data, net_id, config, layer_names)
 
     # Add connecting segment from original start to first path point if needed
     # (skipped when merged: the first path segment now ends at the exact point)
